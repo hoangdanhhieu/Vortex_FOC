@@ -1,0 +1,64 @@
+# Vortex_FOC .gitignore
+
+# -----------------
+# STM32 Make builds
+# -----------------
+build/
+*.o
+*.d
+*.lst
+*.map
+*.elf
+*.bin
+*.hex
+*.axf
+
+# -----------------
+# Python / GUI
+# -----------------
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+*.log
+
+# -----------------
+# STM32 IDEs (CubeIDE / Keil / IAR)
+# -----------------
+Debug/
+Release/
+.settings/
+*.launch
+.project
+.cproject
+compile_commands.json
+
+# -----------------
+# IDEs & OS Files
+# -----------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# -----------------
+# AI Agents & Cache
+# -----------------
+.agent/
+.agents/
+_agent/
+_agents/
+.cache/
+.gemini/
+brain/
+*.history
