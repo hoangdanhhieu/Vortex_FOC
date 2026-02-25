@@ -7,15 +7,15 @@ from core.protocol import ParamId
 # Parameter metadata: (id, name, unit, group, min, max, step, readonly)
 PARAM_DEFS = [
     # Current PI
-    (ParamId.KP_ID,    "Kp Id*",         "V/A",   "Current PI",  0, 1000, 0.0001, False),
-    (ParamId.KI_ID,    "Ki Id*",         "V/A/s", "Current PI",  0, 1000, 0.0001, False),
-    (ParamId.KP_IQ,    "Kp Iq*",         "V/A",   "Current PI",  0, 1000, 0.0001, False),
-    (ParamId.KI_IQ,    "Ki Iq*",         "V/A/s", "Current PI",  0, 1000, 0.0001, False),
-    (ParamId.BW_CUR,   "Id/Iq BW*",      "rad/s", "Current PI",  100, 10000, 10, False),
+    (ParamId.KP_ID,    "Kp Id*",         "V/A",   "Current PI",  0, 100000, 0.0001, False),
+    (ParamId.KI_ID,    "Ki Id*",         "V/A/s", "Current PI",  0, 100000, 0.0001, False),
+    (ParamId.KP_IQ,    "Kp Iq*",         "V/A",   "Current PI",  0, 100000, 0.0001, False),
+    (ParamId.KI_IQ,    "Ki Iq*",         "V/A/s", "Current PI",  0, 100000, 0.0001, False),
+    (ParamId.BW_CUR,   "Id/Iq BW*",      "Hz",    "Current PI",  100, 100000, 10, False),
     # Speed PI
     (ParamId.KP_SPD,   "Kp Speed*",      "",      "Speed PI",    0, 1000, 0.0001, False),
-    (ParamId.KI_SPD,   "Ki Speed*",      "",      "Speed PI",    0, 100, 0.0001, False),
-    (ParamId.BW_SPD,   "Speed BW*",      "rad/s", "Speed PI",    10, 10000, 1, False),
+    (ParamId.KI_SPD,   "Ki Speed*",      "",      "Speed PI",    0, 1000, 0.0001, False),
+    (ParamId.BW_SPD,   "Speed BW*",      "rad/s", "Speed PI",    10, 100000, 1, False),
     # Startup
     (ParamId.I_STRT,   "Startup I*",     "A",     "Startup",     0, 100, 0.1,   False),
     (ParamId.I_ALGN,   "Align I*",       "A",     "Startup",     0, 100, 0.1,   False),

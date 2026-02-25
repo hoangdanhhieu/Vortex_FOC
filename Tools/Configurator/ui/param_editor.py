@@ -71,8 +71,10 @@ class ParamEditor(QWidget):
         self._measuring = False
 
     def _create_tab(self, group: str) -> QWidget:
-        widget = QWidget()
-        grid = QGridLayout(widget)
+        # Main widget to hold the grid
+        content_widget = QWidget()
+        grid = QGridLayout(content_widget)
+        grid.setContentsMargins(10, 10, 10, 10)
         grid.setColumnStretch(1, 1)
 
         params = get_params_by_group(group)
@@ -109,12 +111,13 @@ class ParamEditor(QWidget):
             btn.clicked.connect(lambda _, p=pid: self._set_param(p))
             grid.addWidget(btn, row, 3)
 
-        grid.setRowStretch(len(params), 1)
+        # Bottom helpers
+        last_row = len(params)
 
         # Add Measure R/L and Compute Flux buttons at the bottom for "Motor" group
         if group == "Motor":
             group_box = QGroupBox("Motor Parameter Helpers")
-            group_layout = QHBoxLayout(group_box)
+            group_layout = QHBoxLayout()
             
             self.btn_compute_flux = QPushButton("🧮 Compute Flux Linkage")
             self.btn_compute_flux.clicked.connect(self._compute_flux)
@@ -122,30 +125,30 @@ class ParamEditor(QWidget):
             self.btn_compute_flux.setToolTip("Calculates Flux from KV and Pole Pairs.")
             group_layout.addWidget(self.btn_compute_flux)
             
-            grid.addWidget(group_box, len(params) + 1, 0, 1, 4)
-            grid.setRowStretch(len(params) + 1, 0)
-            grid.setRowStretch(len(params) + 2, 1)
+            group_box.setLayout(group_layout)
+            grid.addWidget(group_box, last_row, 0, 1, 4)
+            last_row += 1
 
         # Add Start Identification button for "Motor ID" group
         if group == "Motor ID":
             group_box = QGroupBox("Identification Control")
-            group_layout = QHBoxLayout(group_box)
+            group_layout = QVBoxLayout() # Changed to vertical to be more robust
             
             self.btn_measure = QPushButton("⚡ Start Identification (RL Measure)")
             self.btn_measure.clicked.connect(self._measure_rl)
-            self.btn_measure.setFixedHeight(35)
-            self.btn_measure.setStyleSheet("font-weight: bold; color: #ff9800;")
+            self.btn_measure.setFixedHeight(40) # Increased height
+            self.btn_measure.setStyleSheet("font-weight: bold; font-size: 14px; color: #ff9800;")
             self.btn_measure.setToolTip("Start Motor ID (ensure motor is IDLE and free to spin)")
             group_layout.addWidget(self.btn_measure)
             
-            grid.addWidget(group_box, len(params) + 1, 0, 1, 4)
-            grid.setRowStretch(len(params) + 1, 0)
-            grid.setRowStretch(len(params) + 2, 1)
+            group_box.setLayout(group_layout)
+            grid.addWidget(group_box, last_row, 0, 1, 4)
+            last_row += 1
 
         # Add Auto-Compute button at the bottom for "Current PI" group
         if group == "Current PI":
             group_box = QGroupBox("PI Tuning Helper")
-            group_layout = QHBoxLayout(group_box)
+            group_layout = QHBoxLayout()
             
             self.btn_compute_pi = QPushButton("🧮 Auto-Compute PI from Rs/Ls")
             self.btn_compute_pi.clicked.connect(self._auto_compute_pi)
@@ -153,14 +156,14 @@ class ParamEditor(QWidget):
             self.btn_compute_pi.setToolTip("Calculates Kp=Ls*BW and Ki=Rs*BW using current Motor Rs and Ls values.")
             group_layout.addWidget(self.btn_compute_pi)
             
-            grid.addWidget(group_box, len(params) + 1, 0, 1, 4)
-            grid.setRowStretch(len(params) + 1, 0)
-            grid.setRowStretch(len(params) + 2, 1)
+            group_box.setLayout(group_layout)
+            grid.addWidget(group_box, last_row, 0, 1, 4)
+            last_row += 1
 
         # Add Alpha Calculator for "ADC" group
         if group == "ADC":
             group_box = QGroupBox("Filter Calculator")
-            group_layout = QHBoxLayout(group_box)
+            group_layout = QHBoxLayout()
             
             group_layout.addWidget(QLabel("Multiplier:"))
             self.spin_alpha_mult = QDoubleSpinBox()
@@ -180,11 +183,19 @@ class ParamEditor(QWidget):
             group_layout.addWidget(self.btn_compute_alpha)
             group_layout.addStretch()
             
-            grid.addWidget(group_box, len(params) + 1, 0, 1, 4)
-            grid.setRowStretch(len(params) + 1, 0)
-            grid.setRowStretch(len(params) + 2, 1)
+            group_box.setLayout(group_layout)
+            grid.addWidget(group_box, last_row, 0, 1, 4)
+            last_row += 1
 
-        return widget
+        # Add a stretch at the very end to push everything up
+        grid.setRowStretch(last_row, 1)
+
+        # Wrap in a scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setWidget(content_widget)
+        return scroll
 
     def _compute_flux(self):
         try:
