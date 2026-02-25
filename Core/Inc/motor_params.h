@@ -45,7 +45,7 @@
 #define MOTOR_MAX_SPEED_RPM 30000.0f
 
 /** Minimum speed for sensorless operation [RPM] */
-#define MOTOR_MIN_SPEED_RPM 500.0f
+#define MOTOR_MIN_SPEED_RPM 1000.0f
 
 /** Operating voltage range [V] */
 #define MOTOR_VBUS_MIN 10.0f

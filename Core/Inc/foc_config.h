@@ -161,8 +161,8 @@
 /* PI Controller Default Gains                                               */
 /*===========================================================================*/
 
-/** Current loop bandwidth [rad/s]*/
-#define CURRENT_LOOP_BW 4000.0f
+/** Current loop bandwidth [Hz]*/
+#define CURRENT_LOOP_BW 4800.0f
 
 /** Speed loop bandwidth [rad/s]*/
 #define SPEED_LOOP_BW 300.0f
@@ -204,9 +204,9 @@
 #define SMO_K_SIGMOID 30.0f
 
 /** SMO low-pass filter cutoff Hz */
-#define SMO_BEMF_CUTOFF 3183.0f
+#define SMO_BEMF_CUTOFF 8000.0f
 /** SMO PLL bandwidth Hz */
-#define SMO_PPL_CUTOFF 200.0f
+#define SMO_PPL_CUTOFF 500.0f
 
 /** SMO PLL integral limits [rad/s] - based on max expected electrical speed */
 /** Max mech RPM * pole_pairs * 2*PI/60 = max electrical rad/s */
@@ -236,6 +236,9 @@
 
 /** Minimum speed before switching to closed-loop [RPM] */
 #define STARTUP_HANDOFF_SPEED 1000.0f
+
+/** Transition blend duration from open-loop to closed-loop [ms] */
+#define TRANSITION_BLEND_MS 50
 
 /** Startup timeout [ms] - set to 0 to disable */
 #define STARTUP_TIMEOUT_MS 0

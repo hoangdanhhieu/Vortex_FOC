@@ -77,6 +77,7 @@ typedef struct {
         float omega_elec;
         float speed_rpm;
         float Vbus;
+        float Vbus_inv;
         float duty_a, duty_b, duty_c;
     } data;
 

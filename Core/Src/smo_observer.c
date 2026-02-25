@@ -36,13 +36,11 @@ CCMRAM_FUNC static inline float sigmoid(float x, float k) {
  * @brief Normalize angle to [-1, 1) range (corresponds to [-pi, pi))
  */
 CCMRAM_FUNC static inline float normalize_angle(float angle) {
-    while (angle >= 1.0f) {
-        angle -= 2.0f;
-    }
-    while (angle < -1.0f) {
-        angle += 2.0f;
-    }
-    return angle;
+    angle += 1.0f;
+    angle -= 2.0f * (float)((int)(angle * 0.5f));
+    if (angle >= 2.0f) angle -= 2.0f;
+    if (angle < 0.0f) angle += 2.0f;
+    return angle - 1.0f;
 }
 
 /*===========================================================================*/
@@ -131,14 +129,11 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     float theta_bemf = cordic_atan2(-smo->Ealpha_flt, smo->Ebeta_flt);
 
     /* Phase compensation for LPF lag */
-    /* lag = atan(omega * tau) */
-    /* Use CORDIC for atan2(omega*tau, 1.0) to get result in [-1, 1) range */
-    /* Note: cordic_atan2 return value is normalized [-1, 1) */
-    /* atan(x) returns rad, we need normalized. cordic_atan2(y, x) handles it. */
-    float phase_lag = cordic_atan2(smo->omega_est * smo->tau, 1.0f);
+    /* Small-angle approximation: atan(x) ≈ x when |omega*tau| << 1 */
+    /* Normalized to [-1, 1): divide by PI */
+    float phase_lag = smo->omega_est * smo->tau / PI;
 
-    float theta_comp = theta_bemf + phase_lag;
-    theta_comp = normalize_angle(theta_comp);
+    float theta_comp = normalize_angle(theta_bemf + phase_lag);
 
     /* PLL for smooth angle tracking */
     /* Use phase-compensated angle for PLL error */

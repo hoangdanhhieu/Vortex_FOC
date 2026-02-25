@@ -24,7 +24,7 @@ void FOC_StartSelfCommission(void);
 /* Global Instance                                                           */
 /*===========================================================================*/
 
-FOC_Control_t g_foc;
+FOC_Control_t g_foc __attribute__((aligned(4))); /* aligned for efficient FPU access */
 static volatile uint8_t foc_initialized = 0;
 
 /* Static filter state for current measurements */
@@ -39,7 +39,25 @@ static float s_Iq_filt = 0.0f;
 static uint8_t oc_count = 0;       /* Overcurrent deglitch counter */
 static uint32_t stall_counter = 0; /* Stall timer (ISR ticks) */
 
+/* Transition blending state (open-loop → closed-loop) */
+static float s_blend_alpha = 0.0f; /* 0 = open-loop, 1 = closed-loop */
+static uint32_t s_transition_counter = 0;
+static uint32_t s_transition_samples = 0;
+static uint8_t s_in_transition = 0;
+
 /* reverse is now g_foc.reverse */
+
+/**
+ * @brief Normalize angle to [-1, 1) range (corresponds to [-pi, pi))
+ */
+CCMRAM_FUNC static inline float normalize_angle_norm(float angle) {
+    angle += 1.0f;
+    angle -= 2.0f * (float)((int)(angle * 0.5f));
+    if (angle >= 2.0f) angle -= 2.0f;
+    if (angle < 0.0f) angle += 2.0f;
+    return angle - 1.0f;
+}
+
 /*===========================================================================*/
 /* Private Functions                                                         */
 /*===========================================================================*/
@@ -164,6 +182,11 @@ void FOC_Start(void) {
         /* Reset current filter */
         FOC_ResetCurrentFilter();
 
+        /* Reset transition state */
+        s_blend_alpha = 0.0f;
+        s_transition_counter = 0;
+        s_in_transition = 0;
+
         /* Enter calibration state */
         g_foc.adc_cal.offset_a = 0;
         g_foc.adc_cal.offset_b = 0;
@@ -241,6 +264,8 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_
                                        uint16_t adc_vbus) {
     if (!foc_initialized) return;
     g_foc.data.Vbus = foc_adc_to_vbus(adc_vbus);
+    if (g_foc.data.Vbus < 1.0f) g_foc.data.Vbus = 1.0f; /* Safety clamp */
+    g_foc.data.Vbus_inv = 1.0f / g_foc.data.Vbus;       /* Precompute once */
     g_foc.data.Ia = ((float)adc_ia - (float)g_foc.adc_cal.offset_a) * ADC_TO_CURRENT;
     g_foc.data.Ib = ((float)adc_ib - (float)g_foc.adc_cal.offset_b) * ADC_TO_CURRENT;
     g_foc.data.Ic = ((float)adc_ic - (float)g_foc.adc_cal.offset_c) * ADC_TO_CURRENT;
@@ -454,12 +479,7 @@ CCMRAM_FUNC static void FOC_StateStartup(void) {
     }
 
     g_foc.startup.theta += (g_foc.startup.omega * CONTROL_PERIOD) / PI;
-    while (g_foc.startup.theta >= 1.0f) {
-        g_foc.startup.theta -= 2.0f;
-    }
-    while (g_foc.startup.theta < -1.0f) {
-        g_foc.startup.theta += 2.0f;
-    }
+    g_foc.startup.theta = normalize_angle_norm(g_foc.startup.theta);
     g_foc.data.theta_elec = g_foc.startup.theta;
 
     park_transform(g_foc.data.Ialpha, g_foc.data.Ibeta, g_foc.data.theta_elec, &g_foc.data.Id,
@@ -472,7 +492,7 @@ CCMRAM_FUNC static void FOC_StateStartup(void) {
     /* Calculate startup voltage directly (open-loop) */
     float v_resistive = g_foc.cmd.Iq_ref * g_foc.cfg.motor_rs;
     float v_bemf = g_foc.startup.omega * g_foc.cfg.motor_flux; /* Back-EMF term */
-    float startup_voltage = v_resistive + v_bemf + 0.7f;
+    float startup_voltage = v_resistive + v_bemf + 0.3f;
 
     /* Ensure minimum voltage to overcome friction and start rotation */
     float min_voltage = -g_foc.data.Vbus / SQRT3; /* Minimum voltage [V] */
@@ -501,17 +521,29 @@ CCMRAM_FUNC static void FOC_StateStartup(void) {
     SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha, g_foc.data.Vbeta, g_foc.data.Ialpha,
                g_foc.data.Ibeta);
 
-    /* Check for transition to closed-loop */
 #if ENABLE_CLOSED_LOOP_HANDOFF
     if (g_foc.startup.omega >= handoff_omega * 0.9f) {
+        g_foc.ctrl.smo.pll_integral = g_foc.startup.omega;
+        g_foc.ctrl.smo.omega_est = g_foc.startup.omega;
+
         g_foc.ctrl.iq.integral = g_foc.data.Vq;
         g_foc.ctrl.id.integral = g_foc.data.Vd;
-        g_foc.ctrl.speed.integral = 0.0f;
-        if (g_foc.cmd.speed_ref_target > g_foc.startup.omega) {
+
+        s_Id_filt = g_foc.data.Id;
+        s_Iq_filt = g_foc.data.Iq;
+
+        if (g_foc.status.control_mode == FOC_MODE_SPEED) {
             g_foc.cmd.speed_ref = g_foc.startup.omega;
+            g_foc.ctrl.speed.integral = g_foc.cmd.Iq_ref;
         } else {
-            g_foc.cmd.speed_ref = g_foc.cmd.speed_ref_target;
+            g_foc.cmd.Iq_ref = g_foc.data.Iq;
         }
+        s_blend_alpha = 0.0f;
+        s_transition_counter = 0;
+        s_transition_samples = (uint32_t)(TRANSITION_BLEND_MS * 0.001f * (float)CONTROL_FREQUENCY);
+        if (s_transition_samples < 1) s_transition_samples = 1;
+        s_in_transition = 1;
+        g_foc.cmd.Id_ref = 0.0f;
         g_foc.status.state = FOC_STATE_RUN;
     }
 #endif
@@ -531,20 +563,45 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha, g_foc.data.Vbeta, g_foc.data.Ialpha,
                g_foc.data.Ibeta);
 
-    /* Use SMO angle for closed-loop control */
-    g_foc.data.theta_elec = SMO_GetAngle(&g_foc.ctrl.smo);
-    g_foc.data.omega_elec = SMO_GetSpeed(&g_foc.ctrl.smo);
-    g_foc.data.speed_rpm = SMO_GetSpeedRPM(&g_foc.ctrl.smo);
+    /* Get SMO estimates */
+    float smo_theta = SMO_GetAngle(&g_foc.ctrl.smo);
+    float smo_omega = SMO_GetSpeed(&g_foc.ctrl.smo);
+    float smo_speed_rpm = SMO_GetSpeedRPM(&g_foc.ctrl.smo);
+
+    if (s_in_transition) {
+        /* Linear blend from open-loop to SMO angle */
+        s_transition_counter++;
+        s_blend_alpha = (float)s_transition_counter / (float)s_transition_samples;
+        if (s_blend_alpha >= 1.0f) {
+            s_blend_alpha = 1.0f;
+            s_in_transition = 0;
+        }
+
+        /* Continue open-loop angle integration during transition */
+        g_foc.startup.theta += (g_foc.startup.omega * CONTROL_PERIOD) / PI;
+        g_foc.startup.theta = normalize_angle_norm(g_foc.startup.theta);
+
+        /* Blend angles: lerp with wrap-around handling */
+        float delta = normalize_angle_norm(smo_theta - g_foc.startup.theta);
+
+        g_foc.data.theta_elec = normalize_angle_norm(g_foc.startup.theta + s_blend_alpha * delta);
+
+        /* Blend speed similarly */
+        g_foc.data.omega_elec =
+            (1.0f - s_blend_alpha) * g_foc.startup.omega + s_blend_alpha * smo_omega;
+        g_foc.data.speed_rpm = (1.0f - s_blend_alpha) * (g_foc.startup.omega /
+                                                         g_foc.cfg.motor_poles * (60.0f / TWO_PI)) +
+                               s_blend_alpha * smo_speed_rpm;
+    } else {
+        g_foc.data.theta_elec = smo_theta;
+        g_foc.data.omega_elec = smo_omega;
+        g_foc.data.speed_rpm = smo_speed_rpm;
+    }
 
     /* Computational delay compensation */
     g_foc.data.theta_elec +=
         g_foc.data.omega_elec * (g_foc.cfg.comp_delay_samples * CONTROL_PERIOD) / PI;
-    while (g_foc.data.theta_elec >= 1.0f) {
-        g_foc.data.theta_elec -= 2.0f;
-    }
-    while (g_foc.data.theta_elec < -1.0f) {
-        g_foc.data.theta_elec += 2.0f;
-    }
+    g_foc.data.theta_elec = normalize_angle_norm(g_foc.data.theta_elec);
 
     /* Park transform */
     park_transform(g_foc.data.Ialpha, g_foc.data.Ibeta, g_foc.data.theta_elec, &g_foc.data.Id,
@@ -563,13 +620,11 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     /* Speed / Torque Control                                                */
     /*=======================================================================*/
     if (g_foc.status.control_mode == FOC_MODE_SPEED) {
-        /* Apply speed ramp limiting */
         float accel_rate =
             g_foc.cfg.speed_ramp_accel * RPM_TO_RAD * g_foc.cfg.motor_poles * CONTROL_PERIOD;
         float decel_rate =
             g_foc.cfg.speed_ramp_decel * RPM_TO_RAD * g_foc.cfg.motor_poles * CONTROL_PERIOD;
 
-        /* Ramp speed_ref towards target */
         float ramp_error = g_foc.cmd.speed_ref_target - g_foc.cmd.speed_ref;
 
         if (ramp_error > accel_rate) {

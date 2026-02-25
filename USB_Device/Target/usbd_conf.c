@@ -73,7 +73,7 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef *pcdHandle)
 {
     if (pcdHandle->Instance == USB) {
         /* USER CODE BEGIN USB_MspInit 0 */
-        //__HAL_RCC_USB_CONFIG(RCC_USBCLKSOURCE_HSI48)
+        //__HAL_RCC_USB_CONFIG(RCC_USBCLKSOURCE_HSI48); // Replace with HAL
         /* USER CODE END USB_MspInit 0 */
         __HAL_RCC_USB_CONFIG(RCC_USBCLKSOURCE_HSI48);
 
@@ -84,7 +84,6 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef *pcdHandle)
         HAL_NVIC_SetPriority(USB_LP_IRQn, 5, 0);
         HAL_NVIC_EnableIRQ(USB_LP_IRQn);
         /* USER CODE BEGIN USB_MspInit 1 */
-
         /* USER CODE END USB_MspInit 1 */
     }
 }

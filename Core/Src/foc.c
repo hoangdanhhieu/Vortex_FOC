@@ -46,22 +46,20 @@ CCMRAM_FUNC void inverse_park_transform(float Vd, float Vq, float theta, float* 
 #define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY * 2.0f)
 CCMRAM_FUNC void svpwm_calculate(float* Valpha, float* Vbeta, float Vbus, float Ia, float Ib,
                                  float Ic, float* duty_a, float* duty_b, float* duty_c) {
-    /* Safety: Prevent division by zero */
-    if (Vbus < 1.0f) {
-        Vbus = 1.0f; /* Minimum valid voltage */
-    }
+    /* Safety: Vbus_inv already precomputed in FOC_HighFrequencyTask */
+    float Vbus_inv = g_foc.data.Vbus_inv;
 
     /* Normalize voltages to Vbus */
-    float Vbus_inv = 1.0f / Vbus;
     float va_norm = *Valpha * Vbus_inv;
     float vb_norm = *Vbeta * Vbus_inv;
 
     /* Clamp voltage vector magnitude to SVPWM linear range */
-    /* Max radius of inscribed circle in voltage hexagon = 1/sqrt(3) */
-    float v_mag = cordic_modulus(va_norm, vb_norm);
-    const float V_MAX_NORM = SQRT3_INV; /* ~0.5774 */
-    if (v_mag > V_MAX_NORM) {
-        float scale = V_MAX_NORM / v_mag;
+    /* Compare v² against V_MAX² to avoid sqrt in common case */
+    float v_sq = va_norm * va_norm + vb_norm * vb_norm;
+    const float V_MAX_SQ = ONE_THIRD; /* (1/sqrt(3))² = 1/3 */
+    if (v_sq > V_MAX_SQ) {
+        float v_mag = cordic_modulus(va_norm, vb_norm);
+        float scale = SQRT3_INV / v_mag;
         va_norm *= scale;
         vb_norm *= scale;
     }
