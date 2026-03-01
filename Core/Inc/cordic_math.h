@@ -30,7 +30,7 @@
  */
 static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_out) {
     WRITE_REG(CORDIC->CSR, CORDIC_CFG_SINCOS);
-    __DSB();
+    (void)READ_REG(CORDIC->CSR);  // Ensure write CSR is completed
 
     int32_t angle_q31 = (int32_t)(angle_norm * CORDIC_SCALE_FACTOR);
 
@@ -61,7 +61,7 @@ static float inline cordic_atan2(float y, float x) {
     int32_t y_q31 = (int32_t)(y * scale);
 
     WRITE_REG(CORDIC->CSR, CORDIC_CFG_ATAN2);
-    __DSB();
+    (void)READ_REG(CORDIC->CSR);  // Ensure write CSR is completed
 
     LL_CORDIC_WriteData(CORDIC, (uint32_t)x_q31);
     LL_CORDIC_WriteData(CORDIC, (uint32_t)y_q31);
@@ -93,7 +93,7 @@ static inline float cordic_modulus(float x, float y) {
     int32_t y_q31 = (int32_t)(y * inv_max);
 
     WRITE_REG(CORDIC->CSR, CORDIC_CFG_MODULUS);
-    __DSB();
+    (void)READ_REG(CORDIC->CSR);  // Ensure write CSR is completed
 
     LL_CORDIC_WriteData(CORDIC, (uint32_t)x_q31);
     LL_CORDIC_WriteData(CORDIC, (uint32_t)y_q31);
