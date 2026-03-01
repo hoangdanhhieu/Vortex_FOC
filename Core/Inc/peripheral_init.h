@@ -13,7 +13,7 @@ extern "C" {
 
 #include "main.h"
 /* Exported variables --------------------------------------------------------*/
-extern volatile uint16_t adc_regular_buffer[2];
+extern volatile uint16_t adc_regular_buffer[];
 /* Exported functions prototypes ---------------------------------------------*/
 
 /**
