@@ -39,6 +39,7 @@ python main.py
 - [x] Offline Motor ID (Rs, Ls)
 - [x] High-Frequency PID Profiler (BIST)
 - [x] Python Configurator GUI integration
+- [ ] Flying Start
 - [ ] Field Weakening (Flux Weakening)
 - [ ] Online RLS Inductance tracking
 - [ ] PWM / DShot Input (1-Wire Interface)
