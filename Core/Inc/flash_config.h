@@ -20,7 +20,7 @@
 #define FLASH_CONFIG_PAGE 63
 #define FLASH_CONFIG_ADDR 0x0801F800UL
 #define FLASH_CONFIG_MAGIC 0xC0F1A500UL
-#define FLASH_CONFIG_VERSION 7
+#define FLASH_CONFIG_VERSION 8
 
 /*===========================================================================*/
 /* Configuration Structure                                                   */

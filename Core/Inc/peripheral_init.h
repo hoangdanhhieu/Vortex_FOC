@@ -40,6 +40,8 @@ void ADC_Setup(void);
 void Peripheral_Init(void);
 
 void TIM_Start(void);
+
+void CAPTURE_Start(void);
 #ifdef __cplusplus
 }
 #endif

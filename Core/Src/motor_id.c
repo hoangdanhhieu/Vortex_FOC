@@ -13,6 +13,20 @@
 
 #include "foc_config.h"
 #include "foc_state_machine.h"
+
+/*===========================================================================*/
+/* Internal Constants (not user-configurable)                                */
+/*===========================================================================*/
+#define ID_DUTY_STEP 0.005f
+#define ID_CURRENT_TOL 0.02f
+#define ID_VALID_COUNT 500
+#define ID_ALIGN_TIME_MS 500
+#define ID_RS_DELAY_MS 500
+#define ID_RS_SAMPLES 2000
+#define ID_LS_DECAY_MS 50
+#define ID_LS_DELAY_MS 200
+#define ID_LS_PULSE_SAMPLES 10
+#define ID_LS_PULSES 8
 /*===========================================================================*/
 /* Private Variables                                                         */
 /*===========================================================================*/
@@ -62,7 +76,7 @@ static void ls_reset_accumulators(void) {
 void ramp_current_duty(float* duty_a, float* duty_b, float* duty_c, float current,
                        float target_current) {
     if (first_run == 1) {
-        *duty_a = g_foc.cfg.id_duty_step;
+        *duty_a = ID_DUTY_STEP;
         *duty_b = 0.0f;
         *duty_c = 0.0f;
         first_run = 0;
@@ -70,21 +84,21 @@ void ramp_current_duty(float* duty_a, float* duty_b, float* duty_c, float curren
     }
     id_current_filter =
         (id_current_filter * (1 - CURRENT_FILTER_COEFF)) + (current * CURRENT_FILTER_COEFF);
-    float delta_current = fabs(id_current_filter - id_current_filter_prev);
-    if (delta_current < g_foc.cfg.id_current_tol) {
+    float delta_current = fabsf(id_current_filter - id_current_filter_prev);
+    if (delta_current < ID_CURRENT_TOL) {
         id_count_valid_current++;
     } else {
         id_count_valid_current = 0;
     }
-    if (id_count_valid_current >= (uint32_t)g_foc.cfg.id_valid_count) {
+    if (id_count_valid_current >= ID_VALID_COUNT) {
         float err = target_current - id_current_filter;
-        if (err < g_foc.cfg.id_current_tol) {
+        if (err < ID_CURRENT_TOL) {
             return;
         }
         if (err > 0)
-            *duty_a += g_foc.cfg.id_duty_step;
+            *duty_a += ID_DUTY_STEP;
         else
-            *duty_a -= g_foc.cfg.id_duty_step;
+            *duty_a -= ID_DUTY_STEP;
         *duty_b = 0.0f;
         *duty_c = 0.0f;
         id_count_valid_current = 0;
@@ -125,9 +139,8 @@ void MotorID_Start(void) {
     ls_sample_idx = 0;
     ls_start_current = 0.0f;
     ls_sweep_idx = 0;
-    id_result.ls_lut_count = 0;
+    // id_result.ls_lut_count = 0;
     ls_reset_accumulators();
-    g_foc.status.state = FOC_STATE_CALIBRATION;
 }
 
 void MotorID_Stop(void) {
@@ -174,8 +187,8 @@ void MotorID_RunStep(float ia, float ib, float vbus, float* duty_a, float* duty_
             FOC_EnableDriver(1, 1);
             FOC_EnableDriver(2, 1);
             FOC_EnableDriver(3, 0);
-            ramp_current_duty(duty_a, duty_b, duty_c, current, g_foc.cfg.id_align_current);
-            if (id_timer_ms >= (uint32_t)g_foc.cfg.id_align_time_ms) {
+            ramp_current_duty(duty_a, duty_b, duty_c, current, g_foc.cfg.motor_max_curr * 0.1f);
+            if (id_timer_ms >= ID_ALIGN_TIME_MS) {
                 id_result.state = MOTOR_ID_STATE_MEASURE_RS;
                 id_timer_ms = 0;
                 reset_ramp();
@@ -186,26 +199,28 @@ void MotorID_RunStep(float ia, float ib, float vbus, float* duty_a, float* duty_
             FOC_EnableDriver(1, 1);
             FOC_EnableDriver(2, 1);
             FOC_EnableDriver(3, 0);
-            if (id_timer_ms < (uint32_t)g_foc.cfg.id_rs_delay_ms) {
+            if (id_timer_ms < ID_RS_DELAY_MS) {
                 if (measure_th == 0) {
-                    ramp_current_duty(duty_a, duty_b, duty_c, current, g_foc.cfg.id_rs_current1);
+                    ramp_current_duty(duty_a, duty_b, duty_c, current,
+                                      g_foc.cfg.motor_max_curr * 0.05f);
                 } else {
-                    ramp_current_duty(duty_a, duty_b, duty_c, current, g_foc.cfg.id_rs_current2);
+                    ramp_current_duty(duty_a, duty_b, duty_c, current,
+                                      g_foc.cfg.motor_max_curr * 0.15f);
                 }
             }
-            if (id_timer_ms >= (uint32_t)g_foc.cfg.id_rs_delay_ms) {
+            if (id_timer_ms >= ID_RS_DELAY_MS) {
                 measure_current[measure_th] += current;
                 measure_voltage[measure_th] += vbus * (*duty_a);
                 id_sample_count++;
             }
-            if (id_sample_count >= (uint32_t)g_foc.cfg.id_rs_samples) {
+            if (id_sample_count >= ID_RS_SAMPLES) {
                 if (measure_th == 0) {
                     measure_th = 1;
                     id_timer_ms = 0;
                     id_sample_count = 0;
                     reset_ramp();
                 } else {
-                    float inv_samples = 1.0f / (float)g_foc.cfg.id_rs_samples;
+                    float inv_samples = 1.0f / (float)ID_RS_SAMPLES;
                     float I_1_avg = measure_current[0] * inv_samples;
                     float I_2_avg = measure_current[1] * inv_samples;
                     float V_1_avg = measure_voltage[0] * inv_samples;
@@ -259,7 +274,7 @@ void MotorID_RunStep(float ia, float ib, float vbus, float* duty_a, float* duty_
             switch (ls_phase) {
                 case 0:
                     ramp_current_duty(duty_a, duty_b, duty_c, current, 0.0f);
-                    if (id_timer_ms >= ((uint32_t)g_foc.cfg.id_ls_decay_ms / 10 + 1)) {
+                    if (id_timer_ms >= ((uint32_t)ID_LS_DECAY_MS / 10 + 1)) {
                         ls_phase = 1;
                         ls_sample_idx = 0;
                         id_timer_ms = 0;
@@ -270,7 +285,7 @@ void MotorID_RunStep(float ia, float ib, float vbus, float* duty_a, float* duty_
                     ls_base_duty_a = *duty_a;
                     ls_base_duty_b = *duty_b;
                     ls_base_duty_c = *duty_c;
-                    if (id_timer_ms >= (uint32_t)g_foc.cfg.id_ls_delay_ms) {
+                    if (id_timer_ms >= ID_LS_DELAY_MS) {
                         ls_phase = 2;
                         ls_sample_idx = 0;
                         id_timer_ms = 0;
@@ -281,7 +296,7 @@ void MotorID_RunStep(float ia, float ib, float vbus, float* duty_a, float* duty_
                     }
                     break;
                 case 2:
-                    *duty_a = ls_base_duty_a + g_foc.cfg.id_ls_pulse_v / vbus;
+                    *duty_a = ls_base_duty_a + 0.15f;
                     *duty_b = ls_base_duty_b;
                     *duty_c = ls_base_duty_c;
 
@@ -293,15 +308,14 @@ void MotorID_RunStep(float ia, float ib, float vbus, float* duty_a, float* duty_
                             id_result.measured_rs * (current - ls_start_current) * CONTROL_PERIOD_F;
                     }
 
-                    if (ls_sample_idx >= (int)g_foc.cfg.id_ls_pulse_samples - 1) {
+                    if (ls_sample_idx >= ID_LS_PULSE_SAMPLES - 1) {
                         /* Final sample of pulse */
-                        ls_sum_V_dt += g_foc.cfg.id_ls_pulse_v *
-                                       ((float)g_foc.cfg.id_ls_pulse_samples - 1.0f) *
-                                       CONTROL_PERIOD_F;
+                        ls_sum_V_dt +=
+                            vbus * 0.15f * ((float)ID_LS_PULSE_SAMPLES - 1.0f) * CONTROL_PERIOD_F;
                         ls_sum_I_diff += (current - ls_start_current);
 
                         ls_pulse_count++;
-                        if (ls_pulse_count >= (int)g_foc.cfg.id_ls_pulses) {
+                        if (ls_pulse_count >= ID_LS_PULSES) {
                             ls_phase = 3;
                         } else {
                             ls_phase = 0;
@@ -324,11 +338,11 @@ void MotorID_RunStep(float ia, float ib, float vbus, float* duty_a, float* duty_
                         id_result.measured_ls = measured_ls;
                     }
 
-                    if (ls_sweep_idx < MOTOR_ID_MAX_LUT_SIZE && id_result.error_code == 0) {
-                        id_result.ls_lut_currents[ls_sweep_idx] = current_target;
-                        id_result.ls_lut_values[ls_sweep_idx] = measured_ls;
-                        id_result.ls_lut_count++;
-                    }
+                    // if (ls_sweep_idx < MOTOR_ID_MAX_LUT_SIZE && id_result.error_code == 0) {
+                    //     id_result.ls_lut_currents[ls_sweep_idx] = current_target;
+                    //     id_result.ls_lut_values[ls_sweep_idx] = measured_ls;
+                    //     id_result.ls_lut_count++;
+                    // }
 
                     ls_sweep_idx++;
                     if (ls_sweep_idx >= 1 || id_result.error_code != 0) {

@@ -84,6 +84,10 @@ class MainWindow(QMainWindow):
         self._serial.error.connect(self._on_error)
 
     def _on_connection_changed(self, connected: bool):
+        self.param_editor.set_enabled_state(connected)
+        self.ctrl_panel.set_enabled_state(connected)
+        self.bist_panel.set_enabled_state(connected)
+        
         if connected:
             self.status_bar.showMessage("Connected")
             self._status_timer.start(500)

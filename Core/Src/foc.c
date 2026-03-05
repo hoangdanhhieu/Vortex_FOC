@@ -5,18 +5,11 @@
 #include "cordic_math.h"
 #include "foc_config.h"
 #include "foc_state_machine.h"
-#include "stm32g4xx_ll_tim.h"
 
 /*===========================================================================*/
 /* Space Vector PWM                                                          */
 /*===========================================================================*/
 
-/*
- * Dead-time compensation constant (Duty cycle equivalent)
- * D_dead = T_dead / T_pwm = T_dead * F_pwm
- * Factor 2.0 covers total loss (rise+fall or effective pulse width reduction)
- */
-#define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY * 2.0f)
 CCMRAM_FUNC void svpwm_calculate(void) {
     /* Safety: Vbus_inv already precomputed in FOC_HighFrequencyTask */
     float Vbus_inv = g_foc.data.Vbus_inv;
@@ -58,23 +51,20 @@ CCMRAM_FUNC void svpwm_calculate(void) {
     float db = (Vb - Voffset) + 0.5f;
     float dc = (Vc - Voffset) + 0.5f;
 
-    /* Apply Dead-time Compensation directly to Duty Cycles */
-    const float I_threshold = 0.5f;
+    /* Apply Dead-time Compensation based on voltage reference direction */
     float dt_comp = DEAD_TIME_DUTY;
 
-    if (g_foc.data.Ia > I_threshold)
+    if (da > 0.5f)
         da += dt_comp;
-    else if (g_foc.data.Ia < -I_threshold)
+    else
         da -= dt_comp;
-
-    if (g_foc.data.Ib > I_threshold)
+    if (db > 0.5f)
         db += dt_comp;
-    else if (g_foc.data.Ib < -I_threshold)
+    else
         db -= dt_comp;
-
-    if (g_foc.data.Ic > I_threshold)
+    if (dc > 0.5f)
         dc += dt_comp;
-    else if (g_foc.data.Ic < -I_threshold)
+    else
         dc -= dt_comp;
 
     /* Clamp duty cycles to valid range [0, 1] */

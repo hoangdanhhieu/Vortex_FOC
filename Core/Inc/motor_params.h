@@ -50,7 +50,6 @@
 /** Operating voltage range [V] */
 #define MOTOR_VBUS_MIN 10.0f
 #define MOTOR_VBUS_MAX 16.8f
-#define MOTOR_VBUS_NOMINAL 12.8f
 
 /*===========================================================================*/
 /* Derived Constants (calculated at compile time)                            */

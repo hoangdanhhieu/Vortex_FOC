@@ -10,8 +10,8 @@
 
 #include "cordic_math.h"
 #include "foc_config.h"
+#include "math.h"
 #include "motor_params.h"
-
 /*===========================================================================*/
 /* Constants                                                                 */
 /*===========================================================================*/
@@ -28,7 +28,7 @@
  */
 CCMRAM_FUNC static inline float sigmoid(float x, float k) {
     /* Fast sigmoid: x / (|x| + k) */
-    float abs_x = (x >= 0.0f) ? x : -x;
+    float abs_x = fabsf(x);
     return x / (abs_x + k);
 }
 
@@ -62,10 +62,8 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->k_slide = SMO_K_SLIDE;
     smo->k_sigmoid = SMO_K_SIGMOID;
 
-    /* Calculate LPF coefficient from cutoff frequency */
-    /* flt_coeff = dt / (dt + tau) */
-    /* tau = 1/(2*PI*f_cutoff_Hz) — cutoff frequency in Hz needs 2π conversion */
-    smo->tau = 1.0f / (TWO_PI * SMO_BEMF_CUTOFF);
+    /* Initial LPF coefficient (dynamically updated in SMO_Update based on speed) */
+    smo->tau = 1.0f / 60.0f;
     smo->lpf_coeff = CONTROL_PERIOD / (CONTROL_PERIOD + smo->tau);
 
     /* PLL gains for angle tracking */
@@ -97,6 +95,24 @@ void SMO_Reset(SMO_Observer_t* smo) {
     smo->pll_integral = 0.0f;
 }
 
+CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
+    float theta_bemf = cordic_atan2(-smo->Ealpha_flt, smo->Ebeta_flt);
+    float phase_lag = smo->omega_est * smo->tau / PI;
+    float theta_comp = normalize_angle(theta_bemf + phase_lag);
+    float theta_err = normalize_angle(theta_comp - smo->theta_est);
+
+    smo->pll_integral += smo->pll_ki * theta_err * smo->dt;
+    if (smo->pll_integral > smo->pll_int_max) {
+        smo->pll_integral = smo->pll_int_max;
+    } else if (smo->pll_integral < smo->pll_int_min) {
+        smo->pll_integral = smo->pll_int_min;
+    }
+
+    smo->omega_est = smo->pll_kp * theta_err + smo->pll_integral;
+    smo->theta_est += (smo->omega_est / PI) * smo->dt;
+    smo->theta_est = normalize_angle(smo->theta_est);
+}
+
 CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, float Ialpha,
                             float Ibeta) {
     float Ialpha_err = smo->Ialpha_est - Ialpha;
@@ -108,6 +124,8 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     smo->Ealpha = Zalpha;
     smo->Ebeta = Zbeta;
 
+    smo->tau = 1.0f / (fabsf(smo->omega_est) * 2.0f + 60.0f);
+    smo->lpf_coeff = CONTROL_PERIOD / (CONTROL_PERIOD + smo->tau);
     smo->Ealpha_flt += smo->lpf_coeff * (smo->Ealpha - smo->Ealpha_flt);
     smo->Ebeta_flt += smo->lpf_coeff * (smo->Ebeta - smo->Ebeta_flt);
 
@@ -119,46 +137,7 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     smo->Ialpha_est += dIalpha * smo->dt;
     smo->Ibeta_est += dIbeta * smo->dt;
 
-    /* Angle estimation using atan2 on filtered back-EMF */
-    /* Note: BEMF leads current by 90°, so we use -Ealpha, -Ebeta */
-    /* The BEMF is: E = -d(flux)/dt, and for PMSM: E_alpha = -omega * flux *
-     * sin(theta) */
-    /*                                             E_beta = omega * flux *
-     * cos(theta)  */
-    /* So theta = atan2(-Ealpha, Ebeta) */
-    float theta_bemf = cordic_atan2(-smo->Ealpha_flt, smo->Ebeta_flt);
-
-    /* Phase compensation for LPF lag */
-    /* Small-angle approximation: atan(x) ≈ x when |omega*tau| << 1 */
-    /* Normalized to [-1, 1): divide by PI */
-    float phase_lag = smo->omega_est * smo->tau / PI;
-
-    float theta_comp = normalize_angle(theta_bemf + phase_lag);
-
-    /* PLL for smooth angle tracking */
-    /* Use phase-compensated angle for PLL error */
-    float theta_err = theta_comp - smo->theta_est;
-
-    /* Normalize error to [-1, 1) */
-    theta_err = normalize_angle(theta_err);
-
-    /* PLL PI controller */
-    smo->pll_integral += smo->pll_ki * theta_err * smo->dt;
-
-    /* Clamp PLL integral to prevent windup */
-    if (smo->pll_integral > smo->pll_int_max) {
-        smo->pll_integral = smo->pll_int_max;
-    } else if (smo->pll_integral < smo->pll_int_min) {
-        smo->pll_integral = smo->pll_int_min;
-    }
-
-    smo->omega_est = smo->pll_kp * theta_err + smo->pll_integral;
-
-    /* Integrate speed to get angle */
-    /* omega_est is in rad/s, need to convert to normalized angle rate */
-    /* d(theta_norm)/dt = omega / PI */
-    smo->theta_est += (smo->omega_est / PI) * smo->dt;
-    smo->theta_est = normalize_angle(smo->theta_est);
+    SMO_PLL_Track(smo);
 }
 
 float SMO_GetAngle(SMO_Observer_t* smo) {
@@ -186,10 +165,15 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float flux_link
     smo->poles = poles;
 }
 
-void SMO_SetFilterParams(SMO_Observer_t* smo, float bemf_cutoff_hz, float pll_cutoff_hz) {
-    smo->tau = 1.0f / (TWO_PI * bemf_cutoff_hz);
-    smo->lpf_coeff = CONTROL_PERIOD / (CONTROL_PERIOD + smo->tau);
-
+void SMO_SetFilterParams(SMO_Observer_t* smo, float pll_cutoff_hz) {
     smo->pll_kp = 2.0f * TWO_PI * pll_cutoff_hz;
     smo->pll_ki = smo->pll_kp * smo->pll_kp / 4.0f;
+}
+
+CCMRAM_FUNC void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta) {
+    smo->tau = 1.0f / (fabsf(smo->omega_est) * 2.0f + 60.0f);
+    smo->lpf_coeff = CONTROL_PERIOD / (CONTROL_PERIOD + smo->tau);
+    smo->Ealpha_flt += smo->lpf_coeff * (Ealpha - smo->Ealpha_flt);
+    smo->Ebeta_flt += smo->lpf_coeff * (Ebeta - smo->Ebeta_flt);
+    SMO_PLL_Track(smo);
 }

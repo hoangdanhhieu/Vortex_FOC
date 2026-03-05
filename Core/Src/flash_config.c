@@ -122,34 +122,25 @@ void FlashConfig_LoadDefaults(void) {
 #define PARAM_DEF(id, type, name, default_val) g_config.name = default_val;
 #include "param_table.def"
 
-    /* Compute CRC */
     g_config.crc = config_compute_crc(&g_config);
 }
 
 void FlashConfig_Init(void) {
-    /* Try to load from Flash */
     if (config_validate(FLASH_CONFIG_PTR)) {
-        /* Valid config found in Flash — copy to RAM */
         memcpy(&g_config, FLASH_CONFIG_PTR, sizeof(FlashConfig_t));
     } else {
-        /* No valid config — load defaults and auto-save to Flash */
         FlashConfig_LoadDefaults();
         FlashConfig_Save();
     }
 }
 
 void FlashConfig_Apply(void) {
-    /* Copy entire configuration to live FOC structure in one operation */
-    /* Note: ISR might be running, but g_foc.cfg is mostly used for parameters,
-       so a simple memcpy is acceptable as long as we update dependents afterwards. */
     memcpy(&g_foc.cfg, &g_config, sizeof(FlashConfig_t));
 
-    /* Apply Direction (Forward/Reverse) */
     FOC_SetDirection(g_foc.cfg.direction);
 
-    /* Update PI Controllers */
     float i_limit = g_foc.cfg.motor_max_curr;
-    float v_limit = g_foc.cfg.motor_nom_vbus * SQRT3_INV; /* Vbus / sqrt(3) */
+    float v_limit = g_foc.data.Vbus * SQRT3_INV; /* Vbus / sqrt(3) */
 
     PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
     PI_SetIntLimits(&g_foc.ctrl.id, -v_limit, v_limit);
@@ -170,7 +161,7 @@ void FlashConfig_Apply(void) {
     SMO_SetMotorParams(&g_foc.ctrl.smo, g_foc.cfg.motor_rs, g_foc.cfg.motor_ls,
                        g_foc.cfg.motor_flux, g_foc.cfg.motor_poles);
     SMO_SetGains(&g_foc.ctrl.smo, g_foc.cfg.smo_k_slide, g_foc.cfg.smo_k_sigmoid);
-    SMO_SetFilterParams(&g_foc.ctrl.smo, g_foc.cfg.smo_bemf_cutoff, g_foc.cfg.smo_pll_cutoff);
+    SMO_SetFilterParams(&g_foc.ctrl.smo, g_foc.cfg.smo_pll_cutoff);
 
     /* Update hardware-level constraints (ADC trigger shifting & Max Duty) */
     float margin = g_foc.cfg.adc_margin_ticks;

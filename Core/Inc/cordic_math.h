@@ -1,6 +1,7 @@
 #ifndef CORDIC_MATH_H
 #define CORDIC_MATH_H
 
+#include <math.h>
 #include <stdint.h>
 
 #include "stm32g4xx_ll_cordic.h"
@@ -51,8 +52,8 @@ static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_ou
  * @return Normalized angle [-1, 1) representing [-π, π)
  */
 static float inline cordic_atan2(float y, float x) {
-    float abs_x = (x >= 0.0f) ? x : -x;
-    float abs_y = (y >= 0.0f) ? y : -y;
+    float abs_x = fabsf(x);
+    float abs_y = fabsf(y);
     float max_val = (abs_x > abs_y) ? abs_x : abs_y;
     if (max_val < 1e-9f) return 0.0f;
 
@@ -83,8 +84,8 @@ static float inline cordic_atan2(float y, float x) {
  *       result is scaled back. Single CORDIC call, ~6 cycles.
  */
 static inline float cordic_modulus(float x, float y) {
-    float abs_x = (x >= 0.0f) ? x : -x;
-    float abs_y = (y >= 0.0f) ? y : -y;
+    float abs_x = fabsf(x);
+    float abs_y = fabsf(y);
     float max_val = (abs_x > abs_y) ? abs_x : abs_y;
     if (max_val < 1e-9f) return 0.0f;
 

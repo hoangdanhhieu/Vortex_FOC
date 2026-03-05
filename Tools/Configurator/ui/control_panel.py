@@ -3,17 +3,19 @@
 from PySide6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
     QLabel, QDoubleSpinBox, QSpinBox, QSlider, QComboBox, QWidget,
+    QGraphicsOpacityEffect
 )
 from PySide6.QtCore import Qt
 
 from core.serial_comm import SerialThread
 from core import protocol
 from ui.styles import GREEN, RED, TEXT_DIM, YELLOW
+from ui.widgets import WheelDoubleSpinBox
 
-STATE_NAMES = ["IDLE", "CAL", "ALIGN", "STARTUP", "RUN", "STOP", "FAULT", "IDENT"]
+STATE_NAMES = ["IDLE", "CAL", "DETECT", "FLY_START", "ALIGN", "STARTUP", "RUN", "STOP", "FAULT", "IDENT"]
 STATE_COLORS = {
     0: TEXT_DIM, 1: YELLOW, 2: YELLOW, 3: YELLOW,
-    4: GREEN, 5: YELLOW, 6: RED, 7: YELLOW,
+    4: YELLOW, 5: YELLOW, 6: GREEN, 7: YELLOW, 8: RED, 9: YELLOW,
 }
 
 
@@ -21,6 +23,11 @@ class ControlPanel(QGroupBox):
     def __init__(self, serial_thread: SerialThread, parent=None):
         super().__init__("Motor Control", parent)
         self._serial = serial_thread
+
+        # Opacity effect for disconnected state
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self.set_enabled_state(False) # Default to disabled
 
         layout = QVBoxLayout(self)
 
@@ -49,7 +56,7 @@ class ControlPanel(QGroupBox):
         # Speed
         spd_group = QGroupBox("Speed (RPM)")
         spd_layout = QVBoxLayout(spd_group)
-        self.spd_spin = QDoubleSpinBox()
+        self.spd_spin = WheelDoubleSpinBox()
         self.spd_spin.setRange(0, 30000)
         self.spd_spin.setDecimals(0)
         self.spd_spin.setSingleStep(100)
@@ -62,7 +69,7 @@ class ControlPanel(QGroupBox):
         # Torque
         trq_group = QGroupBox("Torque (%)")
         trq_layout = QVBoxLayout(trq_group)
-        self.trq_spin = QDoubleSpinBox()
+        self.trq_spin = WheelDoubleSpinBox()
         self.trq_spin.setRange(-100.0, 100.0)
         self.trq_spin.setDecimals(1)
         self.trq_spin.setSingleStep(1.0)
@@ -92,6 +99,11 @@ class ControlPanel(QGroupBox):
 
         # Connect status signal
         self._serial.status_received.connect(self._update_status)
+
+    def set_enabled_state(self, enabled: bool):
+        """Update UI state based on connection status."""
+        self.setEnabled(enabled)
+        self._fade_effect.setOpacity(1.0 if enabled else 0.4)
 
     def _on_start(self):
         self._serial.send(protocol.build_simple(protocol.CmdType.START))

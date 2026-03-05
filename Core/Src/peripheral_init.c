@@ -138,7 +138,7 @@ void ADC_Setup(void) {
     while (LL_ADC_IsActiveFlag_ADRDY(ADC2) == 0);
 }
 
-void ADC_start() {
+void ADC_Start() {
     if (LL_ADC_IsEnabled(ADC1)) {
         LL_ADC_Disable(ADC1);
         while (LL_ADC_IsEnabled(ADC1));
@@ -165,7 +165,7 @@ void ADC_start() {
     LL_DMA_ConfigAddresses(DMA1, LL_DMA_CHANNEL_1,
                            LL_ADC_DMA_GetRegAddr(ADC1, LL_ADC_DMA_REG_REGULAR_DATA),
                            (uint32_t)&adc_regular_buffer, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
-    LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 2);
+    LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 4);
     LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
 
     LL_ADC_Enable(ADC1);
@@ -193,6 +193,11 @@ void TIM_Start(void) {
     LL_TIM_EnableIT_UPDATE(TIM6);
 }
 
+void CAPTURE_Start() {
+    LL_TIM_EnableCounter(TIM4);
+    LL_TIM_EnableDMAReq_CC2(TIM4);
+}
+
 /**
  * @brief  Initialize all peripherals for FOC operation
  */
@@ -201,6 +206,7 @@ void Peripheral_Init(void) {
     OPAMP_Calibration_ADC(OPAMP1, ADC1, LL_ADC_CHANNEL_VOPAMP1);
     OPAMP_Calibration_ADC(OPAMP2, ADC2, LL_ADC_CHANNEL_VOPAMP2);
     OPAMP_Calibration_ADC(OPAMP3, ADC2, LL_ADC_CHANNEL_VOPAMP3_ADC2);
-    ADC_start();
+    ADC_Start();
     TIM_Start();
+    CAPTURE_Start();
 }

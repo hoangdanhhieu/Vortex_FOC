@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QTimer
 from core.serial_comm import SerialThread
 from core import protocol
 from ui.styles import BG_BASE, TEXT
-
+from ui.widgets import WheelDoubleSpinBox
 
 # Plot colors
 COLORS = {
@@ -68,7 +68,7 @@ class PlotPanel(QWidget):
         toolbar.addStretch()
 
         toolbar.addWidget(QLabel("Window:"))
-        self.spin_window = QDoubleSpinBox()
+        self.spin_window = WheelDoubleSpinBox()
         self.spin_window.setRange(0.01, 1.0)
         self.spin_window.setValue(DEFAULT_WINDOW)
         self.spin_window.setSuffix(" s")
@@ -80,7 +80,7 @@ class PlotPanel(QWidget):
 
         toolbar.addSpacing(10)
         toolbar.addWidget(QLabel("Smoothness:"))
-        self.spin_smooth = QDoubleSpinBox()
+        self.spin_smooth = WheelDoubleSpinBox()
         self.spin_smooth.setRange(0.0, 0.99)
         self.spin_smooth.setSingleStep(0.05)
         self.spin_smooth.setValue(0.0)

@@ -20,6 +20,8 @@
 typedef enum {
     FOC_STATE_IDLE = 0,       /**< Motor stopped, waiting for start command */
     FOC_STATE_CALIBRATION,    /**< ADC offset calibration */
+    FOC_STATE_DETECT,         /**< BEMF detection (flying start or normal) */
+    FOC_STATE_FLYING_START,   /**< PLL locking on BEMF for flying start */
     FOC_STATE_ALIGN,          /**< Rotor alignment */
     FOC_STATE_STARTUP,        /**< Open-loop ramp-up */
     FOC_STATE_RUN,            /**< Closed-loop FOC running */
@@ -70,6 +72,7 @@ typedef struct {
     struct {
         float Ia, Ib, Ic;
         float Ialpha, Ibeta;
+        float Vphase_a, Vphase_b, Vphase_c;
         float Id, Iq;
         float Vd, Vq;
         float Valpha, Vbeta;
@@ -225,3 +228,8 @@ void FOC_SetDirection(int8_t dir);
 int8_t FOC_GetDirection(void);
 
 #endif /* FOC_STATE_MACHINE_H */
+
+/**
+ * @brief Play a tune
+ */
+void playTune(void);
