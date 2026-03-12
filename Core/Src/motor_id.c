@@ -17,9 +17,9 @@
 /*===========================================================================*/
 /* Internal Constants (not user-configurable)                                */
 /*===========================================================================*/
-#define ID_DUTY_STEP 0.005f
-#define ID_CURRENT_TOL 0.02f
-#define ID_VALID_COUNT 500
+#define ID_DUTY_STEP 0.01f
+#define ID_CURRENT_TOL 0.1f
+#define ID_VALID_COUNT 100
 #define ID_ALIGN_TIME_MS 500
 #define ID_RS_DELAY_MS 500
 #define ID_RS_SAMPLES 2000
@@ -331,7 +331,7 @@ void MotorID_RunStep(float ia, float ib, float vbus, float* duty_a, float* duty_
                     if (ls_sum_I_diff > 0.001f) {
                         measured_ls = (ls_sum_V_dt - ls_sum_R_Idt) / ls_sum_I_diff;
                     } else {
-                        id_result.error_code = 1;
+                        id_result.error_code = 2;
                     }
 
                     if (ls_sweep_idx == 0) {
