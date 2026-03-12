@@ -62,7 +62,7 @@ extern volatile float ADC_Vref;
 #define TIM1_COUNTER_MAX TIM1_ARR
 
 /** Dead-time duration in nanoseconds (for compensation) */
-#define DEAD_TIME_NS (500.0f)
+#define DEAD_TIME_NS (0.0f)
 
 #define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY)
 /*===========================================================================*/
@@ -230,7 +230,7 @@ extern volatile float ADC_Vref;
 #define STARTUP_HANDOFF_SPEED 1000.0f
 
 /** Transition blend duration from open-loop to closed-loop [ms] */
-#define TRANSITION_BLEND_MS (5000.0f / (TWO_PI * SMO_PPL_CUTOFF))
+#define TRANSITION_BLEND_MS (500.0f / (TWO_PI * SMO_PPL_CUTOFF))
 
 /** Startup timeout [ms] - set to 0 to disable */
 #define STARTUP_TIMEOUT_MS 0
