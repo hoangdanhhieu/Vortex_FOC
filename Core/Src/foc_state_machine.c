@@ -237,7 +237,7 @@ void FOC_Start(void) {
 }
 
 void FOC_Stop(void) {
-    if (g_foc.status.state == FOC_STATE_STARTUP) {
+    if (g_foc.status.state == FOC_STATE_STARTUP || 1) {
         s_stopping = 0;
     } else if (g_foc.status.state == FOC_STATE_RUN) {
         s_saved_speed_target = g_foc.cmd.speed_ref_target;
@@ -330,9 +330,11 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_
     clarke_transform(g_foc.data.Ia, g_foc.data.Ib, &g_foc.data.Ialpha, &g_foc.data.Ibeta);
 
     if (g_foc.status.state == FOC_STATE_DETECT || g_foc.status.state == FOC_STATE_FLYING_START) {
-        g_foc.data.Vphase_a = ((float)adc_regular_buffer[1] - 1970) * (21.0f * ADC_Vref / 4096.0f);
-        g_foc.data.Vphase_b = ((float)adc_regular_buffer[2] - 1960) * (21.0f * ADC_Vref / 4096.0f);
-        g_foc.data.Vphase_c = ((float)adc_regular_buffer[3] - 1950) * (21.0f * ADC_Vref / 4096.0f);
+        g_foc.data.Vphase_a =
+            ((float)adc_regular_buffer[1] - 1990) * (20.841f * ADC_Vref / 4096.0f);
+        g_foc.data.Vphase_b = ((float)adc_regular_buffer[2] - 1975) * (21.0f * ADC_Vref / 4096.0f);
+        g_foc.data.Vphase_c =
+            ((float)adc_regular_buffer[3] - 1967) * (21.085f * ADC_Vref / 4096.0f);
     }
 
     switch (g_foc.status.state) {
@@ -443,10 +445,14 @@ void FOC_ResetCurrentFilter(void) {
 /*===========================================================================*/
 
 static void FOC_StateIdle(void) {
-    playTune();
-    FOC_EnableDriver(1, 1);
-    FOC_EnableDriver(2, 1);
+    // playTune();
+    FOC_EnableDriver(1, 0);
+    FOC_EnableDriver(2, 0);
     FOC_EnableDriver(3, 0);
+
+    g_foc.data.duty_a = 0.5f;
+    g_foc.data.duty_b = 0.5f;
+    g_foc.data.duty_c = 0.5f;
 }
 
 static void FOC_StateCalibration(void) {
@@ -589,7 +595,7 @@ CCMRAM_FUNC static void FOC_StateStartup(void) {
     /* Calculate startup voltage directly (open-loop) */
     float v_resistive = g_foc.cmd.Iq_ref * g_foc.cfg.motor_rs;
     float v_bemf = g_foc.startup.omega * g_foc.cfg.motor_flux; /* Back-EMF term */
-    float startup_voltage = v_resistive + v_bemf;
+    float startup_voltage = v_resistive + v_bemf + 0.3;
 
     /* Ensure minimum voltage to overcome friction and start rotation */
     float min_voltage = -g_foc.data.Vbus / SQRT3; /* Minimum voltage [V] */
@@ -650,7 +656,6 @@ CCMRAM_FUNC static void FOC_StateStartup(void) {
         g_foc.status.fault = FOC_FAULT_STARTUP_FAIL;
         g_foc.status.state = FOC_STATE_FAULT;
     }
-    `
 #endif
 }
 
