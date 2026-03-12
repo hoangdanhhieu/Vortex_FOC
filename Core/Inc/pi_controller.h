@@ -6,6 +6,7 @@
 #ifndef PI_CONTROLLER_H
 #define PI_CONTROLLER_H
 
+#include "foc_config.h"
 /**
  * @brief PI Controller structure
  */
@@ -43,7 +44,35 @@ void PI_Reset(PI_Controller_t* pi);
  * @param error Error signal (reference - feedback)
  * @return Controller output
  */
-float PI_Update(PI_Controller_t* pi, float error);
+CCMRAM_FUNC static inline float PI_Update(PI_Controller_t* pi, float error) {
+    float p_term = pi->Kp * error;
+
+    float new_integral = pi->integral + pi->Ki * error * pi->dt;
+
+    if (new_integral > pi->int_max) {
+        new_integral = pi->int_max;
+    } else if (new_integral < pi->int_min) {
+        new_integral = pi->int_min;
+    }
+
+    float output = p_term + new_integral;
+
+    if (output > pi->out_max) {
+        output = pi->out_max;
+        if (error < 0.0f) {
+            pi->integral = new_integral;
+        }
+    } else if (output < pi->out_min) {
+        output = pi->out_min;
+        if (error > 0.0f) {
+            pi->integral = new_integral;
+        }
+    } else {
+        pi->integral = new_integral;
+    }
+
+    return output;
+}
 
 /**
  * @brief Set PI gains at runtime

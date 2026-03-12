@@ -3,14 +3,15 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QLabel, QDoubleSpinBox, QPushButton, QGridLayout,
-    QGroupBox, QScrollArea, QMessageBox
+    QGroupBox, QScrollArea, QMessageBox, QGraphicsOpacityEffect,
+    QFileDialog
 )
 from PySide6.QtCore import Qt, QTimer
 
 from core.serial_comm import SerialThread
 from core import protocol
 from core.param_defs import PARAM_DEFS, PARAM_GROUPS, get_params_by_group
-
+from ui.widgets import WheelDoubleSpinBox
 
 class ParamEditor(QWidget):
     def __init__(self, serial_thread: SerialThread, parent=None):
@@ -20,6 +21,11 @@ class ParamEditor(QWidget):
         self._measured_rs = None
         self._measured_ls = None
         self._is_measuring = False
+
+        # Opacity effect for disconnected state
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self.set_enabled_state(False) # Default to disabled until connected
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
@@ -37,31 +43,47 @@ class ParamEditor(QWidget):
             self.tabs.addTab(tab, group)
         layout.addWidget(self.tabs)
 
-        # Bottom toolbar
-        toolbar = QHBoxLayout()
+        # Bottom toolbar — Row 1: MCU operations
+        mcu_bar = QHBoxLayout()
         self.btn_read_all = QPushButton("📥 Read All")
         self.btn_read_all.clicked.connect(self._read_all)
-        toolbar.addWidget(self.btn_read_all)
+        mcu_bar.addWidget(self.btn_read_all)
 
         self.btn_write_all = QPushButton("📤 Write All")
         self.btn_write_all.clicked.connect(self._write_all)
-        toolbar.addWidget(self.btn_write_all)
+        mcu_bar.addWidget(self.btn_write_all)
 
-        toolbar.addStretch()
+        mcu_bar.addStretch()
 
-        self.btn_save = QPushButton("💾 Save to Flash")
+        self.btn_save = QPushButton("Save to Flash")
         self.btn_save.clicked.connect(self._save)
-        toolbar.addWidget(self.btn_save)
+        mcu_bar.addWidget(self.btn_save)
 
-        self.btn_load = QPushButton("📂 Load from Flash")
+        self.btn_load = QPushButton("Load from Flash")
         self.btn_load.clicked.connect(self._load)
-        toolbar.addWidget(self.btn_load)
+        mcu_bar.addWidget(self.btn_load)
 
-        self.btn_defaults = QPushButton("🔄 Defaults")
+        self.btn_defaults = QPushButton("Defaults")
         self.btn_defaults.clicked.connect(self._defaults)
-        toolbar.addWidget(self.btn_defaults)
+        mcu_bar.addWidget(self.btn_defaults)
 
-        layout.addLayout(toolbar)
+        layout.addLayout(mcu_bar)
+
+        # Bottom toolbar — Row 2: PC file operations
+        file_bar = QHBoxLayout()
+        file_bar.addStretch()
+
+        self.btn_export = QPushButton("Export Config")
+        self.btn_export.clicked.connect(self._export_config)
+        self.btn_export.setToolTip("Save current parameters to a JSON file on PC")
+        file_bar.addWidget(self.btn_export)
+
+        self.btn_import = QPushButton("Import Config")
+        self.btn_import.clicked.connect(self._import_config)
+        self.btn_import.setToolTip("Load parameters from a JSON file and write to MCU")
+        file_bar.addWidget(self.btn_import)
+
+        layout.addLayout(file_bar)
 
         # Connect signal
         self._serial.params_received.connect(self._on_params_received)
@@ -69,6 +91,15 @@ class ParamEditor(QWidget):
         self._serial.status_received.connect(self._on_status_received)
 
         self._measuring = False
+
+    def set_enabled_state(self, enabled: bool):
+        """Update UI state based on connection status."""
+        self.setEnabled(enabled)
+        self._fade_effect.setOpacity(1.0 if enabled else 0.4)
+        if not enabled:
+            self.setToolTip("Connect to MCU to edit parameters.")
+        else:
+            self.setToolTip("")
 
     def _create_tab(self, group: str) -> QWidget:
         # Main widget to hold the grid
@@ -83,7 +114,7 @@ class ParamEditor(QWidget):
             lbl.setMinimumWidth(100)
             grid.addWidget(lbl, row, 0)
 
-            spin = QDoubleSpinBox()
+            spin = WheelDoubleSpinBox()
             spin.setRange(pmin, pmax)
             spin.setSingleStep(step)
             spin.setKeyboardTracking(False)
@@ -114,33 +145,24 @@ class ParamEditor(QWidget):
         # Bottom helpers
         last_row = len(params)
 
-        # Add Measure R/L and Compute Flux buttons at the bottom for "Motor" group
         if group == "Motor":
             group_box = QGroupBox("Motor Parameter Helpers")
-            group_layout = QHBoxLayout()
-            
-            self.btn_compute_flux = QPushButton("🧮 Compute Flux Linkage")
+            group_layout = QVBoxLayout()
+
+            btn_row = QHBoxLayout()
+            self.btn_compute_flux = QPushButton("Compute Flux Linkage")
             self.btn_compute_flux.clicked.connect(self._compute_flux)
             self.btn_compute_flux.setFixedHeight(30)
             self.btn_compute_flux.setToolTip("Calculates Flux from KV and Pole Pairs.")
-            group_layout.addWidget(self.btn_compute_flux)
-            
-            group_box.setLayout(group_layout)
-            grid.addWidget(group_box, last_row, 0, 1, 4)
-            last_row += 1
+            btn_row.addWidget(self.btn_compute_flux)
+            group_layout.addLayout(btn_row)
 
-        # Add Start Identification button for "Motor ID" group
-        if group == "Motor ID":
-            group_box = QGroupBox("Identification Control")
-            group_layout = QVBoxLayout() # Changed to vertical to be more robust
-            
-            self.btn_measure = QPushButton("⚡ Start Identification (RL Measure)")
+            self.btn_measure = QPushButton("Start Identification (RL Measure)")
             self.btn_measure.clicked.connect(self._measure_rl)
-            self.btn_measure.setFixedHeight(40) # Increased height
-            self.btn_measure.setStyleSheet("font-weight: bold; font-size: 14px; color: #ff9800;")
+            self.btn_measure.setFixedHeight(30)
             self.btn_measure.setToolTip("Start Motor ID (ensure motor is IDLE and free to spin)")
             group_layout.addWidget(self.btn_measure)
-            
+
             group_box.setLayout(group_layout)
             grid.addWidget(group_box, last_row, 0, 1, 4)
             last_row += 1
@@ -150,7 +172,7 @@ class ParamEditor(QWidget):
             group_box = QGroupBox("PI Tuning Helper")
             group_layout = QHBoxLayout()
             
-            self.btn_compute_pi = QPushButton("🧮 Auto-Compute PI from Rs/Ls")
+            self.btn_compute_pi = QPushButton("Auto-Compute PI from Rs/Ls")
             self.btn_compute_pi.clicked.connect(self._auto_compute_pi)
             self.btn_compute_pi.setFixedHeight(30)
             self.btn_compute_pi.setToolTip("Calculates Kp=Ls*BW and Ki=Rs*BW using current Motor Rs and Ls values.")
@@ -166,7 +188,7 @@ class ParamEditor(QWidget):
             group_layout = QHBoxLayout()
             
             group_layout.addWidget(QLabel("Multiplier:"))
-            self.spin_alpha_mult = QDoubleSpinBox()
+            self.spin_alpha_mult = WheelDoubleSpinBox()
             self.spin_alpha_mult.setRange(0.1, 100.0)
             self.spin_alpha_mult.setValue(8.0)
             self.spin_alpha_mult.setSingleStep(0.5)
@@ -176,7 +198,7 @@ class ParamEditor(QWidget):
 
             group_layout.addSpacing(10)
 
-            self.btn_compute_alpha = QPushButton("🧮 Compute Alpha from BW")
+            self.btn_compute_alpha = QPushButton("Compute Alpha from BW")
             self.btn_compute_alpha.clicked.connect(self._compute_alpha)
             self.btn_compute_alpha.setFixedHeight(30)
             self.btn_compute_alpha.setToolTip("Calculates Alpha = (BW_CUR * Multiplier) * Ts (Ts=1/48kHz)")
@@ -331,6 +353,57 @@ class ParamEditor(QWidget):
         self._serial.send(protocol.build_simple(protocol.CmdType.DEFAULTS))
         QTimer.singleShot(200, self._read_all)
 
+    def _export_config(self):
+        """Save current UI parameters to a JSON file on PC."""
+        import json
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Configuration", "vortex_config.json",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            config = {}
+            for pid_enum, name, unit, group, *_ in PARAM_DEFS:
+                spin = self._spinboxes.get(pid_enum)
+                if spin:
+                    config[name] = {"value": spin.value(), "group": group, "unit": unit}
+            with open(path, 'w') as f:
+                json.dump(config, f, indent=2)
+            QMessageBox.information(self, "Export", f"Configuration saved to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export:\n{e}")
+
+    def _import_config(self):
+        """Load parameters from a JSON file and write to MCU."""
+        import json
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Configuration", "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'r') as f:
+                config = json.load(f)
+
+            # Build name → pid lookup
+            name_to_pid = {name: pid_enum for pid_enum, name, *_ in PARAM_DEFS}
+            count = 0
+            for name, data in config.items():
+                pid = name_to_pid.get(name)
+                if pid is not None:
+                    val = data["value"] if isinstance(data, dict) else data
+                    spin = self._spinboxes.get(pid)
+                    if spin:
+                        spin.setValue(val)
+                        self._serial.send(protocol.build_set(pid, val))
+                        count += 1
+
+            QMessageBox.information(self, "Import", f"Loaded {count} parameters from:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import:\n{e}")
+
     def _on_params_received(self, params: dict):
         for pid, val in params.items():
             spin = self._spinboxes.get(pid)
@@ -366,7 +439,7 @@ class ParamEditor(QWidget):
             self._is_measuring = False
             if hasattr(self, 'btn_measure'):
                 self.btn_measure.setEnabled(True)
-                self.btn_measure.setText("⚡ Start Identification (RL Measure)")
+                self.btn_measure.setText("Start Identification (RL Measure)")
             
             # Fetch the new measurement results
             self._serial.send(protocol.build_get(protocol.ParamId.ID_RS_MEAS))

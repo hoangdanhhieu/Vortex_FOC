@@ -1,6 +1,7 @@
 #ifndef CORDIC_MATH_H
 #define CORDIC_MATH_H
 
+#include <math.h>
 #include <stdint.h>
 
 #include "stm32g4xx_ll_cordic.h"
@@ -30,7 +31,7 @@
  */
 static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_out) {
     WRITE_REG(CORDIC->CSR, CORDIC_CFG_SINCOS);
-    __DSB();
+    (void)READ_REG(CORDIC->CSR);  // Ensure write CSR is completed
 
     int32_t angle_q31 = (int32_t)(angle_norm * CORDIC_SCALE_FACTOR);
 
@@ -51,8 +52,8 @@ static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_ou
  * @return Normalized angle [-1, 1) representing [-π, π)
  */
 static float inline cordic_atan2(float y, float x) {
-    float abs_x = (x >= 0.0f) ? x : -x;
-    float abs_y = (y >= 0.0f) ? y : -y;
+    float abs_x = fabsf(x);
+    float abs_y = fabsf(y);
     float max_val = (abs_x > abs_y) ? abs_x : abs_y;
     if (max_val < 1e-9f) return 0.0f;
 
@@ -61,7 +62,7 @@ static float inline cordic_atan2(float y, float x) {
     int32_t y_q31 = (int32_t)(y * scale);
 
     WRITE_REG(CORDIC->CSR, CORDIC_CFG_ATAN2);
-    __DSB();
+    (void)READ_REG(CORDIC->CSR);  // Ensure write CSR is completed
 
     LL_CORDIC_WriteData(CORDIC, (uint32_t)x_q31);
     LL_CORDIC_WriteData(CORDIC, (uint32_t)y_q31);
@@ -83,8 +84,8 @@ static float inline cordic_atan2(float y, float x) {
  *       result is scaled back. Single CORDIC call, ~6 cycles.
  */
 static inline float cordic_modulus(float x, float y) {
-    float abs_x = (x >= 0.0f) ? x : -x;
-    float abs_y = (y >= 0.0f) ? y : -y;
+    float abs_x = fabsf(x);
+    float abs_y = fabsf(y);
     float max_val = (abs_x > abs_y) ? abs_x : abs_y;
     if (max_val < 1e-9f) return 0.0f;
 
@@ -93,7 +94,7 @@ static inline float cordic_modulus(float x, float y) {
     int32_t y_q31 = (int32_t)(y * inv_max);
 
     WRITE_REG(CORDIC->CSR, CORDIC_CFG_MODULUS);
-    __DSB();
+    (void)READ_REG(CORDIC->CSR);  // Ensure write CSR is completed
 
     LL_CORDIC_WriteData(CORDIC, (uint32_t)x_q31);
     LL_CORDIC_WriteData(CORDIC, (uint32_t)y_q31);

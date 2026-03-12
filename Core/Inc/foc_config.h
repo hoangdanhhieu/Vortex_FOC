@@ -24,6 +24,7 @@
 #define ONE_THIRD 0.3333333333333333f
 #include "motor_params.h"
 
+extern volatile float ADC_Vref;
 /*===========================================================================*/
 /* Feature Toggles                                                           */
 /*===========================================================================*/
@@ -61,8 +62,9 @@
 #define TIM1_COUNTER_MAX TIM1_ARR
 
 /** Dead-time duration in nanoseconds (for compensation) */
-#define DEAD_TIME_NS 0.0f
+#define DEAD_TIME_NS (0.0f)
 
+#define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY)
 /*===========================================================================*/
 /* ADC Trigger Timing → MAX_DUTY derivation                                  */
 /*===========================================================================*/
@@ -173,14 +175,6 @@
 #define PI_IQ_KP PI_ID_KP
 #define PI_IQ_KI PI_ID_KI
 
-/** Current PI output limits [V] */
-#define PI_CURRENT_OUT_MAX (MOTOR_VBUS_NOMINAL * 0.577f) /* Vbus/sqrt(3) */
-#define PI_CURRENT_OUT_MIN (-PI_CURRENT_OUT_MAX)
-
-/** Current PI integral limits [V] - same as output for current loops */
-#define PI_CURRENT_INT_MAX PI_CURRENT_OUT_MAX
-#define PI_CURRENT_INT_MIN PI_CURRENT_OUT_MIN
-
 /** Speed PI controller gains */
 #define PI_SPEED_KP 0.0008f
 #define PI_SPEED_KI 0.0003f
@@ -203,8 +197,6 @@
 /** SMO sigmoid bandwidth (smaller = sharper, better angle SNR but more chatter) */
 #define SMO_K_SIGMOID 30.0f
 
-/** SMO low-pass filter cutoff Hz */
-#define SMO_BEMF_CUTOFF 8000.0f
 /** SMO PLL bandwidth Hz */
 #define SMO_PPL_CUTOFF 500.0f
 
@@ -238,7 +230,7 @@
 #define STARTUP_HANDOFF_SPEED 1000.0f
 
 /** Transition blend duration from open-loop to closed-loop [ms] */
-#define TRANSITION_BLEND_MS 50
+#define TRANSITION_BLEND_MS (500.0f / (TWO_PI * SMO_PPL_CUTOFF))
 
 /** Startup timeout [ms] - set to 0 to disable */
 #define STARTUP_TIMEOUT_MS 0
@@ -256,7 +248,7 @@
 
 /*--- Bus voltage protection ---*/
 /** Overvoltage threshold [V]*/
-#define FAULT_OVERVOLTAGE_THRESHOLD 18.0f
+#define FAULT_OVERVOLTAGE_THRESHOLD 15.0f
 
 /** Undervoltage threshold [V]*/
 #define FAULT_UNDERVOLTAGE_THRESHOLD 8.0f
@@ -271,27 +263,12 @@
 #define FAULT_STALL_CURRENT_A 0.5f
 #define FAULT_STALL_TIME_MS 500
 
-/*===========================================================================*/
-/* Motor Identification Configuration                                        */
-/*===========================================================================*/
+/*--- Stop ramp-down ---*/
+/** Maximum time for controlled stop ramp-down before forced shutdown [ms] */
+#define STOP_TIMEOUT_MS 3000
 
-#define MOTOR_ID_ALIGN_I_DEFAULT 10.0f
-#define MOTOR_ID_ALIGN_MS_DEFAULT 100.0f
-
-#define MOTOR_ID_RS_SAMP_DEFAULT 100.0f
-#define MOTOR_ID_RS_DELAY_DEFAULT 500.0f
-#define MOTOR_ID_RS_I1_DEFAULT 3.0f
-#define MOTOR_ID_RS_I2_DEFAULT 8.0f
-
-#define MOTOR_ID_LS_DELAY_DEFAULT 100.0f
-#define MOTOR_ID_LS_V_DEFAULT 2.0f
-#define MOTOR_ID_LS_SAMP_DEFAULT 10.0f
-#define MOTOR_ID_LS_DECAY_DEFAULT 100.0f
-#define MOTOR_ID_LS_PULSES_DEFAULT 10.0f
-
-#define MOTOR_ID_RAMP_STEP_DEFAULT 0.01f
-#define MOTOR_ID_VAL_CNT_DEFAULT 100.0f
-#define MOTOR_ID_I_TOL_DEFAULT 0.5f
+/** Current threshold as percentage of motor max current */
+#define STOP_CURRENT_PERCENT 2.0f
 
 /*===========================================================================*/
 /* Debug/Safety Configuration                                                */
@@ -304,4 +281,7 @@
 /** Maximum runtime before auto-stop [ms] - set to 0 to disable */
 #define DEBUG_RUN_TIMEOUT_MS 0
 
+#define BEEP_PERIOD_TICKS (2 * CONTROL_FREQUENCY)     // 2 giây kêu một lần
+#define BEEP_DURATION_TICKS (CONTROL_FREQUENCY / 16)  // Kêu trong ~60ms cho đanh tiếng
+#define BEEP_STEP_FREQ 4500.0f * CONTROL_PERIOD
 #endif /* FOC_CONFIG_H */

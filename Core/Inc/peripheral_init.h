@@ -13,7 +13,7 @@ extern "C" {
 
 #include "main.h"
 /* Exported variables --------------------------------------------------------*/
-extern volatile uint16_t adc_regular_buffer[2];
+extern volatile uint16_t adc_regular_buffer[];
 /* Exported functions prototypes ---------------------------------------------*/
 
 /**
@@ -40,6 +40,8 @@ void ADC_Setup(void);
 void Peripheral_Init(void);
 
 void TIM_Start(void);
+
+void CAPTURE_Start(void);
 #ifdef __cplusplus
 }
 #endif

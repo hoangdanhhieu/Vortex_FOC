@@ -33,14 +33,11 @@ PARAM_DEFS = [
     (ParamId.M_POLES,  "Pole Pairs",    "",      "Motor",       1, 100, 1,     False),
     (ParamId.M_MAX_SPD, "Max Speed",     "RPM",   "Motor",       0, 100000, 10, False),
     (ParamId.M_MIN_SPD, "Min Speed",     "RPM",   "Motor",       0, 10000, 10,  False),
-    (ParamId.M_MAX_I,  "Max Current",   "A",     "Motor",       0, 100, 0.1,   False),
-    (ParamId.M_NOM_V,  "Nominal V",     "V",     "Motor",       0, 100, 0.1,   False),
-    # SMO
-    (ParamId.SMO_KS,   "SMO K_slide",   "",      "SMO",         0, 100, 0.01,  False),
-    (ParamId.SMO_SIG,  "K Sigmoid",     "",      "SMO",         0, 10000, 0.001, False),
-    (ParamId.SMO_BEMF, "BEMF Cutoff",   "Hz",    "SMO",         1, 10000, 1,  False),
-    (ParamId.SMO_PLL,  "PLL Cutoff",    "Hz",    "SMO",         1, 10000, 1,  False),
-    (ParamId.COMP_DELAY,"Comp Delay",   "samp",  "SMO",         0, 50, 0.01,  False),
+    (ParamId.M_MAX_I,  "Max Current (Required for RL Measure)",   "A",     "Motor",       0, 100, 0.1,   False),
+    (ParamId.SMO_KS,   "SMO K_slide*",   "",     "SMO",         0, 10000, 0.01,  False),
+    (ParamId.SMO_SIG,  "K Sigmoid*",     "",     "SMO",         0, 10000, 0.001, False),
+    (ParamId.SMO_PLL,  "PLL Cutoff*",    "Hz",   "SMO",         1, 10000, 1,  False),
+    (ParamId.COMP_DELAY,"Comp Delay*",   "samp", "SMO",         0, 50, 0.01,  False),
     # ADC
     (ParamId.ADC_MARG, "ADC Margin",    "ticks", "ADC",         10, 500, 1,   False),
     (ParamId.ADC_FILT_A,"Ia,b LPF Alpha*","",     "ADC",         0.001, 1.0, 0.001, False),
@@ -52,25 +49,10 @@ PARAM_DEFS = [
     (ParamId.STALL_SPD,"Stall Speed*",   "RPM",   "Safety",      0, 1000, 1,  False),
     (ParamId.STALL_I,  "Stall Current*", "A",     "Safety",      0, 100, 0.1,  False),
     (ParamId.STALL_MS, "Stall Time*",    "ms",    "Safety",      0, 10000, 10, False),
-    # Motor ID
-    (ParamId.ID_RS_SAMP, "Rs Samp Cnt", "",      "Motor ID",    1, 1000, 1,    False),
-    (ParamId.ID_RS_DELAY,"Rs Delay ms", "ms",    "Motor ID",    0, 5000, 1,    False),
-    (ParamId.ID_RS_I1,   "Rs Curr 1",   "A",     "Motor ID",    0, 100, 0.1,   False),
-    (ParamId.ID_RS_I2,   "Rs Curr 2",   "A",     "Motor ID",    0, 100, 0.1,   False),
-    (ParamId.ID_LS_DELAY,"Ls Delay ms", "ms",    "Motor ID",    0, 5000, 1,    False),
-    (ParamId.ID_LS_V,    "Ls Pulse V",  "V",     "Motor ID",    0, 50, 0.1,    False),
-    (ParamId.ID_LS_SAMP, "Ls Pulse Samp","",     "Motor ID",    1, 100, 1,     False),
-    (ParamId.ID_LS_DECAY,"Ls Decay ms", "ms",    "Motor ID",    0, 5000, 1,    False),
-    (ParamId.ID_LS_PULSES,"Ls Pulse Cnt","",     "Motor ID",    1, 100, 1,     False),
-    (ParamId.ID_DUTY_STEP,"Duty Step",  "",      "Motor ID",    0.0001, 0.1, 0.0001, False),
-    (ParamId.ID_VAL_CNT, "Valid Samp Cnt","",    "Motor ID",    1, 1000, 1,    False),
-    (ParamId.ID_I_TOL,   "Curr Tol",    "A",     "Motor ID",    0.01, 10, 0.01, False),
-    (ParamId.ID_ALIGN_I, "Align Curr",  "A",     "Motor ID",    0, 100, 0.1,   False),
-    (ParamId.ID_ALIGN_MS,"Align Time ms","ms",   "Motor ID",    0, 10000, 1,   False),
 ]
 
 # Groups in display order
-PARAM_GROUPS = ["Current PI", "Speed PI", "Startup", "Ramp Rates", "Motor", "SMO", "ADC", "Safety", "Motor ID"]
+PARAM_GROUPS = ["Current PI", "Speed PI", "Startup", "Ramp Rates", "Motor", "SMO", "ADC", "Safety"]
 
 
 def get_params_by_group(group: str):

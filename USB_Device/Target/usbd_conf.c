@@ -73,9 +73,10 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef *pcdHandle)
 {
     if (pcdHandle->Instance == USB) {
         /* USER CODE BEGIN USB_MspInit 0 */
-        //__HAL_RCC_USB_CONFIG(RCC_USBCLKSOURCE_HSI48); // Replace with HAL
+#define LL_RCC_SetUSBClockSource __HAL_RCC_USB_CONFIG
+#define LL_RCC_USB_CLKSOURCE_HSI48 RCC_USBCLKSOURCE_HSI48
         /* USER CODE END USB_MspInit 0 */
-        __HAL_RCC_USB_CONFIG(RCC_USBCLKSOURCE_HSI48);
+        LL_RCC_SetUSBClockSource(LL_RCC_USB_CLKSOURCE_HSI48);
 
         /* Peripheral clock enable */
         __HAL_RCC_USB_CLK_ENABLE();

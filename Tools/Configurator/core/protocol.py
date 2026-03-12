@@ -46,29 +46,26 @@ class ParamId(IntEnum):
     I_STRT = 8; I_ALGN = 9; ACCEL = 10; HANDOFF = 11
     # Ramp Rates
     RAMP_ACC = 12; RAMP_DEC = 13; I_RAMP = 14
-    # Motor & SMO
+    # Motor
     M_RS = 15; M_LS = 16; M_KV = 17; M_FLUX = 18; M_POLES = 19
-    M_MAX_SPD = 20; M_MIN_SPD = 21; M_MAX_I = 22; M_NOM_V = 23
-    SMO_KS = 24; SMO_SIG = 25; SMO_BEMF = 26; SMO_PLL = 27; COMP_DELAY = 28
-    ADC_MARG = 29; ADC_FILT_A = 30; DQ_FILT_A = 31
+    M_MAX_SPD = 20; M_MIN_SPD = 21; M_MAX_I = 22
+    # SMO
+    SMO_KS = 23; SMO_SIG = 24; SMO_PLL = 25; COMP_DELAY = 26
+    # ADC
+    ADC_MARG = 27; ADC_FILT_A = 28; DQ_FILT_A = 29
     # Safety
-    OC_THR = 32; OV_THR = 33; UV_THR = 34
-    STALL_SPD = 35; STALL_I = 36; STALL_MS = 37
-
-    # Motor Identification
-    ID_RS_SAMP = 38; ID_RS_DELAY = 39; ID_RS_I1 = 40; ID_RS_I2 = 41
-    ID_LS_DELAY = 42; ID_LS_V = 43; ID_LS_SAMP = 44; ID_LS_DECAY = 45; ID_LS_PULSES = 46
-    ID_DUTY_STEP = 47; ID_VAL_CNT = 48; ID_I_TOL = 49
-    ID_ALIGN_I = 50; ID_ALIGN_MS = 51
+    OC_THR = 30; OV_THR = 31; UV_THR = 32
+    STALL_SPD = 33; STALL_I = 34; STALL_MS = 35
 
     # Internal
-    DIRECTION = 52; OC_COUNT = 53; STALL_EN = 54
-    
+    DIRECTION = 36; OC_COUNT = 37; STALL_EN = 38
+
     # Live Params
-    SPD_REF = 55; TRQ_REF = 56; VBUS = 57; RPM = 58
-    ID_MEAS = 59; IQ_MEAS = 60; IA = 61; IB = 62
-    ID_RS_MEAS = 63; ID_LS_MEAS = 64
-    PID_COUNT = 65
+    SPD_REF = 39; TRQ_REF = 40; VBUS = 41; RPM = 42
+    ID_MEAS = 43; IQ_MEAS = 44; IA = 45; IB = 46
+    ID_RS_MEAS = 47; ID_LS_MEAS = 48
+    PID_COUNT = 49
+
 
 
 @dataclass

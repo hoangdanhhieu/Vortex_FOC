@@ -22,15 +22,15 @@ typedef enum {
     MOTOR_ID_STATE_ERROR
 } MotorID_State_t;
 
-#define MOTOR_ID_MAX_LUT_SIZE 20
+// #define MOTOR_ID_MAX_LUT_SIZE 20
 typedef struct {
     float measured_rs;   /* Measured Phase Resistance [Ohm] */
     float measured_ls;   /* Measured Phase Inductance [H] */
     float measured_flux; /* Measured Flux Linkage [Wb] (Not impl yet) */
 
-    /* Ls Saturation LUT */
-    float ls_lut_currents[MOTOR_ID_MAX_LUT_SIZE];
-    float ls_lut_values[MOTOR_ID_MAX_LUT_SIZE];
+    // /* Ls Saturation LUT */
+    // float ls_lut_currents[MOTOR_ID_MAX_LUT_SIZE];
+    // float ls_lut_values[MOTOR_ID_MAX_LUT_SIZE];
     uint8_t ls_lut_count;
 
     MotorID_State_t state; /* Internal state of ID process */

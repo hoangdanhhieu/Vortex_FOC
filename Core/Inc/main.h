@@ -44,7 +44,6 @@ extern "C" {
 #include "stm32g4xx_ll_utils.h"
 #include "stm32g4xx_ll_pwr.h"
 #include "stm32g4xx_ll_tim.h"
-#include "stm32g4xx_ll_usart.h"
 #include "stm32g4xx_ll_gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -79,12 +78,12 @@ void MX_ADC2_Init(void);
 /* Private defines -----------------------------------------------------------*/
 #define SD1_Pin LL_GPIO_PIN_13
 #define SD1_GPIO_Port GPIOB
-#define SD3_Pin LL_GPIO_PIN_14
-#define SD3_GPIO_Port GPIOB
-#define SD2_Pin LL_GPIO_PIN_15
-#define SD2_GPIO_Port GPIOB
 #define LED_Pin LL_GPIO_PIN_6
 #define LED_GPIO_Port GPIOC
+#define SD2_Pin LL_GPIO_PIN_10
+#define SD2_GPIO_Port GPIOC
+#define SD3_Pin LL_GPIO_PIN_5
+#define SD3_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

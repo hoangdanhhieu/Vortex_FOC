@@ -5,8 +5,6 @@
 
 #include "pi_controller.h"
 
-#include "foc_config.h"
-
 void PI_Init(PI_Controller_t* pi, float Kp, float Ki, float out_min, float out_max, float dt) {
     pi->Kp = Kp;
     pi->Ki = Ki;
@@ -20,36 +18,6 @@ void PI_Init(PI_Controller_t* pi, float Kp, float Ki, float out_min, float out_m
 
 void PI_Reset(PI_Controller_t* pi) {
     pi->integral = 0.0f;
-}
-
-CCMRAM_FUNC float PI_Update(PI_Controller_t* pi, float error) {
-    float p_term = pi->Kp * error;
-
-    float new_integral = pi->integral + pi->Ki * error * pi->dt;
-
-    if (new_integral > pi->int_max) {
-        new_integral = pi->int_max;
-    } else if (new_integral < pi->int_min) {
-        new_integral = pi->int_min;
-    }
-
-    float output = p_term + new_integral;
-
-    if (output > pi->out_max) {
-        output = pi->out_max;
-        if (error < 0.0f) {
-            pi->integral = new_integral;
-        }
-    } else if (output < pi->out_min) {
-        output = pi->out_min;
-        if (error > 0.0f) {
-            pi->integral = new_integral;
-        }
-    } else {
-        pi->integral = new_integral;
-    }
-
-    return output;
 }
 
 void PI_SetGains(PI_Controller_t* pi, float Kp, float Ki) {

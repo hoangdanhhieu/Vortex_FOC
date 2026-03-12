@@ -46,16 +46,13 @@ PARAM_DEF(PID_M_POLES,    float,     motor_poles,          (float)MOTOR_POLE_PAI
 PARAM_DEF(PID_M_MAX_SPD,  float,     motor_max_spd,        MOTOR_MAX_SPEED_RPM)
 PARAM_DEF(PID_M_MIN_SPD,  float,     motor_min_spd,        MOTOR_MIN_SPEED_RPM)
 PARAM_DEF(PID_M_MAX_I,    float,     motor_max_curr,       MOTOR_MAX_CURRENT)
-PARAM_DEF(PID_M_NOM_V,    float,     motor_nom_vbus,       MOTOR_VBUS_NOMINAL)
 
 /* SMO */
 PARAM_DEF(PID_SMO_KS,     float,     smo_k_slide,          SMO_K_SLIDE)
 PARAM_DEF(PID_SMO_SIG,    float,     smo_k_sigmoid,        SMO_K_SIGMOID)
-PARAM_DEF(PID_SMO_BEMF,   float,     smo_bemf_cutoff,      SMO_BEMF_CUTOFF)
 PARAM_DEF(PID_SMO_PLL,    float,     smo_pll_cutoff,       SMO_PPL_CUTOFF)
 PARAM_DEF(PID_COMP_DELAY, float,     comp_delay_samples,   COMP_DELAY_SAMPLES)
 
-/* ADC & Filtering */
 PARAM_DEF(PID_ADC_MARG,   float,     adc_margin_ticks,     ADC_MARGIN_DEFAULT)
 PARAM_DEF(PID_ADC_FILT_A, float,     adc_filt_a,           CURRENT_FILTER_ALPHA)
 PARAM_DEF(PID_DQ_FILT_A,  float,     dq_filt_a,            FOC_DQ_FILTER_ALPHA)
@@ -68,21 +65,6 @@ PARAM_DEF(PID_STALL_SPD,  float,     fault_stall_speed,    FAULT_STALL_SPEED_RPM
 PARAM_DEF(PID_STALL_I,    float,     fault_stall_current,  FAULT_STALL_CURRENT_A)
 PARAM_DEF(PID_STALL_MS,   float,     fault_stall_time_ms,  FAULT_STALL_TIME_MS)
 
-/* Motor Identification (RL measurement) */
-PARAM_DEF(PID_ID_RS_SAMP, float,     id_rs_samples,        MOTOR_ID_RS_SAMP_DEFAULT)
-PARAM_DEF(PID_ID_RS_DELAY,float,     id_rs_delay_ms,       MOTOR_ID_RS_DELAY_DEFAULT)
-PARAM_DEF(PID_ID_RS_I1,   float,     id_rs_current1,       MOTOR_ID_RS_I1_DEFAULT)
-PARAM_DEF(PID_ID_RS_I2,   float,     id_rs_current2,       MOTOR_ID_RS_I2_DEFAULT)
-PARAM_DEF(PID_ID_LS_DELAY,float,     id_ls_delay_ms,       MOTOR_ID_LS_DELAY_DEFAULT)
-PARAM_DEF(PID_ID_LS_V,    float,     id_ls_pulse_v,        MOTOR_ID_LS_V_DEFAULT)
-PARAM_DEF(PID_ID_LS_SAMP, float,     id_ls_pulse_samples,  MOTOR_ID_LS_SAMP_DEFAULT)
-PARAM_DEF(PID_ID_LS_DECAY,float,     id_ls_decay_ms,       MOTOR_ID_LS_DECAY_DEFAULT)
-PARAM_DEF(PID_ID_LS_PULSES,float,    id_ls_pulses,         MOTOR_ID_LS_PULSES_DEFAULT)
-PARAM_DEF(PID_ID_DUTY_STEP,float,    id_duty_step,         MOTOR_ID_RAMP_STEP_DEFAULT)
-PARAM_DEF(PID_ID_VAL_CNT, float,     id_valid_count,       MOTOR_ID_VAL_CNT_DEFAULT)
-PARAM_DEF(PID_ID_I_TOL,   float,     id_current_tol,       MOTOR_ID_I_TOL_DEFAULT)
-PARAM_DEF(PID_ID_ALIGN_I, float,     id_align_current,     MOTOR_ID_ALIGN_I_DEFAULT)
-PARAM_DEF(PID_ID_ALIGN_MS,float,     id_align_time_ms,     MOTOR_ID_ALIGN_MS_DEFAULT)
 
 /* Internal Non-GUI params */
 PARAM_DEF(PID_DIRECTION,  int8_t,    direction,            1)

@@ -9,10 +9,6 @@
 #ifndef SMO_OBSERVER_H
 #define SMO_OBSERVER_H
 
-#include <stdint.h>
-
-#include "foc_config.h"
-
 /**
  * @brief SMO Observer structure
  */
@@ -121,9 +117,16 @@ void SMO_SetGains(SMO_Observer_t* smo, float k_slide, float k_sigmoid);
 /**
  * @brief Set observer filter parameters at runtime
  * @param smo Pointer to SMO structure
- * @param bemf_cutoff_hz BEMF low-pass filter cutoff frequency [Hz]
  * @param pll_cutoff_hz PLL bandwidth frequency [Hz]
  */
-void SMO_SetFilterParams(SMO_Observer_t* smo, float bemf_cutoff_hz, float pll_cutoff_hz);
+void SMO_SetFilterParams(SMO_Observer_t* smo, float pll_cutoff_hz);
+
+/**
+ * @brief Feed external BEMF directly into PLL (bypass current observer)
+ * @param smo Pointer to SMO structure
+ * @param Ealpha Alpha-axis BEMF voltage [V]
+ * @param Ebeta Beta-axis BEMF voltage [V]
+ */
+void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta);
 
 #endif /* SMO_OBSERVER_H */
