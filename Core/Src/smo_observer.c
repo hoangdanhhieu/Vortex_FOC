@@ -10,6 +10,7 @@
 
 #include "cordic_math.h"
 #include "foc_config.h"
+#include "foc_state_machine.h"
 #include "math.h"
 #include "motor_params.h"
 /*===========================================================================*/
@@ -124,7 +125,7 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     smo->Ealpha = Zalpha;
     smo->Ebeta = Zbeta;
 
-    smo->tau = 1.0f / (fabsf(smo->omega_est) * 2.0f + 60.0f);
+    smo->tau = 1.0f / (fabsf(smo->omega_est) * 4.0f + g_foc.cfg.motor_min_spd / 60 * TWO_PI);
     smo->lpf_coeff = CONTROL_PERIOD / (CONTROL_PERIOD + smo->tau);
     smo->Ealpha_flt += smo->lpf_coeff * (smo->Ealpha - smo->Ealpha_flt);
     smo->Ebeta_flt += smo->lpf_coeff * (smo->Ebeta - smo->Ebeta_flt);
@@ -171,7 +172,7 @@ void SMO_SetFilterParams(SMO_Observer_t* smo, float pll_cutoff_hz) {
 }
 
 CCMRAM_FUNC void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta) {
-    smo->tau = 1.0f / (fabsf(smo->omega_est) * 2.0f + 60.0f);
+    smo->tau = 1.0f / (fabsf(smo->omega_est) * 4.0f + g_foc.cfg.motor_min_spd / 60 * TWO_PI);
     smo->lpf_coeff = CONTROL_PERIOD / (CONTROL_PERIOD + smo->tau);
     smo->Ealpha_flt += smo->lpf_coeff * (Ealpha - smo->Ealpha_flt);
     smo->Ebeta_flt += smo->lpf_coeff * (Ebeta - smo->Ebeta_flt);
