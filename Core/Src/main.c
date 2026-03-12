@@ -85,9 +85,13 @@ void input_process(void) {
     if (adc_regular_buffer[0] != 0) {
         uint16_t vrefint_cal = *(uint16_t *)0x1FFF75AA;
         ADC_Vref = 3.0f * (float)vrefint_cal / (float)adc_regular_buffer[0];
-        g_foc.data.Vphase_a = ((float)adc_regular_buffer[1] - 1970) * (29.4f * ADC_Vref / 4096.0f);
-        g_foc.data.Vphase_b = ((float)adc_regular_buffer[2] - 1960) * (21.0f * ADC_Vref / 4096.0f);
-        g_foc.data.Vphase_c = ((float)adc_regular_buffer[3] - 1950) * (21.0f * ADC_Vref / 4096.0f);
+
+        // R1 = 100K, Rup = 10K, Rdown = 10K -> gain = 105/5 = 21
+        g_foc.data.Vphase_a =
+            ((float)adc_regular_buffer[1] - 1990) * (20.841f * ADC_Vref / 4096.0f);
+        g_foc.data.Vphase_b = ((float)adc_regular_buffer[2] - 1975) * (21.0f * ADC_Vref / 4096.0f);
+        g_foc.data.Vphase_c =
+            ((float)adc_regular_buffer[3] - 1967) * (21.085f * ADC_Vref / 4096.0f);
     }
 }
 /* USER CODE END 0 */
