@@ -34,7 +34,7 @@ PARAM_DEFS = [
     (ParamId.M_MAX_SPD, "Max Speed",     "RPM",   "Motor",       0, 100000, 10, False),
     (ParamId.M_MIN_SPD, "Min Speed",     "RPM",   "Motor",       0, 10000, 10,  False),
     (ParamId.M_MAX_I,  "Max Current (Required for RL Measure)",   "A",     "Motor",       0, 100, 0.1,   False),
-    (ParamId.SMO_KS,   "SMO K_slide*",   "",     "SMO",         0, 100, 0.01,  False),
+    (ParamId.SMO_KS,   "SMO K_slide*",   "",     "SMO",         0, 10000, 0.01,  False),
     (ParamId.SMO_SIG,  "K Sigmoid*",     "",     "SMO",         0, 10000, 0.001, False),
     (ParamId.SMO_PLL,  "PLL Cutoff*",    "Hz",   "SMO",         1, 10000, 1,  False),
     (ParamId.COMP_DELAY,"Comp Delay*",   "samp", "SMO",         0, 50, 0.01,  False),

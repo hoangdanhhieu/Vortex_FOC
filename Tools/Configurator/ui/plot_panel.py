@@ -112,9 +112,10 @@ class PlotPanel(QWidget):
         self.p2.setLabel('left', 'A')
         self.p2.setDownsampling(auto=True, mode='peak')
         self.p2.setClipToView(True)
-        self.curve_Iq_ref = self.p2.plot(pen=pg.mkPen(COLORS['Iq_ref'], width=1, style=Qt.DashLine), name='Iq Ref')
         self.curve_Iq = self.p2.plot(pen=pg.mkPen(COLORS['Iq'], width=1), name='Iq')
         self.curve_Id = self.p2.plot(pen=pg.mkPen(COLORS['Id'], width=1), name='Id')
+        self.curve_Iq_ref = self.p2.plot(pen=pg.mkPen(COLORS['Iq_ref'], width=3, style=Qt.DashLine), name='Iq Ref')
+        self.curve_Iq_ref.setZValue(1)
 
         # Plot 3: Electrical Angle
         self.p3 = self._graphics.addPlot(row=2, col=0, title="Electrical Angle (rad)")
