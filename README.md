@@ -2,6 +2,10 @@
 
 High-performance Sensorless Field Oriented Control (FOC) for BLDC/PMSM motors, optimized for STM32G4 microcontrollers.
 
+[![Vortex FOC Demo](Hardware/Prototype/image.jpg)](https://www.youtube.com/watch?v=LBecr3bSMa8)
+
+[![Watch on YouTube](https://img.shields.io/badge/YouTube-Watch_Video-red?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=LBecr3bSMa8)
+
 ## 🚀 Key Features
 - **Sensorless FOC**: Sliding Mode Observer (SMO) + PLL for position/speed estimation.
 - **Optimized Performance**: ~10µs control loop @ 48kHz (48% CPU load @ 170MHz) using CORDIC and CCMRAM.
@@ -37,9 +41,9 @@ python main.py
 - [x] Sensorless SMO Observer
 - [x] High-Speed USB CDC Protocol
 - [x] Offline Motor ID (Rs, Ls)
-- [x] High-Frequency PID Profiler (BIST)
+- [x] High-Frequency PID Profiler
 - [x] Python Configurator GUI integration
-- [ ] Flying Start
+- [x] Flying Start
 - [ ] Field Weakening (Flux Weakening)
 - [ ] Online RLS Inductance tracking
 - [ ] PWM / DShot Input (1-Wire Interface)
