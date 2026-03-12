@@ -2,7 +2,7 @@
 
 High-performance Sensorless Field Oriented Control (FOC) for BLDC/PMSM motors, optimized for STM32G4 microcontrollers.
 
-[![Vortex FOC Demo](Hardware/Prototype/image.jpg)](https://www.youtube.com/watch?v=LBecr3bSMa8)
+[![Vortex FOC Demo](Hardware/Prototype/Image.jpg)](https://www.youtube.com/watch?v=LBecr3bSMa8)
 
 [![Watch on YouTube](https://img.shields.io/badge/YouTube-Watch_Video-red?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=LBecr3bSMa8)
 
