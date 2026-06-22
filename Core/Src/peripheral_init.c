@@ -208,5 +208,5 @@ void Peripheral_Init(void) {
     OPAMP_Calibration_ADC(OPAMP3, ADC2, LL_ADC_CHANNEL_VOPAMP3_ADC2);
     ADC_Start();
     TIM_Start();
-    CAPTURE_Start();
+    // CAPTURE_Start();
 }

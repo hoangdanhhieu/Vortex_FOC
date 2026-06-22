@@ -62,7 +62,7 @@ extern volatile float ADC_Vref;
 #define TIM1_COUNTER_MAX TIM1_ARR
 
 /** Dead-time duration in nanoseconds (for compensation) */
-#define DEAD_TIME_NS (0.0f)
+#define DEAD_TIME_NS (420.0f)
 
 #define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY)
 /*===========================================================================*/
@@ -108,7 +108,7 @@ extern volatile float ADC_Vref;
 #define SHUNT_RESISTANCE 0.001f
 
 /** OPAMP gain */
-#define OPAMP_GAIN 32.0f
+#define OPAMP_GAIN 31.0f
 
 /** ADC resolution (12-bit) */
 #define ADC_RESOLUTION 4096
@@ -119,8 +119,7 @@ extern volatile float ADC_Vref;
 /** Current conversion factor: I = (ADC - offset) * factor */
 /** factor = Vref / (ADC_res * Gain * R_shunt) */
 /* 1.022... is an empirical calibration factor derived from measurements */
-#define ADC_TO_CURRENT \
-    (-(ADC_Vref / ((float)ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE)) * 1.022556391f)
+#define ADC_TO_CURRENT (-(ADC_Vref / ((float)ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE)))
 
 /* IIR Lowpass filter coefficient (0 < ALPHA <= 1)
  * Smaller ALPHA = stronger filtering, more delay
@@ -138,7 +137,7 @@ extern volatile float ADC_Vref;
 
 /** Vbus voltage divider: R_high / R_low */
 #define VBUS_R_HIGH 10000.0f
-#define VBUS_R_LOW 2200.0f
+#define VBUS_R_LOW 1000.0f
 
 /** Vbus divider ratio */
 #define VBUS_DIVIDER_RATIO ((VBUS_R_HIGH + VBUS_R_LOW) / VBUS_R_LOW)

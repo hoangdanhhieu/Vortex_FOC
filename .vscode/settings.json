@@ -1,0 +1,9 @@
+{
+    "makefile.launchConfigurations": [
+        {
+            "cwd": "${workspaceFolder}/build",
+            "binaryPath": "${workspaceFolder}/build/Vortex_FOC.elf",
+            "binaryArgs": []
+        }
+    ]
+}

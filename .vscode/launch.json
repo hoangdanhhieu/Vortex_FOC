@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug STM32 (OpenOCD)",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Vortex_FOC.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "servertype": "openocd",
+            "device": "STM32G431",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32g4x.cfg"
+            ],
+            "svdFile": "${workspaceFolder}/STM32G431.svd",
+            //"gdbPath": "gdb-multiarch",
+            "runToEntryPoint": "main",
+            "showDevDebugOutput": "none",
+            "toolchainPrefix": "arm-none-eabi",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            }
+        }
+    ]
+}

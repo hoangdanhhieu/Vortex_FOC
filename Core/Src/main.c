@@ -76,22 +76,26 @@ volatile uint16_t raw_adc_c;
 volatile uint16_t raw_adc_vbus;
 
 volatile uint32_t adc_isr_us = 0;
-
+volatile uint32_t reset_cause = 0;
 volatile uint16_t adc_regular_buffer[4];
 uint8_t adc_isr_flag = 0;
 volatile float ADC_Vref = 3.3f;
 uint16_t input;
 void input_process(void) {
     if (adc_regular_buffer[0] != 0) {
-        uint16_t vrefint_cal = *(uint16_t *)0x1FFF75AA;
+        uint16_t vrefint_cal = *(uint16_t*)0x1FFF75AA;
         ADC_Vref = 3.0f * (float)vrefint_cal / (float)adc_regular_buffer[0];
 
         // R1 = 100K, Rup = 10K, Rdown = 10K -> gain = 105/5 = 21
         g_foc.data.Vphase_a =
-            ((float)adc_regular_buffer[1] - 1990) * (20.841f * ADC_Vref / 4096.0f);
-        g_foc.data.Vphase_b = ((float)adc_regular_buffer[2] - 1975) * (21.0f * ADC_Vref / 4096.0f);
+            ((float)adc_regular_buffer[1] - (float)g_foc.adc_cal.offset_vphase_a) *
+            (20.841f * ADC_Vref / 4096.0f);
+        g_foc.data.Vphase_b =
+            ((float)adc_regular_buffer[2] - (float)g_foc.adc_cal.offset_vphase_b) *
+            (21.0f * ADC_Vref / 4096.0f);
         g_foc.data.Vphase_c =
-            ((float)adc_regular_buffer[3] - 1967) * (21.085f * ADC_Vref / 4096.0f);
+            ((float)adc_regular_buffer[3] - (float)g_foc.adc_cal.offset_vphase_c) *
+            (21.085f * ADC_Vref / 4096.0f);
     }
 }
 /* USER CODE END 0 */
@@ -118,7 +122,8 @@ int main(void) {
     SystemClock_Config();
 
     /* USER CODE BEGIN SysInit */
-
+    reset_cause = RCC->CSR;
+    LL_RCC_ClearResetFlags();
     /* USER CODE END SysInit */
 
     /* Initialize all configured peripherals */
@@ -164,7 +169,6 @@ int main(void) {
             LL_IWDG_ReloadCounter(IWDG);
             adc_isr_flag = 0;
         }
-        LL_mDelay(1);
         /* USER CODE END WHILE */
 
         /* USER CODE BEGIN 3 */
@@ -891,6 +895,10 @@ static void MX_TIM4_Init(void) {
 
     LL_DMA_SetMemorySize(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MDATAALIGN_HALFWORD);
 
+    /* TIM4 interrupt Init */
+    NVIC_SetPriority(TIM4_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), 0, 0));
+    NVIC_EnableIRQ(TIM4_IRQn);
+
     /* USER CODE BEGIN TIM4_Init 1 */
 
     /* USER CODE END TIM4_Init 1 */
@@ -1051,7 +1059,7 @@ void Error_Handler(void) {
  * @param  line: assert_param error line source number
  * @retval None
  */
-void assert_failed(uint8_t *file, uint32_t line) {
+void assert_failed(uint8_t* file, uint32_t line) {
     /* USER CODE BEGIN 6 */
     /* User can add his own implementation to report the file name and line
        number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
