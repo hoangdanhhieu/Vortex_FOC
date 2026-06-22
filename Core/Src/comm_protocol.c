@@ -42,6 +42,10 @@ static uint8_t rx_idx;
 
 static uint8_t tx_buf[COMM_MAX_PAYLOAD + 4]; /* header + type + len + payload + crc */
 
+#define PLOT_BATCH_SIZE 8
+static int16_t plot_batch_buf[PLOT_BATCH_SIZE * 12];
+static uint8_t plot_batch_idx = 0;
+
 #define RX_RING_SIZE 512
 static uint8_t rx_ring_buf[RX_RING_SIZE];
 static uint16_t rx_ring_head = 0;
@@ -77,10 +81,15 @@ static void send_packet(uint8_t type, const uint8_t* payload, uint8_t len) {
     /* Safety: Never exceed protocol length limit or buffer size */
     if (len > COMM_MAX_PAYLOAD) return;
 
-    /* Wait for previous transmission to complete BEFORE modifying the shared tx_buf */
-    uint32_t wait_timeout = 500000;
-    while (CDC_IsTxBusy()) {
-        if (--wait_timeout == 0) return;
+    /* Drop plot packets immediately if USB is busy to prevent blocking the main loop.
+     * For control packets (ACK, GET response, etc.), wait with a short timeout (~1ms). */
+    if (type == RSP_PLOT) {
+        if (CDC_IsTxBusy()) return;
+    } else {
+        uint32_t wait_timeout = 10000;
+        while (CDC_IsTxBusy()) {
+            if (--wait_timeout == 0) return;
+        }
     }
 
     tx_buf[0] = COMM_HEADER;
@@ -129,6 +138,11 @@ static float get_param_value(uint8_t pid) {
             MotorID_GetResults(&res);
             return res.measured_ls;
         }
+        case PID_ID_DT_MEAS: {
+            MotorID_Result_t res;
+            MotorID_GetResults(&res);
+            return res.identified_deadtime_ns;
+        }
         default:
             return 0.0f;
     }
@@ -166,6 +180,7 @@ static uint8_t is_pid_defined(uint8_t pid) {
 #include "param_table.def"
         case PID_ID_RS_MEAS:
         case PID_ID_LS_MEAS:
+        case PID_ID_DT_MEAS:
             return 1;
         default:
             return 0;
@@ -474,12 +489,28 @@ static void comm_process_byte(uint8_t byte) {
 }
 
 void Comm_SendPlotPacket(void) {
-    uint8_t payload[24]; /* 6 × float = 24 bytes */
-    memcpy(&payload[0], &g_foc.plot.Vd, 4);
-    memcpy(&payload[4], &g_foc.plot.Vq, 4);
-    memcpy(&payload[8], &g_foc.plot.Id, 4);
-    memcpy(&payload[12], &g_foc.plot.Iq, 4);
-    memcpy(&payload[16], &g_foc.plot.Iq_ref, 4);
-    memcpy(&payload[20], &g_foc.plot.theta_elec, 4);
-    send_packet(RSP_PLOT, payload, 24);
+    if (!g_foc.plot.enabled) {
+        plot_batch_idx = 0;
+        return;
+    }
+
+    uint16_t offset = plot_batch_idx * 12;
+    plot_batch_buf[offset + 0] = (int16_t)(g_foc.plot.Vd * 1000.0f);
+    plot_batch_buf[offset + 1] = (int16_t)(g_foc.plot.Vq * 1000.0f);
+    plot_batch_buf[offset + 2] = (int16_t)(g_foc.plot.Id * 1000.0f);
+    plot_batch_buf[offset + 3] = (int16_t)(g_foc.plot.Iq * 1000.0f);
+    plot_batch_buf[offset + 4] = (int16_t)(g_foc.plot.Iq_ref * 1000.0f);
+    plot_batch_buf[offset + 5] = (int16_t)(g_foc.plot.theta_elec * 10000.0f);
+    plot_batch_buf[offset + 6] = (int16_t)(g_foc.plot.Ia * 1000.0f);
+    plot_batch_buf[offset + 7] = (int16_t)(g_foc.plot.Ib * 1000.0f);
+    plot_batch_buf[offset + 8] = (int16_t)(g_foc.plot.Ic * 1000.0f);
+    plot_batch_buf[offset + 9] = (int16_t)(g_foc.plot.duty_a * 10000.0f);
+    plot_batch_buf[offset + 10] = (int16_t)(g_foc.plot.duty_b * 10000.0f);
+    plot_batch_buf[offset + 11] = (int16_t)(g_foc.plot.duty_c * 10000.0f);
+
+    plot_batch_idx++;
+    if (plot_batch_idx >= PLOT_BATCH_SIZE) {
+        send_packet(RSP_PLOT, (uint8_t*)plot_batch_buf, PLOT_BATCH_SIZE * 12 * 2);
+        plot_batch_idx = 0;
+    }
 }

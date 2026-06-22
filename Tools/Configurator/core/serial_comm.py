@@ -34,26 +34,28 @@ class SerialThread(QThread):
         self._running = False
         self._mutex = QMutex()
         self._parser = PacketParser()
+        self._port_to_connect = None
+        self._baudrate_to_connect = 115200
 
     @property
     def is_connected(self) -> bool:
         return self._serial is not None and self._serial.is_open
 
     def connect_port(self, port: str, baudrate: int = 115200):
-        try:
-            self._serial = serial.Serial(port, baudrate, timeout=0.01)
-            self._parser.reset()
-            self._running = True
-            self.start()
-            self.connected.emit()
-        except Exception as e:
-            self.error.emit(str(e))
+        self._port_to_connect = port
+        self._baudrate_to_connect = baudrate
+        self._parser.reset()
+        self._running = True
+        self.start()
 
     def disconnect_port(self):
         self._running = False
-        self.wait(2000)
-        if self._serial and self._serial.is_open:
-            self._serial.close()
+        if self._serial:
+            try:
+                self._serial.close()
+            except Exception:
+                pass
+        self.wait(500)
         self._serial = None
         self.disconnected.emit()
 
@@ -67,6 +69,21 @@ class SerialThread(QThread):
                     self.error.emit(str(e))
 
     def run(self):
+        try:
+            # Open port in background thread to avoid freezing the GUI
+            ser = serial.Serial(self._port_to_connect, self._baudrate_to_connect, timeout=0.01)
+            if not self._running:
+                ser.close()
+                return
+            self._serial = ser
+            self.connected.emit()
+        except Exception as e:
+            self._running = False
+            self._serial = None
+            self.error.emit(str(e))
+            self.disconnected.emit()
+            return
+
         while self._running:
             if not self._serial or not self._serial.is_open:
                 break
@@ -78,7 +95,8 @@ class SerialThread(QThread):
                     for pkt in packets:
                         self._dispatch(pkt)
             except Exception as e:
-                self.error.emit(str(e))
+                if self._running:
+                    self.error.emit(str(e))
                 break
 
     def _dispatch(self, pkt: Packet):
@@ -97,7 +115,8 @@ class SerialThread(QThread):
                 self.params_received.emit(params)
             elif pkt.ptype == RspType.PLOT:
                 vals = parse_plot(pkt.payload)
-                self.plot_received.emit(vals)
+                for val in vals:
+                    self.plot_received.emit(val)
         except Exception:
             pass
 

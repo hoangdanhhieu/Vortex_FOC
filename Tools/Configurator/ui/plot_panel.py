@@ -2,10 +2,11 @@
 
 import numpy as np
 import pyqtgraph as pg
+import csv
 from collections import deque
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QDoubleSpinBox,
+    QLabel, QDoubleSpinBox, QComboBox, QFileDialog,
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -22,10 +23,13 @@ COLORS = {
     'Iq': '#94e2d5',
     'Iq_ref': '#f9e2af',
     'theta': '#cba6f7',
+    'Ia': '#a6e3a1',
+    'Ib': '#f9e2af',
+    'Ic': '#f38ba8',
 }
 
 DEFAULT_WINDOW = 0.5    # seconds
-SAMPLE_RATE = 1000      # 1kHz
+SAMPLE_RATE = 24000      # 24kHz
 DISPLAY_FPS = 30        # GUI refresh rate
 
 
@@ -39,14 +43,18 @@ class PlotPanel(QWidget):
 
         # --- Circular buffer (no array shifting!) ---
         self._buf_size = int(1.0 * SAMPLE_RATE)  # max 1s buffer
-        self._buf = np.zeros((6, self._buf_size), dtype=np.float32)  # Vd,Vq,Id,Iq,theta,rpm
+        self._buf = np.zeros((12, self._buf_size), dtype=np.float32)  # Vd,Vq,Id,Iq,Iq_ref,theta,Ia,Ib,Ic,duty_a,duty_b,duty_c
         self._write_idx = 0        # write position in ring buffer
         self._total_samples = 0    # total samples received
         self._pending = deque()    # incoming samples queued from signal
 
+        # --- Logging state ---
+        self._logging = False
+        self._log_data = []
+
         # --- Filtering (EMA) ---
         self._smoothness = 0.0     # 0.0 = no filter, 0.9 = heavy filter
-        self._filter_state = np.zeros(6, dtype=np.float32)
+        self._filter_state = np.zeros(12, dtype=np.float32)
         self._first_sample = True
 
         layout = QVBoxLayout(self)
@@ -61,9 +69,10 @@ class PlotPanel(QWidget):
         self.btn_toggle.clicked.connect(self._toggle_plot)
         toolbar.addWidget(self.btn_toggle)
 
-        self.btn_clear = QPushButton("Clear")
-        self.btn_clear.clicked.connect(self._clear_data)
-        toolbar.addWidget(self.btn_clear)
+
+        self.btn_log = QPushButton("⏺ Record Log")
+        self.btn_log.clicked.connect(self._toggle_logging)
+        toolbar.addWidget(self.btn_log)
 
         toolbar.addStretch()
 
@@ -89,6 +98,14 @@ class PlotPanel(QWidget):
         self.spin_smooth.valueChanged.connect(self._on_smooth_changed)
         toolbar.addWidget(self.spin_smooth)
 
+        toolbar.addSpacing(10)
+        toolbar.addWidget(QLabel("Current Mode:"))
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItems(["dq Currents", "Phase ABC"])
+        self.combo_mode.setFixedWidth(120)
+        self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
+        toolbar.addWidget(self.combo_mode)
+
         layout.addLayout(toolbar)
 
         # Create plots with downsampling enabled
@@ -105,17 +122,27 @@ class PlotPanel(QWidget):
         self.curve_Vd = self.p1.plot(pen=pg.mkPen(COLORS['Vd'], width=1), name='Vd')
         self.curve_Vq = self.p1.plot(pen=pg.mkPen(COLORS['Vq'], width=1), name='Vq')
 
-        # Plot 2: dq currents
+        # Plot 2: dq / phase currents
         self.p2 = self._graphics.addPlot(row=1, col=0, title="Current (A)")
-        self.p2.addLegend(offset=(10, 10))
+        self.legend_p2 = self.p2.addLegend(offset=(10, 10))
         self.p2.showGrid(x=True, y=True, alpha=0.2)
         self.p2.setLabel('left', 'A')
         self.p2.setDownsampling(auto=True, mode='peak')
         self.p2.setClipToView(True)
+        
+        # dq curves
         self.curve_Iq = self.p2.plot(pen=pg.mkPen(COLORS['Iq'], width=1), name='Iq')
         self.curve_Id = self.p2.plot(pen=pg.mkPen(COLORS['Id'], width=1), name='Id')
         self.curve_Iq_ref = self.p2.plot(pen=pg.mkPen(COLORS['Iq_ref'], width=3, style=Qt.DashLine), name='Iq Ref')
         self.curve_Iq_ref.setZValue(1)
+        
+        # Phase currents
+        self.curve_Ia = self.p2.plot(pen=pg.mkPen(COLORS['Ia'], width=1), name='Ia')
+        self.curve_Ib = self.p2.plot(pen=pg.mkPen(COLORS['Ib'], width=1), name='Ib')
+        self.curve_Ic = self.p2.plot(pen=pg.mkPen(COLORS['Ic'], width=1), name='Ic')
+        self.curve_Ia.setVisible(False)
+        self.curve_Ib.setVisible(False)
+        self.curve_Ic.setVisible(False)
 
         # Plot 3: Electrical Angle
         self.p3 = self._graphics.addPlot(row=2, col=0, title="Electrical Angle (rad)")
@@ -142,6 +169,8 @@ class PlotPanel(QWidget):
         self._render_timer = QTimer(self)
         self._render_timer.timeout.connect(self._render)
         self._render_timer.setInterval(int(1000 / DISPLAY_FPS))
+        
+        self._update_curves_visibility()
 
     def _on_window_changed(self, val: float):
         self._window_sec = val
@@ -155,6 +184,7 @@ class PlotPanel(QWidget):
         self._serial.send(protocol.build_plot(self._running))
         self.btn_toggle.setText("⏸ Stop Plot" if self._running else "▶ Start Plot")
         if self._running:
+            self._clear_data()
             self._render_timer.start()
         else:
             self._render_timer.stop()
@@ -170,45 +200,147 @@ class PlotPanel(QWidget):
     def _on_plot_data(self, vals: tuple):
         """Just queue — don't do any processing in signal handler."""
         self._pending.append(vals)
+        if self._logging:
+            self._log_data.append(vals)
+
+    def _toggle_logging(self):
+        if not self._logging:
+            # Start logging
+            self._log_data = []
+            self._logging = True
+            self.btn_log.setText("⏹ Stop Logging")
+            # Style the recording button with red accents
+            self.btn_log.setStyleSheet("background-color: #f38ba8; color: #11111b; font-weight: bold;")
+        else:
+            # Stop logging and save to CSV
+            self._logging = False
+            self.btn_log.setText("⏺ Record Log")
+            self.btn_log.setStyleSheet("")
+            
+            if not self._log_data:
+                return
+                
+            # Open file save dialog
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, 
+                "Save Plot Log", 
+                "", 
+                "CSV Files (*.csv)"
+            )
+            
+            if file_path:
+                try:
+                    with open(file_path, 'w', newline='') as f:
+                        writer = csv.writer(f)
+                        # Write header matching our plot fields
+                        writer.writerow([
+                            'Time_s', 'Vd_V', 'Vq_V', 'Id_A', 'Iq_A', 
+                            'Iq_ref_A', 'theta_rad', 'Ia_A', 'Ib_A', 'Ic_A',
+                            'Duty_A', 'Duty_B', 'Duty_C'
+                        ])
+                        # Calculate time stamps from index and sample rate
+                        dt = 1.0 / SAMPLE_RATE
+                        for idx, row in enumerate(self._log_data):
+                            t = idx * dt
+                            writer.writerow([t] + list(row))
+                    print(f"Plot log successfully saved: {file_path}")
+                except Exception as e:
+                    print(f"Failed to save plot log: {e}")
+                    
+            self._log_data = []
+
+    def _on_mode_changed(self, idx: int):
+        self._update_curves_visibility()
+
+    def _update_curves_visibility(self):
+        show_dq = (self.combo_mode.currentIndex() == 0)
+        
+        # Set visibility of curves
+        self.curve_Id.setVisible(show_dq)
+        self.curve_Iq.setVisible(show_dq)
+        self.curve_Iq_ref.setVisible(show_dq)
+        
+        self.curve_Ia.setVisible(not show_dq)
+        self.curve_Ib.setVisible(not show_dq)
+        self.curve_Ic.setVisible(not show_dq)
+        
+        # Clear and rebuild legend to show correct labels
+        self.legend_p2.clear()
+        if show_dq:
+            self.legend_p2.addItem(self.curve_Id, 'Id')
+            self.legend_p2.addItem(self.curve_Iq, 'Iq')
+            self.legend_p2.addItem(self.curve_Iq_ref, 'Iq Ref')
+        else:
+            self.legend_p2.addItem(self.curve_Ia, 'Ia')
+            self.legend_p2.addItem(self.curve_Ib, 'Ib')
+            self.legend_p2.addItem(self.curve_Ic, 'Ic')
 
     def _render(self):
         """Process queued data + update plots (called at fixed FPS)."""
-        # Batch-write all pending samples into ring buffer
-        while self._pending:
-            vals = np.array(self._pending.popleft(), dtype=np.float32)
-            
-            # Apply EMA filter only to currents (Id, Iq -> indices 2, 3)
-            # All other channels remain unfiltered to avoid phase lag or wrap-around artifacts
-            alpha = 1.0 - self._smoothness
-            
-            if self._first_sample:
-                self._filter_state = vals
-                self._first_sample = False
-            else:
-                # Selective filter for currents
-                self._filter_state[2] = self._filter_state[2] * (1.0 - alpha) + vals[2] * alpha
-                self._filter_state[3] = self._filter_state[3] * (1.0 - alpha) + vals[3] * alpha
-                
-                # Copy raw values for others (unfiltered)
-                self._filter_state[0] = vals[0]
-                self._filter_state[1] = vals[1]
-                self._filter_state[4] = vals[4]
-                self._filter_state[5] = vals[5]
+        # Prevent queue overflow and GUI freezing if the user forgot to stop the plot
+        # or if the rendering fell behind. Keep only the newest buffer-size samples.
+        if len(self._pending) > self._buf_size:
+            while len(self._pending) > self._buf_size:
+                self._pending.popleft()
 
-            idx = self._write_idx % self._buf_size
-            self._buf[0, idx] = self._filter_state[0]  # Vd
-            self._buf[1, idx] = self._filter_state[1]  # Vq
-            self._buf[2, idx] = self._filter_state[2]  # Id (Filtered)
-            self._buf[3, idx] = self._filter_state[3]  # Iq (Filtered)
-            self._buf[4, idx] = self._filter_state[4]  # Iq_ref
-            self._buf[5, idx] = self._filter_state[5]  # theta_elec
-            self._write_idx += 1
-            self._total_samples += 1
+        if not self._pending:
+            if self._total_samples == 0:
+                return
+
+        # Extract all pending samples at once to avoid python loop overhead
+        if self._pending:
+            pending_list = list(self._pending)
+            self._pending.clear()
+            
+            new_data = np.array(pending_list, dtype=np.float32).T # shape (12, N)
+            n_samples = new_data.shape[1]
+            
+            if self._smoothness > 0.0:
+                alpha = 1.0 - self._smoothness
+                # Selective filter for currents (indices 2, 3, 6, 7, 8)
+                filter_indices = [2, 3, 6, 7, 8]
+                for i in range(n_samples):
+                    if self._first_sample:
+                        self._filter_state = new_data[:, i].copy()
+                        self._first_sample = False
+                    else:
+                        for ch in filter_indices:
+                            self._filter_state[ch] = self._filter_state[ch] * (1.0 - alpha) + new_data[ch, i] * alpha
+                        for ch in [0, 1, 4, 5, 9, 10, 11]:
+                            self._filter_state[ch] = new_data[ch, i]
+                    
+                    idx = self._write_idx % self._buf_size
+                    self._buf[:, idx] = self._filter_state
+                    self._write_idx += 1
+                self._total_samples += n_samples
+            else:
+                # Direct block copy (extremely fast C-level NumPy slice)
+                idx = self._write_idx % self._buf_size
+                if idx + n_samples <= self._buf_size:
+                    self._buf[:, idx:idx+n_samples] = new_data
+                else:
+                    part1 = self._buf_size - idx
+                    self._buf[:, idx:] = new_data[:, :part1]
+                    self._buf[:, :n_samples - part1] = new_data[:, part1:]
+                self._write_idx += n_samples
+                self._total_samples += n_samples
+                if self._first_sample and n_samples > 0:
+                    self._filter_state = new_data[:, -1].copy()
+                    self._first_sample = False
 
         # Extract visible window from ring buffer
         n_available = min(self._total_samples, self._buf_size)
         n_show = min(self._max_samples, n_available)
         if n_show == 0:
+            self.curve_Vd.setData([], [])
+            self.curve_Vq.setData([], [])
+            self.curve_Id.setData([], [])
+            self.curve_Iq.setData([], [])
+            self.curve_Iq_ref.setData([], [])
+            self.curve_theta.setData([], [])
+            self.curve_Ia.setData([], [])
+            self.curve_Ib.setData([], [])
+            self.curve_Ic.setData([], [])
             return
 
         # Read from ring buffer (newest n_show samples)
@@ -221,6 +353,9 @@ class PlotPanel(QWidget):
             Iq = self._buf[3, slc]
             Iq_ref = self._buf[4, slc]
             theta = self._buf[5, slc]
+            Ia = self._buf[6, slc]
+            Ib = self._buf[7, slc]
+            Ic = self._buf[8, slc]
         else:
             # Wraps around
             part1_start = self._buf_size - (n_show - end)
@@ -230,17 +365,27 @@ class PlotPanel(QWidget):
             Iq = np.concatenate([self._buf[3, part1_start:], self._buf[3, :end]])
             Iq_ref = np.concatenate([self._buf[4, part1_start:], self._buf[4, :end]])
             theta = np.concatenate([self._buf[5, part1_start:], self._buf[5, :end]])
+            Ia = np.concatenate([self._buf[6, part1_start:], self._buf[6, :end]])
+            Ib = np.concatenate([self._buf[7, part1_start:], self._buf[7, :end]])
+            Ic = np.concatenate([self._buf[8, part1_start:], self._buf[8, :end]])
 
         # Time axis (relative to window)
         t = np.linspace(0, n_show / SAMPLE_RATE, n_show, dtype=np.float32)
 
-        # Update curves
+        # Update curves (only update visible curves to save processing time)
         self.curve_Vd.setData(t, Vd)
         self.curve_Vq.setData(t, Vq)
-        self.curve_Id.setData(t, Id)
-        self.curve_Iq.setData(t, Iq)
-        self.curve_Iq_ref.setData(t, Iq_ref)
         self.curve_theta.setData(t, theta)
+        
+        show_dq = (self.combo_mode.currentIndex() == 0)
+        if show_dq:
+            self.curve_Id.setData(t, Id)
+            self.curve_Iq.setData(t, Iq)
+            self.curve_Iq_ref.setData(t, Iq_ref)
+        else:
+            self.curve_Ia.setData(t, Ia)
+            self.curve_Ib.setData(t, Ib)
+            self.curve_Ic.setData(t, Ic)
 
         # Set X range
         self.p3.setXRange(0, self._window_sec, padding=0)

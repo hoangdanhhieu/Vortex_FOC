@@ -105,7 +105,7 @@ class ControlPanel(QGroupBox):
         # Cache variables
         self._last_vbus = 0.0
         self._ibus_filtered = 0.0
-        self._ibus_alpha = 0.05
+        self._ibus_alpha = 0.005
 
     def set_enabled_state(self, enabled: bool):
         """Update UI state based on connection status."""

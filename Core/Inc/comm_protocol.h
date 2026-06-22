@@ -18,8 +18,8 @@
 #define COMM_HEADER 0xAA
 #define COMM_MAX_PAYLOAD 255
 
-/** Streaming decimation: 48kHz / 48 = 1kHz plot rate */
-#define PLOT_DECIMATION 48
+/** Streaming decimation: 48kHz / 2 = 24kHz plot rate */
+#define PLOT_DECIMATION 2
 
 /*===========================================================================*/
 /* Command Types (PC → MCU)                                                  */
@@ -50,7 +50,7 @@
 #define RSP_VALUE 0x82     /**< Value: id(1B) + value(4B float) */
 #define RSP_STATUS 0x83    /**< Status: state(1B)+fault(1B)+dir(1B)+pad+rpm(4B)+vbus(4B) */
 #define RSP_PARAM_ALL 0x84 /**< All params: count(1B) + [id(1B)+val(4B)]×N */
-#define RSP_PLOT 0x90      /**< Stream: Ia(4B)+Ib(4B)+Id(4B)+Iq(4B)+theta(4B)+rpm(4B) */
+#define RSP_PLOT 0x90      /**< Stream: Vd,Vq,Id,Iq,Iq_ref,theta,Ia,Ib,Ic,duty_a,duty_b,duty_c (12x2B) */
 
 /*===========================================================================*/
 /* Parameter IDs                                                             */
@@ -72,6 +72,7 @@ enum {
     PID_IB,
     PID_ID_RS_MEAS,
     PID_ID_LS_MEAS,
+    PID_ID_DT_MEAS,
     PID_COUNT
 };
 

@@ -59,21 +59,36 @@ class ConnectionPanel(QGroupBox):
         else:
             port = self.port_combo.currentText()
             if port:
+                self.lbl_status.setText("● Connecting...")
+                self.lbl_status.setStyleSheet("color: #f9e2af; font-weight: bold;")
+                self.btn_connect.setEnabled(False)
+                self.btn_refresh.setEnabled(False)
+                self.port_combo.setEnabled(False)
                 self._serial.connect_port(port)
 
     def _on_connected(self):
         self.lbl_status.setText("● Connected")
         self.lbl_status.setStyleSheet(f"color: {GREEN}; font-weight: bold;")
+        self.btn_connect.setEnabled(True)
         self.btn_connect.setText("Disconnect")
+        self.btn_refresh.setEnabled(False)
+        self.port_combo.setEnabled(False)
         self.connection_changed.emit(True)
 
     def _on_disconnected(self):
         self.lbl_status.setText("● Disconnected")
         self.lbl_status.setStyleSheet(f"color: {TEXT_DIM}; font-weight: bold;")
+        self.btn_connect.setEnabled(True)
         self.btn_connect.setText("Connect")
+        self.btn_refresh.setEnabled(True)
+        self.port_combo.setEnabled(True)
         self.connection_changed.emit(False)
 
     def _on_error(self, msg):
         self.lbl_status.setText(f"● Error")
         self.lbl_status.setStyleSheet(f"color: {RED}; font-weight: bold;")
         self.lbl_status.setToolTip(msg)
+        self.btn_connect.setEnabled(True)
+        self.btn_connect.setText("Connect")
+        self.btn_refresh.setEnabled(True)
+        self.port_combo.setEnabled(True)

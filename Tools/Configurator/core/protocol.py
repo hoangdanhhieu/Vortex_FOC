@@ -215,8 +215,25 @@ def parse_param_all(payload: bytes) -> dict[int, float]:
     return params
 
 
-def parse_plot(payload: bytes) -> tuple[float, ...]:
-    """Parse PLOT data: returns (Ia, Ib, Id, Iq, theta, rpm)"""
-    if len(payload) >= 24:
-        return struct.unpack('<6f', payload[:24])
-    return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+def parse_plot(payload: bytes) -> list[tuple[float, ...]]:
+    """Parse PLOT data batch: returns list of (Vd, Vq, Id, Iq, Iq_ref, theta, Ia, Ib, Ic, duty_a, duty_b, duty_c)"""
+    samples = []
+    sample_size = 24  # 12 variables * 2 bytes (int16_t)
+    for offset in range(0, len(payload), sample_size):
+        if offset + sample_size <= len(payload):
+            raw = struct.unpack('<12h', payload[offset:offset+sample_size])
+            samples.append((
+                raw[0] / 1000.0,
+                raw[1] / 1000.0,
+                raw[2] / 1000.0,
+                raw[3] / 1000.0,
+                raw[4] / 1000.0,
+                raw[5] / 10000.0,
+                raw[6] / 1000.0,
+                raw[7] / 1000.0,
+                raw[8] / 1000.0,
+                raw[9] / 10000.0,
+                raw[10] / 10000.0,
+                raw[11] / 10000.0
+            ))
+    return samples
