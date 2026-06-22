@@ -51,23 +51,7 @@ CCMRAM_FUNC void svpwm_calculate(void) {
     float db = (Vb - Voffset) + 0.5f;
     float dc = (Vc - Voffset) + 0.5f;
 
-    /* Apply Dead-time Compensation based on voltage reference direction */
-    float dt_comp = DEAD_TIME_DUTY;
-
-    if (da > 0.5f)
-        da += dt_comp;
-    else
-        da -= dt_comp;
-    if (db > 0.5f)
-        db += dt_comp;
-    else
-        db -= dt_comp;
-    if (dc > 0.5f)
-        dc += dt_comp;
-    else
-        dc -= dt_comp;
-
-    /* Clamp duty cycles to valid range [0, 1] */
+    /* Clamp duty cycles to valid range [0, max_duty] */
     float max_duty = g_foc.max_duty;
     g_foc.data.duty_a = da < 0.0f ? 0.0f : (da > max_duty ? max_duty : da);
     g_foc.data.duty_b = db < 0.0f ? 0.0f : (db > max_duty ? max_duty : db);

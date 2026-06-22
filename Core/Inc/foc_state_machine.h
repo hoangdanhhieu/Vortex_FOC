@@ -109,6 +109,9 @@ typedef struct {
         int32_t offset_a;
         int32_t offset_b;
         int32_t offset_c;
+        int32_t offset_vphase_a;
+        int32_t offset_vphase_b;
+        int32_t offset_vphase_c;
         uint16_t cal_samples;
     } adc_cal;
 
@@ -123,6 +126,8 @@ typedef struct {
         float Vd, Vq;
         float Id, Iq;
         float Iq_ref, theta_elec;
+        float Ia, Ib, Ic;
+        float duty_a, duty_b, duty_c;
     } plot;
 
 } FOC_Control_t;

@@ -34,6 +34,11 @@ static float s_Ia_filt = 0.0f;
 static float s_Ib_filt = 0.0f;
 static float s_Ic_filt = 0.0f;
 
+/* Static filter state for deadtime compensation */
+static float s_Ia_filt_dt = 0.0f;
+static float s_Ib_filt_dt = 0.0f;
+static float s_Ic_filt_dt = 0.0f;
+
 static float s_Id_filt = 0.0f;
 static float s_Iq_filt = 0.0f;
 
@@ -60,6 +65,18 @@ static float s_detect_peak = 0.0f;
 static float s_bemf_threshold = 0.0f;
 static uint32_t s_flying_start_counter = 0;
 static uint32_t s_lock_samples = 0;
+
+/* Phase voltage calibration & spinning detection accumulators */
+static int32_t s_vphase_a_accum = 0;
+static int32_t s_vphase_b_accum = 0;
+static int32_t s_vphase_c_accum = 0;
+
+static uint16_t s_vphase_a_min = 4096;
+static uint16_t s_vphase_a_max = 0;
+static uint16_t s_vphase_b_min = 4096;
+static uint16_t s_vphase_b_max = 0;
+static uint16_t s_vphase_c_min = 4096;
+static uint16_t s_vphase_c_max = 0;
 
 extern volatile uint32_t adc_isr_us;
 extern volatile uint16_t adc_regular_buffer[];
@@ -92,6 +109,7 @@ static void FOC_StateFault(void);
 static void FOC_StateSelfCommission(void);
 static inline void FOC_ApplyCurrentFilter();
 void FOC_ResetCurrentFilter(void);
+static inline void FOC_ApplyDeadtimeCompensation(float* out_a, float* out_b, float* out_c);
 
 /*===========================================================================*/
 /* Public Functions                                                          */
@@ -153,6 +171,9 @@ void FOC_Init(void) {
     g_foc.adc_cal.offset_a = ADC_CURRENT_OFFSET;
     g_foc.adc_cal.offset_b = ADC_CURRENT_OFFSET;
     g_foc.adc_cal.offset_c = ADC_CURRENT_OFFSET;
+    g_foc.adc_cal.offset_vphase_a = 2150;
+    g_foc.adc_cal.offset_vphase_b = 2140;
+    g_foc.adc_cal.offset_vphase_c = 2210;
     g_foc.adc_cal.cal_samples = 0;
 
     /* Statistics */
@@ -218,7 +239,9 @@ void FOC_Start(void) {
         s_detect_samples = (uint32_t)(2.0f / f_elec_min * (float)CONTROL_FREQUENCY);
         s_lock_samples =
             (uint32_t)(5.0f / (TWO_PI * g_foc.cfg.smo_pll_cutoff) * (float)CONTROL_FREQUENCY);
-        if (s_lock_samples < 100) s_lock_samples = 100;
+        /* Ensure at least 50 ms for stable PLL lock tracking */
+        uint32_t min_lock_samples = (uint32_t)(0.05f * (float)CONTROL_FREQUENCY);  // 50 ms
+        if (s_lock_samples < min_lock_samples) s_lock_samples = min_lock_samples;
         s_bemf_threshold = g_foc.cfg.motor_min_spd / g_foc.cfg.motor_kv * 0.5f;
         if (s_bemf_threshold < 0.05f) s_bemf_threshold = 0.05f;
 
@@ -232,7 +255,21 @@ void FOC_Start(void) {
         g_foc.adc_cal.offset_b = 0;
         g_foc.adc_cal.offset_c = 0;
         g_foc.adc_cal.cal_samples = 0;
+
+        /* Reset phase voltage calibration accumulators and min/max states */
+        s_vphase_a_accum = 0;
+        s_vphase_b_accum = 0;
+        s_vphase_c_accum = 0;
+        s_vphase_a_min = 4096;
+        s_vphase_a_max = 0;
+        s_vphase_b_min = 4096;
+        s_vphase_b_max = 0;
+        s_vphase_c_min = 4096;
+        s_vphase_c_max = 0;
         g_foc.status.state = FOC_STATE_CALIBRATION;
+
+        PI_SetIntLimits(&g_foc.ctrl.id, -g_foc.data.Vbus, g_foc.data.Vbus);
+        PI_SetIntLimits(&g_foc.ctrl.iq, -g_foc.data.Vbus, g_foc.data.Vbus);
     }
 }
 
@@ -252,8 +289,8 @@ void FOC_Stop(void) {
 
 CCMRAM_FUNC static void FOC_CheckSafety(void) {
     if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_CALIBRATION ||
-        g_foc.status.state == FOC_STATE_FAULT || g_foc.status.state == FOC_STATE_SELF_COMMISSION ||
-        g_foc.status.state == FOC_STATE_DETECT || g_foc.status.state == FOC_STATE_FLYING_START) {
+        g_foc.status.state == FOC_STATE_FAULT || g_foc.status.state == FOC_STATE_DETECT ||
+        g_foc.status.state == FOC_STATE_FLYING_START) {
         oc_count = 0;
         stall_counter = 0;
         return;
@@ -302,6 +339,80 @@ CCMRAM_FUNC static void FOC_CheckSafety(void) {
     }
 }
 
+/**
+ * @brief Apply centralized deadtime compensation to duty cycles.
+ *        To prevent self-excited chattering/oscillations during open-loop states (e.g.
+ * startup/alignment) due to current measurement noise, we use command/reference current vector
+ * (Id_ref, Iq_ref) and electrical angle (theta_elec) to determine the signs of currents. During
+ * parameter identification, we fall back to IIR low-pass filtered measured currents.
+ */
+CCMRAM_FUNC static inline void FOC_ApplyDeadtimeCompensation(float* out_a, float* out_b,
+                                                             float* out_c) {
+    float dt_comp = DEAD_TIME_DUTY;
+    if (dt_comp <= 0.0f) {
+        return;
+    }
+
+    float sign_a, sign_b, sign_c;
+    float i_th;
+
+    if (g_foc.status.state == FOC_STATE_SELF_COMMISSION) {
+        return;
+    } else if (g_foc.status.state == FOC_STATE_RUN || g_foc.status.state == FOC_STATE_STOP) {
+        sign_a = g_foc.data.Ia;
+        sign_b = g_foc.data.Ib;
+        sign_c = g_foc.data.Ic;
+        i_th = 0.4f;
+    } else {
+        float sin_th, cos_th;
+        cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
+
+        float I_alpha_ref = g_foc.cmd.Id_ref * cos_th - g_foc.cmd.Iq_ref * sin_th;
+        float I_beta_ref = g_foc.cmd.Id_ref * sin_th + g_foc.cmd.Iq_ref * cos_th;
+
+        sign_a = I_alpha_ref;
+        sign_b = -0.5f * I_alpha_ref + 0.8660254f * I_beta_ref;
+        sign_c = -0.5f * I_alpha_ref - 0.8660254f * I_beta_ref;
+
+        i_th = 0.05f;
+    }
+
+    if (sign_a > i_th)
+        *out_a += dt_comp;
+    else if (sign_a < -i_th)
+        *out_a -= dt_comp;
+    else
+        *out_a += dt_comp * (sign_a / i_th);
+
+    if (sign_b > i_th)
+        *out_b += dt_comp;
+    else if (sign_b < -i_th)
+        *out_b -= dt_comp;
+    else
+        *out_b += dt_comp * (sign_b / i_th);
+
+    if (sign_c > i_th)
+        *out_c += dt_comp;
+    else if (sign_c < -i_th)
+        *out_c -= dt_comp;
+    else
+        *out_c += dt_comp * (sign_c / i_th);
+
+    float max_duty = g_foc.max_duty;
+    if (*out_a < 0.0f)
+        *out_a = 0.0f;
+    else if (*out_a > max_duty)
+        *out_a = max_duty;
+    if (*out_b < 0.0f)
+        *out_b = 0.0f;
+    else if (*out_b > max_duty)
+        *out_b = max_duty;
+    if (*out_c < 0.0f)
+        *out_c = 0.0f;
+    else if (*out_c > max_duty)
+        *out_c = max_duty;
+}
+
 /*===========================================================================*/
 /* Main ISR Entry Point                                                      */
 /*===========================================================================*/
@@ -314,7 +425,7 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_
     g_foc.data.Ia = ((float)adc_ia - (float)g_foc.adc_cal.offset_a) * ADC_TO_CURRENT;
     g_foc.data.Ib = ((float)adc_ib - (float)g_foc.adc_cal.offset_b) * ADC_TO_CURRENT;
     g_foc.data.Ic = ((float)adc_ic - (float)g_foc.adc_cal.offset_c) * ADC_TO_CURRENT;
-
+    // LL_DAC_ConvertData12RightAligned(DAC1, LL_DAC_CHANNEL_1, adc_ib);
     g_foc.status.run_counter++;
 
     FOC_CheckSafety();
@@ -325,16 +436,22 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_
         g_foc.data.Ic = t;
     }
 
-    foc_reconstruct_currents();
-    FOC_ApplyCurrentFilter();
+    if (g_foc.status.state != FOC_STATE_SELF_COMMISSION) {
+        // foc_reconstruct_currents();
+        FOC_ApplyCurrentFilter();
+    }
     clarke_transform(g_foc.data.Ia, g_foc.data.Ib, &g_foc.data.Ialpha, &g_foc.data.Ibeta);
 
     if (g_foc.status.state == FOC_STATE_DETECT || g_foc.status.state == FOC_STATE_FLYING_START) {
         g_foc.data.Vphase_a =
-            ((float)adc_regular_buffer[1] - 1990) * (20.841f * ADC_Vref / 4096.0f);
-        g_foc.data.Vphase_b = ((float)adc_regular_buffer[2] - 1975) * (21.0f * ADC_Vref / 4096.0f);
+            ((float)adc_regular_buffer[1] - (float)g_foc.adc_cal.offset_vphase_a) *
+            (20.841f * ADC_Vref / 4096.0f);
+        g_foc.data.Vphase_b =
+            ((float)adc_regular_buffer[2] - (float)g_foc.adc_cal.offset_vphase_b) *
+            (21.0f * ADC_Vref / 4096.0f);
         g_foc.data.Vphase_c =
-            ((float)adc_regular_buffer[3] - 1967) * (21.085f * ADC_Vref / 4096.0f);
+            ((float)adc_regular_buffer[3] - (float)g_foc.adc_cal.offset_vphase_c) *
+            (21.085f * ADC_Vref / 4096.0f);
     }
 
     switch (g_foc.status.state) {
@@ -345,6 +462,20 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_
             g_foc.adc_cal.offset_a += adc_ia;
             g_foc.adc_cal.offset_b += adc_ib;
             g_foc.adc_cal.offset_c += adc_ic;
+            {
+                uint16_t va = adc_regular_buffer[1];
+                uint16_t vb = adc_regular_buffer[2];
+                uint16_t vc = adc_regular_buffer[3];
+                s_vphase_a_accum += va;
+                s_vphase_b_accum += vb;
+                s_vphase_c_accum += vc;
+                if (va < s_vphase_a_min) s_vphase_a_min = va;
+                if (va > s_vphase_a_max) s_vphase_a_max = va;
+                if (vb < s_vphase_b_min) s_vphase_b_min = vb;
+                if (vb > s_vphase_b_max) s_vphase_b_max = vb;
+                if (vc < s_vphase_c_min) s_vphase_c_min = vc;
+                if (vc > s_vphase_c_max) s_vphase_c_max = vc;
+            }
             g_foc.adc_cal.cal_samples++;
             FOC_StateCalibration();
             break;
@@ -400,14 +531,30 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_
             g_foc.plot.Iq = g_foc.data.Iq;
             g_foc.plot.Iq_ref = g_foc.cmd.Iq_ref;
             g_foc.plot.theta_elec = g_foc.data.theta_elec;
+            g_foc.plot.Ia = g_foc.data.Ia;
+            g_foc.plot.Ib = g_foc.data.Ib;
+            g_foc.plot.Ic = g_foc.data.Ic;
+            g_foc.plot.duty_a = g_foc.data.duty_a;
+            g_foc.plot.duty_b = g_foc.data.duty_b;
+            g_foc.plot.duty_c = g_foc.data.duty_c;
             g_foc.plot.ready = 1;
         }
     }
 
+    /* Centralized deadtime compensation applied to local copies.
+     * g_foc.data.duty_a/b/c remain CLEAN (no comp embedded), so ramp
+     * controllers in Motor ID and other state machines never accumulate
+     * the compensation offset across ISR cycles. */
+    float out_a = g_foc.data.duty_a;
+    float out_b = g_foc.data.duty_b;
+    float out_c = g_foc.data.duty_c;
+
+    FOC_ApplyDeadtimeCompensation(&out_a, &out_b, &out_c);
+
     if (g_foc.status.reverse > 0) {
-        foc_set_pwm_duty(g_foc.data.duty_a, g_foc.data.duty_b, g_foc.data.duty_c);
+        foc_set_pwm_duty(out_a, out_b, out_c);
     } else {
-        foc_set_pwm_duty(g_foc.data.duty_a, g_foc.data.duty_c, g_foc.data.duty_b);
+        foc_set_pwm_duty(out_a, out_c, out_b);
     }
 }
 
@@ -438,6 +585,10 @@ void FOC_ResetCurrentFilter(void) {
     s_Ia_filt = 0.0f;
     s_Ib_filt = 0.0f;
     s_Ic_filt = 0.0f;
+
+    s_Ia_filt_dt = 0.0f;
+    s_Ib_filt_dt = 0.0f;
+    s_Ic_filt_dt = 0.0f;
 }
 
 /*===========================================================================*/
@@ -460,6 +611,20 @@ static void FOC_StateCalibration(void) {
         g_foc.adc_cal.offset_a /= CAL_SAMPLES;
         g_foc.adc_cal.offset_b /= CAL_SAMPLES;
         g_foc.adc_cal.offset_c /= CAL_SAMPLES;
+
+        /* Check if peak-to-peak variation on any phase is above threshold (30 ADC counts)
+         * to detect if the motor is already spinning. */
+        uint16_t diff_a = s_vphase_a_max - s_vphase_a_min;
+        uint16_t diff_b = s_vphase_b_max - s_vphase_b_min;
+        uint16_t diff_c = s_vphase_c_max - s_vphase_c_min;
+
+        uint8_t is_spinning = (diff_a > 30) || (diff_b > 30) || (diff_c > 30);
+
+        if (!is_spinning) {
+            g_foc.adc_cal.offset_vphase_a = s_vphase_a_accum / CAL_SAMPLES;
+            g_foc.adc_cal.offset_vphase_b = s_vphase_b_accum / CAL_SAMPLES;
+            g_foc.adc_cal.offset_vphase_c = s_vphase_c_accum / CAL_SAMPLES;
+        }
 
         g_foc.startup.theta = 0.0f;
         g_foc.startup.omega = 0.0f;
@@ -489,6 +654,23 @@ static void FOC_StateDetect(void) {
         float thr_sq = s_bemf_threshold * s_bemf_threshold;
         if (s_detect_peak > thr_sq) {
             SMO_Reset(&g_foc.ctrl.smo);
+
+            /* Seed speed and angle from the last measured back-EMF peak/vector */
+            float E_amp_real = sqrtf(s_detect_peak) * TWO_THIRDS; /* scale back by 1.5 */
+            float est_omega = E_amp_real / g_foc.cfg.motor_flux;
+            if (est_omega > SMO_PLL_INT_MAX) est_omega = SMO_PLL_INT_MAX;
+
+            /* Match the direction of target speed */
+            if (g_foc.cmd.speed_ref_target < 0.0f) {
+                est_omega = -est_omega;
+            }
+
+            g_foc.ctrl.smo.omega_est = est_omega;
+            g_foc.ctrl.smo.pll_integral = est_omega;
+
+            float theta_init = cordic_atan2(-E_alpha, E_beta);
+            g_foc.ctrl.smo.theta_est = theta_init;
+
             s_flying_start_counter = 0;
             g_foc.status.state = FOC_STATE_FLYING_START;
         } else {
@@ -500,7 +682,6 @@ static void FOC_StateDetect(void) {
 
 static void FOC_StateFlyingStart(void) {
     s_flying_start_counter++;
-    g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.5f;
 
     float Ea = g_foc.data.Vphase_a;
     float Eb = g_foc.data.Vphase_b;
@@ -510,22 +691,91 @@ static void FOC_StateFlyingStart(void) {
 
     SMO_FeedBEMF(&g_foc.ctrl.smo, E_alpha, E_beta);
 
-    if (s_flying_start_counter >= s_lock_samples) {
+    if (s_flying_start_counter < s_lock_samples) {
+        /* Normal flying start: drivers OFF, output 0V, PLL tracking */
+        g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.5f;
+
+    } else if (s_flying_start_counter == s_lock_samples) {
+        /* -----------------------------------------------------------
+         * PRECHARGE CYCLE: Compute correct SVPWM duties that match
+         * back-EMF. These values go to the CCR preload register via
+         * foc_set_pwm_duty() at the end of this ISR. The timer update
+         * event (at counter underflow) will transfer them to the shadow
+         * register BEFORE the next ISR fires.
+         *
+         * DO NOT enable drivers here — the shadow register still has
+         * the old 0.5 duty from previous cycles!
+         * ----------------------------------------------------------- */
+        float omega_now = g_foc.ctrl.smo.omega_est;
+        float theta_now = SMO_GetAngle(&g_foc.ctrl.smo);
+        float E_bemf = omega_now * g_foc.cfg.motor_flux;
+
+        g_foc.data.Vd = 0.0f;
+        g_foc.data.Vq = E_bemf;
+
+        float sin_th, cos_th;
+        cordic_sincos(theta_now, &cos_th, &sin_th);
+        inverse_park_transform(g_foc.data.Vd, g_foc.data.Vq, cos_th, sin_th, &g_foc.data.Valpha,
+                               &g_foc.data.Vbeta);
+        svpwm_calculate(); /* duty_a/b/c now match back-EMF */
+
+    } else {
+        /* -----------------------------------------------------------
+         * ENABLE CYCLE: The timer update event between the previous
+         * ISR and this one has loaded the correct duty from the
+         * precharge cycle into the CCR shadow register. The PWM output
+         * NOW matches back-EMF. Safe to enable gate drivers — the
+         * very first PWM pulse the motor sees is correct.
+         * ----------------------------------------------------------- */
+        float omega_now = g_foc.ctrl.smo.omega_est;
+        float theta_now = SMO_GetAngle(&g_foc.ctrl.smo);
+        float E_bemf = omega_now * g_foc.cfg.motor_flux;
+
+        /* Recompute SVPWM for the updated angle (one cycle later) */
+        g_foc.data.Vd = 0.0f;
+        g_foc.data.Vq = E_bemf;
+
+        float sin_th, cos_th;
+        cordic_sincos(theta_now, &cos_th, &sin_th);
+        inverse_park_transform(g_foc.data.Vd, g_foc.data.Vq, cos_th, sin_th, &g_foc.data.Valpha,
+                               &g_foc.data.Vbeta);
+        svpwm_calculate();
+
+        /* Pre-load current PI integrals for bumpless transfer */
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
         PI_Reset(&g_foc.ctrl.speed);
+        g_foc.ctrl.iq.integral = E_bemf; /* Vq starts at back-EMF level */
+        g_foc.ctrl.id.integral = 0.0f;
 
         s_Id_filt = 0.0f;
         s_Iq_filt = 0.0f;
 
+        /* Seed SMO current observer with actual measured currents */
+        g_foc.ctrl.smo.Ialpha_est = g_foc.data.Ialpha;
+        g_foc.ctrl.smo.Ibeta_est = g_foc.data.Ibeta;
+
+        /* Seed SMO low-pass filter states with pre-charged back-EMF vector values
+         * to prevent transients upon entering closed-loop. */
+        g_foc.ctrl.smo.Ealpha_flt = -E_bemf * sin_th;
+        g_foc.ctrl.smo.Ebeta_flt = E_bemf * cos_th;
+
         if (g_foc.status.control_mode == FOC_MODE_SPEED) {
-            g_foc.cmd.speed_ref = g_foc.ctrl.smo.omega_est;
+            g_foc.cmd.speed_ref = omega_now;
             g_foc.ctrl.speed.integral = 0.0f;
         }
         g_foc.cmd.Iq_ref = 0.0f;
         g_foc.cmd.Id_ref = 0.0f;
 
+        /* Transition blending: bypass for flying start since the observer is already
+         * locked and aligned. Angle blending can cause phase drift and current spikes. */
+        g_foc.startup.theta = theta_now;
+        g_foc.startup.omega = omega_now;
+        s_blend_alpha = 1.0f;
+        s_transition_counter = 0;
+        s_transition_samples = 0;
         s_in_transition = 0;
+
         FOC_EnableDrivers(1);
         g_foc.status.state = FOC_STATE_RUN;
     }
@@ -595,7 +845,7 @@ CCMRAM_FUNC static void FOC_StateStartup(void) {
     /* Calculate startup voltage directly (open-loop) */
     float v_resistive = g_foc.cmd.Iq_ref * g_foc.cfg.motor_rs;
     float v_bemf = g_foc.startup.omega * g_foc.cfg.motor_flux; /* Back-EMF term */
-    float startup_voltage = v_resistive + v_bemf + 0.3;
+    float startup_voltage = v_resistive + v_bemf;
 
     /* Ensure minimum voltage to overcome friction and start rotation */
     float min_voltage = -g_foc.data.Vbus / SQRT3; /* Minimum voltage [V] */
@@ -814,8 +1064,22 @@ static void FOC_StateFault(void) {
 }
 
 static void FOC_StateSelfCommission(void) {
-    MotorID_RunStep(g_foc.data.Ia, g_foc.data.Ib, g_foc.data.Vbus, &g_foc.data.duty_a,
-                    &g_foc.data.duty_b, &g_foc.data.duty_c);
+    g_foc.data.theta_elec = 0.0f;
+    float cos_th = 1.0f;
+    float sin_th = 0.0f;
+
+    /* Reconstruct currents and transform to d-q frame */
+    park_transform(g_foc.data.Ialpha, g_foc.data.Ibeta, cos_th, sin_th, &g_foc.data.Id,
+                   &g_foc.data.Iq);
+
+    /* Run the d-axis AC parameter identification step */
+    MotorID_RunStep(g_foc.data.Id, g_foc.data.Iq, g_foc.data.Vbus, &g_foc.data.Vd, &g_foc.data.Vq);
+
+    /* Inverse Park and SVPWM calculation */
+    inverse_park_transform(g_foc.data.Vd, g_foc.data.Vq, cos_th, sin_th, &g_foc.data.Valpha,
+                           &g_foc.data.Vbeta);
+    svpwm_calculate();
+
     if (id_result.state == MOTOR_ID_STATE_COMPLETE) {
         MotorID_Stop();
         FOC_StateStop();

@@ -1,6 +1,9 @@
 /**
  * @file motor_id.h
- * @brief Motor Parameter Identification (Self-Commissioning) Module
+ * @brief Motor Parameter Identification — Public API
+ *
+ * Rs: Two-point DC injection (duty centred at midpoint 0.5).
+ * Ls: AC sinusoidal injection with single-frequency lock-in demodulation.
  */
 
 #ifndef MOTOR_ID_H
@@ -8,66 +11,66 @@
 
 #include <stdint.h>
 
-#include "foc_config.h"
 /*===========================================================================*/
-/* Data Structures                                                           */
+/* State Enum                                                                */
 /*===========================================================================*/
 
 typedef enum {
     MOTOR_ID_STATE_IDLE = 0,
-    MOTOR_ID_STATE_ALIGN,      /* Align rotor for measurement */
-    MOTOR_ID_STATE_MEASURE_RS, /* Measure Resistance */
-    MOTOR_ID_STATE_MEASURE_LS, /* Measure Inductance */
-    MOTOR_ID_STATE_COMPLETE,   /* Measurement complete */
+    MOTOR_ID_STATE_ALIGN,
+    MOTOR_ID_STATE_PROBE,
+    MOTOR_ID_STATE_MEASURE_AC1,
+    MOTOR_ID_STATE_MEASURE_AC2,
+    MOTOR_ID_STATE_COMPLETE,
     MOTOR_ID_STATE_ERROR
 } MotorID_State_t;
 
+/*===========================================================================*/
+/* Result / Debug Struct                                                     */
+/*===========================================================================*/
+
 typedef struct {
-    float measured_rs;     /* Measured Phase Resistance [Ohm] */
-    float measured_ls;     /* Measured Phase Inductance [H] */
-    MotorID_State_t state; /* Internal state of ID process */
-    uint32_t error_code;   /* 0 = No error */
+    float measured_rs; /* Phase resistance  [Ω]  */
+    float measured_ls; /* Phase inductance  [H]  */
+    MotorID_State_t state;
+    uint32_t error_code; /* 0 = OK */
+
+    /* Identified Deadtime and Voltage Error */
+    float identified_v_err;       /* Identified deadtime voltage error [V] */
+    float identified_deadtime_ns; /* Identified deadtime [ns] */
+
+    /* Debug AC1 */
+    float dbg_ac1_Iamp;
+    float dbg_ac1_Rapp;
+    float dbg_ac1_Ls;
+
+    /* Debug AC2 */
+    float dbg_ac2_Iamp;
+    float dbg_ac2_Rapp;
+    float dbg_ac2_Ls;
 } MotorID_Result_t;
 
 extern MotorID_Result_t id_result;
+
 /*===========================================================================*/
 /* Configuration                                                             */
 /*===========================================================================*/
-#define CURRENT_FILTER_COEFF 0.1f
+#define CURRENT_FILTER_COEFF 0.01f
+
 /*===========================================================================*/
 /* Public Functions                                                          */
 /*===========================================================================*/
 
-/**
- * @brief Initialize the ID module
- */
 void MotorID_Init(void);
-
-/**
- * @brief Start the parameter identification process
- */
 void MotorID_Start(void);
-
-/**
- * @brief Stop/Cancel identification
- */
 void MotorID_Stop(void);
 
 /**
- * @brief Run one step of the ID state machine (called at PWM rate)
- * @param ia     Phase-A current [A]
- * @param ib     Phase-B current [A]
- * @param vbus   Bus voltage [V]
- * @param duty_a Pointer to phase-A duty output [0..1]
- * @param duty_b Pointer to phase-B duty output [0..1]
- * @param duty_c Pointer to phase-C duty output [0..1]
+ * @brief Run one step of the identification state machine.
+ *        Called once per PWM ISR cycle (48 kHz).
  */
-void MotorID_RunStep(float ia, float ib, float ic, float vbus, float* duty_a, float* duty_b,
-                     float* duty_c);
+void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq);
 
-/**
- * @brief Get the latest results
- */
 void MotorID_GetResults(MotorID_Result_t* results);
 
 #endif /* MOTOR_ID_H */
