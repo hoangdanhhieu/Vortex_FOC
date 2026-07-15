@@ -48,13 +48,10 @@ PARAM_DEF(PID_M_MIN_SPD,  float,     motor_min_spd,        MOTOR_MIN_SPEED_RPM)
 PARAM_DEF(PID_M_MAX_I,    float,     motor_max_curr,       MOTOR_MAX_CURRENT)
 
 /* SMO */
-PARAM_DEF(PID_SMO_KS,     float,     smo_k_slide,          SMO_K_SLIDE)
-PARAM_DEF(PID_SMO_SIG,    float,     smo_k_sigmoid,        SMO_K_SIGMOID)
-PARAM_DEF(PID_SMO_PLL,    float,     smo_pll_cutoff,       SMO_PPL_CUTOFF)
 PARAM_DEF(PID_COMP_DELAY, float,     comp_delay_samples,   COMP_DELAY_SAMPLES)
 
 PARAM_DEF(PID_ADC_MARG,   float,     adc_margin_ticks,     ADC_MARGIN_DEFAULT)
-PARAM_DEF(PID_ADC_FILT_A, float,     adc_filt_a,           CURRENT_FILTER_ALPHA)
+PARAM_DEF(PID_SMO_STF_BW, float,     smo_stf_bw,           SMO_STF_BW_DEFAULT)
 PARAM_DEF(PID_DQ_FILT_A,  float,     dq_filt_a,            FOC_DQ_FILTER_ALPHA)
 
 /* Safety */

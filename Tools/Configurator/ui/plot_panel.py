@@ -3,6 +3,7 @@
 import numpy as np
 import pyqtgraph as pg
 import csv
+import math
 from collections import deque
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -14,6 +15,8 @@ from core.serial_comm import SerialThread
 from core import protocol
 from ui.styles import BG_BASE, TEXT
 from ui.widgets import WheelDoubleSpinBox
+
+STATE_NAMES = ["IDLE", "CAL", "DETECT", "FLY_START", "ALIGN", "STARTUP", "RUN", "STOP", "FAULT", "IDENT"]
 
 # Plot colors
 COLORS = {
@@ -42,7 +45,7 @@ class PlotPanel(QWidget):
         self._max_samples = int(self._window_sec * SAMPLE_RATE)
 
         # --- Circular buffer (no array shifting!) ---
-        self._buf_size = int(1.0 * SAMPLE_RATE)  # max 1s buffer
+        self._buf_size = int(5.0 * SAMPLE_RATE)  # max 5s buffer
         self._buf = np.zeros((12, self._buf_size), dtype=np.float32)  # Vd,Vq,Id,Iq,Iq_ref,theta,Ia,Ib,Ic,duty_a,duty_b,duty_c
         self._write_idx = 0        # write position in ring buffer
         self._total_samples = 0    # total samples received
@@ -51,6 +54,9 @@ class PlotPanel(QWidget):
         # --- Logging state ---
         self._logging = False
         self._log_data = []
+        self._latest_rpm = 0.0
+        self._latest_vbus = 0.0
+        self._latest_state_idx = 0
 
         # --- Filtering (EMA) ---
         self._smoothness = 0.0     # 0.0 = no filter, 0.9 = heavy filter
@@ -121,7 +127,7 @@ class PlotPanel(QWidget):
         self.p1.setClipToView(True)
         self.curve_Vd = self.p1.plot(pen=pg.mkPen(COLORS['Vd'], width=1), name='Vd')
         self.curve_Vq = self.p1.plot(pen=pg.mkPen(COLORS['Vq'], width=1), name='Vq')
-
+ 
         # Plot 2: dq / phase currents
         self.p2 = self._graphics.addPlot(row=1, col=0, title="Current (A)")
         self.legend_p2 = self.p2.addLegend(offset=(10, 10))
@@ -143,7 +149,7 @@ class PlotPanel(QWidget):
         self.curve_Ia.setVisible(False)
         self.curve_Ib.setVisible(False)
         self.curve_Ic.setVisible(False)
-
+ 
         # Plot 3: Electrical Angle
         self.p3 = self._graphics.addPlot(row=2, col=0, title="Electrical Angle (rad)")
         self.p3.showGrid(x=True, y=True, alpha=0.2)
@@ -162,8 +168,9 @@ class PlotPanel(QWidget):
             p.enableAutoRange(axis='x', enable=False)
             p.enableAutoRange(axis='y', enable=True)
 
-        # Connect signal — just queue data, don't process immediately
+        # Connect signals
         self._serial.plot_received.connect(self._on_plot_data)
+        self._serial.status_received.connect(self._on_status_received)
 
         # Timer-driven rendering at fixed FPS (decoupled from data rate)
         self._render_timer = QTimer(self)
@@ -188,6 +195,7 @@ class PlotPanel(QWidget):
             self._render_timer.start()
         else:
             self._render_timer.stop()
+            self._render()
 
     def _clear_data(self):
         self._buf[:] = 0
@@ -197,11 +205,12 @@ class PlotPanel(QWidget):
         self._first_sample = True
         self._render()
 
-    def _on_plot_data(self, vals: tuple):
+    def _on_plot_data(self, vals_list: list):
         """Just queue — don't do any processing in signal handler."""
-        self._pending.append(vals)
+        self._pending.extend(vals_list)
         if self._logging:
-            self._log_data.append(vals)
+            for vals in vals_list:
+                self._log_data.append((vals, self._latest_rpm, self._latest_vbus, self._latest_state_idx))
 
     def _toggle_logging(self):
         if not self._logging:
@@ -232,17 +241,60 @@ class PlotPanel(QWidget):
                 try:
                     with open(file_path, 'w', newline='') as f:
                         writer = csv.writer(f)
-                        # Write header matching our plot fields
+                        # Write header matching our plot fields plus status variables
                         writer.writerow([
                             'Time_s', 'Vd_V', 'Vq_V', 'Id_A', 'Iq_A', 
                             'Iq_ref_A', 'theta_rad', 'Ia_A', 'Ib_A', 'Ic_A',
-                            'Duty_A', 'Duty_B', 'Duty_C'
+                            'Duty_A', 'Duty_B', 'Duty_C', 'RPM', 'Vbus_V', 'Ibus_A', 'State'
                         ])
                         # Calculate time stamps from index and sample rate
                         dt = 1.0 / SAMPLE_RATE
-                        for idx, row in enumerate(self._log_data):
+                        
+                        # Get motor pole pairs from ParamEditor
+                        poles = 7.0
+                        try:
+                            main_win = self.window()
+                            if hasattr(main_win, 'param_editor') and hasattr(main_win.param_editor, '_spinboxes'):
+                                poles = main_win.param_editor._spinboxes[protocol.ParamId.M_POLES].value()
+                        except Exception:
+                            pass
+                        if poles <= 0.5:
+                            poles = 7.0
+                            
+                        theta_prev = 0.0
+                        rpm_filt = 0.0
+                        
+                        for idx, item in enumerate(self._log_data):
                             t = idx * dt
-                            writer.writerow([t] + list(row))
+                            vals, status_rpm, vbus, state_idx = item
+                            vd, vq, id_meas, iq_meas = vals[0:4]
+                            theta_now = vals[5]
+                            
+                            # Reconstruct high-frequency RPM by differentiating electrical angle theta
+                            if idx == 0:
+                                rpm_now = status_rpm
+                                rpm_filt = status_rpm
+                            else:
+                                d_theta = theta_now - theta_prev
+                                if d_theta > math.pi:
+                                    d_theta -= 2 * math.pi
+                                elif d_theta < -math.pi:
+                                    d_theta += 2 * math.pi
+                                    
+                                rpm_raw = (d_theta / dt) * (30.0 / (math.pi * poles))
+                                rpm_filt += 0.05 * (rpm_raw - rpm_filt)
+                                rpm_now = rpm_filt
+                                
+                            theta_prev = theta_now
+                            
+                            # Estimate high-frequency input bus current from dq power conservation
+                            if vbus > 2.0:
+                                ibus = 1.5 * (vd * id_meas + vq * iq_meas) / vbus
+                            else:
+                                ibus = 0.0
+                                
+                            state_name = STATE_NAMES[state_idx] if state_idx < len(STATE_NAMES) else f"UNKNOWN ({state_idx})"
+                            writer.writerow([t] + list(vals) + [rpm_now, vbus, ibus, state_name])
                     print(f"Plot log successfully saved: {file_path}")
                 except Exception as e:
                     print(f"Failed to save plot log: {e}")
@@ -330,8 +382,7 @@ class PlotPanel(QWidget):
 
         # Extract visible window from ring buffer
         n_available = min(self._total_samples, self._buf_size)
-        n_show = min(self._max_samples, n_available)
-        if n_show == 0:
+        if n_available == 0:
             self.curve_Vd.setData([], [])
             self.curve_Vq.setData([], [])
             self.curve_Id.setData([], [])
@@ -343,10 +394,10 @@ class PlotPanel(QWidget):
             self.curve_Ic.setData([], [])
             return
 
-        # Read from ring buffer (newest n_show samples)
+        # Read from ring buffer (newest n_available samples)
         end = self._write_idx % self._buf_size
-        if n_show <= end:
-            slc = slice(end - n_show, end)
+        if n_available <= end:
+            slc = slice(end - n_available, end)
             Vd = self._buf[0, slc]
             Vq = self._buf[1, slc]
             Id = self._buf[2, slc]
@@ -358,7 +409,7 @@ class PlotPanel(QWidget):
             Ic = self._buf[8, slc]
         else:
             # Wraps around
-            part1_start = self._buf_size - (n_show - end)
+            part1_start = self._buf_size - (n_available - end)
             Vd = np.concatenate([self._buf[0, part1_start:], self._buf[0, :end]])
             Vq = np.concatenate([self._buf[1, part1_start:], self._buf[1, :end]])
             Id = np.concatenate([self._buf[2, part1_start:], self._buf[2, :end]])
@@ -369,8 +420,10 @@ class PlotPanel(QWidget):
             Ib = np.concatenate([self._buf[7, part1_start:], self._buf[7, :end]])
             Ic = np.concatenate([self._buf[8, part1_start:], self._buf[8, :end]])
 
-        # Time axis (relative to window)
-        t = np.linspace(0, n_show / SAMPLE_RATE, n_show, dtype=np.float32)
+        # Time axis (absolute time coordinates across the entire buffer)
+        t_end = self._total_samples / SAMPLE_RATE
+        t_start = t_end - (n_available / SAMPLE_RATE)
+        t = np.linspace(t_start, t_end, n_available, dtype=np.float32)
 
         # Update curves (only update visible curves to save processing time)
         self.curve_Vd.setData(t, Vd)
@@ -387,5 +440,12 @@ class PlotPanel(QWidget):
             self.curve_Ib.setData(t, Ib)
             self.curve_Ic.setData(t, Ic)
 
-        # Set X range
-        self.p3.setXRange(0, self._window_sec, padding=0)
+        # Lock view range to show trailing window ONLY when running.
+        # When stopped, we omit this so user can pan/zoom the 5s history via mouse.
+        if self._running:
+            self.p3.setXRange(t_end - self._window_sec, t_end, padding=0)
+
+    def _on_status_received(self, st: dict):
+        self._latest_rpm = st.get('rpm', 0.0)
+        self._latest_vbus = st.get('vbus', 0.0)
+        self._latest_state_idx = st.get('state', 0)

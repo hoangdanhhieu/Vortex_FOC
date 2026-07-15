@@ -92,14 +92,17 @@ class SerialThread(QThread):
                 if data:
                     self.raw_rx.emit(data)
                     packets = self._parser.feed(data)
+                    accumulated_plots = []
                     for pkt in packets:
-                        self._dispatch(pkt)
+                        self._dispatch(pkt, accumulated_plots)
+                    if accumulated_plots:
+                        self.plot_received.emit(accumulated_plots)
             except Exception as e:
                 if self._running:
                     self.error.emit(str(e))
                 break
 
-    def _dispatch(self, pkt: Packet):
+    def _dispatch(self, pkt: Packet, accumulated_plots: list):
         try:
             if pkt.ptype == RspType.ACK:
                 cmd, ok = parse_ack(pkt.payload)
@@ -115,8 +118,7 @@ class SerialThread(QThread):
                 self.params_received.emit(params)
             elif pkt.ptype == RspType.PLOT:
                 vals = parse_plot(pkt.payload)
-                for val in vals:
-                    self.plot_received.emit(val)
+                accumulated_plots.extend(vals)
         except Exception:
             pass
 

@@ -32,12 +32,12 @@
 #define ID_ALIGN_TIME_MS 300
 
 /* ---- Probing ---- */
-#define ID_PROBE_I_MIN 0.4f    /* Minimum current amplitude for good SNR [A] */
-#define ID_PROBE_I_MAX 2.0f    /* Maximum current amplitude for safety [A] */
-#define ID_PROBE_V_INIT 0.10f  /* Initial probe voltage [V] */
-#define ID_PROBE_V_STEP 0.15f  /* Probe voltage increment step [V] */
-#define ID_PROBE_V_MAX 3.0f    /* Maximum safe probe voltage [V] */
-#define ID_PROBE_CYC 10        /* Number of cycles to run per probe test */
+#define ID_PROBE_I_MIN 0.25f  /* Minimum current amplitude for good SNR [A] */
+#define ID_PROBE_I_MAX 2.0f   /* Maximum current amplitude for safety [A] */
+#define ID_PROBE_V_INIT 0.10f /* Initial probe voltage [V] */
+#define ID_PROBE_V_STEP 0.15f /* Probe voltage increment step [V] */
+#define ID_PROBE_V_MAX 5.0f   /* Maximum safe probe voltage [V] */
+#define ID_PROBE_CYC 10       /* Number of cycles to run per probe test */
 
 /* ---- AC Injection ---- */
 #define ID_LS_FREQ 1000.0f    /* Injection frequency [Hz] */
@@ -110,20 +110,20 @@ void MotorID_Start(void) {
     id_timer_ms = 0;
     tick_counter = 0;
     id_filt = 0.0f;
-    
+
     ls_theta = 0.0f;
     ls_sample_count = 0;
     ls_sum_I_sin = 0.0f;
     ls_sum_I_cos = 0.0f;
     ls_meas_count = 0;
-    
+
     Vprobe = ID_PROBE_V_INIT;
     Vsweet = ID_PROBE_V_INIT;
     align_vd = 0.0f;
 
     Rapp1 = Ls1 = Iamp1 = 0.0f;
     Rapp2 = Ls2 = Iamp2 = 0.0f;
-    
+
     id_result.measured_rs = 0.0f;
     id_result.measured_ls = 0.0f;
     id_result.identified_v_err = 0.0f;
@@ -140,7 +140,8 @@ void MotorID_Stop(void) {
     id_result.state = MOTOR_ID_STATE_IDLE;
 }
 
-void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
+__attribute__((section(".ccmram"))) void MotorID_RunStep(float id, float iq, float vbus, float* vd,
+                                                         float* vq) {
     (void)iq;  // Avoid unused parameter warning
 
     /* Timekeeping (1 ms tick) */
@@ -192,7 +193,7 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
             /* Regulate Id current to 5% of maximum phase current */
             float target_i = 0.05f * g_foc.cfg.motor_max_curr;
             float err = target_i - id_filt;
-            const float Ki_align = 0.0002f; // Slow, stable integration gain
+            const float Ki_align = 0.0002f;  // Slow, stable integration gain
 
             align_vd += Ki_align * err;
 
@@ -211,7 +212,7 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                 id_result.state = MOTOR_ID_STATE_PROBE;
                 id_timer_ms = 0;
                 tick_counter = 0;
-                
+
                 /* Reset AC variables for Probing */
                 Vprobe = ID_PROBE_V_INIT;
                 ls_theta = 0.0f;
@@ -293,7 +294,7 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                     Vprobe += ID_PROBE_V_STEP;
                     if (Vprobe > ID_PROBE_V_MAX || Vprobe > 0.35f * vbus) {
                         /* Exceeded safety voltage limit, abort */
-                        id_result.error_code = 2; // Low current / disconnected motor
+                        id_result.error_code = 2;  // Low current / disconnected motor
                         id_result.state = MOTOR_ID_STATE_ERROR;
                     } else {
                         /* Re-run probe test with the higher voltage */
@@ -360,7 +361,7 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                     id_result.state = MOTOR_ID_STATE_MEASURE_AC2;
                     id_timer_ms = 0;
                     tick_counter = 0;
-                    
+
                     /* Reset AC variables */
                     ls_theta = 0.0f;
                     ls_sample_count = 0;
@@ -368,7 +369,7 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                     ls_sum_I_cos = 0.0f;
                     ls_meas_count = 0;
                 } else {
-                    id_result.error_code = 2; // Low current amplitude
+                    id_result.error_code = 2;  // Low current amplitude
                     id_result.state = MOTOR_ID_STATE_ERROR;
                 }
             }
@@ -422,34 +423,37 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                     id_result.dbg_ac2_Ls = Ls2;
 
                     /* Calculate real values by combining two AC points */
+                    float rs, ls, v_err, td_ns;
                     if (Iamp2 > Iamp1 && Rapp1 > Rapp2) {
-                        float rs = (Iamp2 * Rapp2 - Iamp1 * Rapp1) / (Iamp2 - Iamp1);
-                        float ls = Ls2; // Inductance measured at high current (better SNR)
-                        
+                        rs = (Iamp2 * Rapp2 - Iamp1 * Rapp1) / (Iamp2 - Iamp1);
+                        ls = Ls2;  // Inductance measured at high current (better SNR)
+
                         /* Calculate dead-time voltage error */
                         float inv_i_diff = 1.0f / Iamp1 - 1.0f / Iamp2;
-                        float v_err = 0.785398163f * (Rapp1 - Rapp2) / inv_i_diff;
-
-                        /* Convert V_err to physical dead-time (ns) */
-                        float td_ns = (v_err / vbus) * (1e9f / (float)PWM_FREQUENCY);
-
-                        if (rs > 0.0f && ls > 0.0f && v_err > 0.0f) {
-                            id_result.measured_rs = rs;
-                            id_result.measured_ls = ls;
-                            id_result.identified_v_err = v_err;
-                            id_result.identified_deadtime_ns = td_ns;
-
-                            id_result.state = MOTOR_ID_STATE_COMPLETE;
-                        } else {
-                            id_result.error_code = 3; // Parameter bounds violation
-                            id_result.state = MOTOR_ID_STATE_ERROR;
-                        }
+                        v_err = 0.785398163f * (Rapp1 - Rapp2) / inv_i_diff;
+                        td_ns = (v_err / vbus) * (1e9f / (float)PWM_FREQUENCY);
                     } else {
-                        id_result.error_code = 3; // Inconsistent AC measurement results
+                        /* Fallback for high-resistance motors (e.g. stepper motors)
+                         * where dead-time voltage error is negligible compared to Rs */
+                        rs = Rapp2;
+                        ls = Ls2;
+                        v_err = 0.0f;
+                        td_ns = 0.0f;
+                    }
+
+                    if (rs > 0.0f && ls > 0.0f) {
+                        id_result.measured_rs = rs;
+                        id_result.measured_ls = ls;
+                        id_result.identified_v_err = v_err;
+                        id_result.identified_deadtime_ns = td_ns;
+
+                        id_result.state = MOTOR_ID_STATE_COMPLETE;
+                    } else {
+                        id_result.error_code = 3;  // Parameter bounds violation
                         id_result.state = MOTOR_ID_STATE_ERROR;
                     }
                 } else {
-                    id_result.error_code = 2; // AC2 current amplitude error
+                    id_result.error_code = 2;  // AC2 current amplitude error
                     id_result.state = MOTOR_ID_STATE_ERROR;
                 }
             }

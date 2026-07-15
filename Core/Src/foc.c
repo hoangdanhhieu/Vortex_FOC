@@ -11,21 +11,28 @@
 /*===========================================================================*/
 
 CCMRAM_FUNC void svpwm_calculate(void) {
-    /* Safety: Vbus_inv already precomputed in FOC_HighFrequencyTask */
     float Vbus_inv = g_foc.data.Vbus_inv;
 
     /* Normalize voltages to Vbus */
     float va_norm = g_foc.data.Valpha * Vbus_inv;
     float vb_norm = g_foc.data.Vbeta * Vbus_inv;
 
-    /* Clamp voltage vector magnitude to SVPWM linear range */
+    /* Clamp voltage vector magnitude to SVPWM linear range considering max_duty.
+     * To prevent clipping/flattening the sine peaks when max_duty < 1.0,
+     * we scale the maximum linear voltage magnitude proportionally:
+     * V_max_limit = (1 / sqrt(3)) * 2 * (max_duty - 0.5) */
+    float max_duty = g_foc.max_duty;
+    float v_max_limit = SQRT3_INV * 2.0f * (max_duty - 0.5f);
+    if (v_max_limit < 0.0f) v_max_limit = 0.0f;
+    float v_max_limit_sq = v_max_limit * v_max_limit;
     float v_sq = va_norm * va_norm + vb_norm * vb_norm;
-    const float V_MAX_SQ = ONE_THIRD; /* (1/sqrt(3))² = 1/3 */
-    if (v_sq > V_MAX_SQ) {
+    if (v_sq > v_max_limit_sq) {
         float v_mag = cordic_modulus(va_norm, vb_norm);
-        float scale = SQRT3_INV / v_mag;
-        va_norm *= scale;
-        vb_norm *= scale;
+        if (v_mag > 1e-6f) {
+            float scale = v_max_limit / v_mag;
+            va_norm *= scale;
+            vb_norm *= scale;
+        }
     }
 
     g_foc.data.Valpha = va_norm * g_foc.data.Vbus;
@@ -52,7 +59,6 @@ CCMRAM_FUNC void svpwm_calculate(void) {
     float dc = (Vc - Voffset) + 0.5f;
 
     /* Clamp duty cycles to valid range [0, max_duty] */
-    float max_duty = g_foc.max_duty;
     g_foc.data.duty_a = da < 0.0f ? 0.0f : (da > max_duty ? max_duty : da);
     g_foc.data.duty_b = db < 0.0f ? 0.0f : (db > max_duty ? max_duty : db);
     g_foc.data.duty_c = dc < 0.0f ? 0.0f : (dc > max_duty ? max_duty : dc);

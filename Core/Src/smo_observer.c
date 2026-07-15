@@ -74,6 +74,19 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->pll_int_min = SMO_PLL_INT_MIN;
     smo->pll_int_max = SMO_PLL_INT_MAX;
 
+    /* Initialize Dynamic PLL parameters */
+    smo->pll_cutoff_min = 50.0f; /* 50 Hz minimum bandwidth */
+    smo->pll_alpha = 0.5f;       /* Speed-to-bandwidth scaling factor */
+    smo->omega_est_filt = 0.0f;
+
+    /* Initialize 6th Harmonic Compensator parameters */
+    smo->Ac = 0.0f;
+    smo->As = 0.0f;
+    smo->gamma_6th = 20.0f;
+    smo->max_comp_norm = 0.02778f; /* +/- 5 degrees normalized */
+    smo->err_dc = 0.0f;
+    smo->enable_harmonic_comp = 0;
+
     /* Cache motor parameters */
     smo->Rs = MOTOR_RS;
     smo->Ls = MOTOR_LS;
@@ -84,7 +97,7 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->dt = CONTROL_PERIOD;
 }
 
-void SMO_Reset(SMO_Observer_t* smo) {
+CCMRAM_FUNC void SMO_Reset(SMO_Observer_t* smo) {
     smo->Ialpha_est = 0.0f;
     smo->Ibeta_est = 0.0f;
     smo->Ealpha = 0.0f;
@@ -94,30 +107,114 @@ void SMO_Reset(SMO_Observer_t* smo) {
     smo->theta_est = 0.0f;
     smo->omega_est = 0.0f;
     smo->pll_integral = 0.0f;
+
+    /* Reset adaptive filters and compensators */
+    smo->omega_est_filt = 0.0f;
+    smo->Ac = 0.0f;
+    smo->As = 0.0f;
+    smo->err_dc = 0.0f;
+    smo->current_err_sq = 0.0f;
 }
 
 CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
     float theta_bemf = cordic_atan2(-smo->Ealpha_flt, smo->Ebeta_flt);
-    float phase_lag = smo->omega_est * smo->tau / PI;
+
+    /* Calculate current observer lag using CORDIC hardware (atan2(y, x) -> normalized units) */
+    float tau_current = smo->Ls / (smo->Rs + smo->k_slide / smo->k_sigmoid);
+    float phase_lag_current = cordic_atan2(smo->omega_est * tau_current, 1.0f);
+
+    /* Total phase lag: Only current observer phase lag remains (STF phase lag is 0) */
+    float phase_lag = phase_lag_current;
+
     float theta_comp = normalize_angle(theta_bemf + phase_lag);
     float theta_err = normalize_angle(theta_comp - smo->theta_est);
+    float theta_err_clean = theta_err;
 
-    smo->pll_integral += smo->pll_ki * theta_err * smo->dt;
+    /* 6th Harmonic Adaptive Compensation */
+    if (smo->enable_harmonic_comp) {
+        /* Correct phase delay calculation: exactly 6 times fundamental phase lag */
+        /* This avoids calling CORDIC atan2 again, saving CPU cycles */
+        float phase_lag_6th = 6.0f * phase_lag;
+
+        /* Generate phase-corrected reference angle in [-1, 1) range */
+        float theta_ref = normalize_angle(6.0f * smo->theta_est - phase_lag_6th);
+
+        float cos_6, sin_6;
+        cordic_sincos(theta_ref, &cos_6, &sin_6);
+
+        /* Subtraction of estimated ripple (Ac, As are in normalized angle units) */
+        float theta_comp_6th = smo->Ac * cos_6 + smo->As * sin_6;
+        theta_err_clean = normalize_angle(theta_err - theta_comp_6th);
+
+        /* LMS adaptive updates using theta_err_clean directly */
+        /* (The correlation with cos/sin naturally rejects DC components) */
+        smo->Ac += smo->gamma_6th * theta_err_clean * cos_6 * smo->dt;
+        smo->As += smo->gamma_6th * theta_err_clean * sin_6 * smo->dt;
+
+        /* Clamp coefficients to +/- 5 degrees in normalized units */
+        if (smo->Ac > smo->max_comp_norm) smo->Ac = smo->max_comp_norm;
+        if (smo->Ac < -smo->max_comp_norm) smo->Ac = -smo->max_comp_norm;
+        if (smo->As > smo->max_comp_norm) smo->As = smo->max_comp_norm;
+        if (smo->As < -smo->max_comp_norm) smo->As = -smo->max_comp_norm;
+    } else {
+        smo->Ac = 0.0f;
+        smo->As = 0.0f;
+        smo->err_dc = 0.0f;
+    }
+
+    /* Dynamic PLL Cutoff Frequency based on filtered speed */
+    if (smo->omega_est_filt == 0.0f && fabsf(smo->omega_est) > 1.0f) {
+        smo->omega_est_filt = fabsf(smo->omega_est);
+    } else {
+        smo->omega_est_filt += 0.005f * (fabsf(smo->omega_est) - smo->omega_est_filt);
+    }
+
+    float f_elec = smo->omega_est_filt / TWO_PI;
+    float pll_cutoff_hz = smo->pll_alpha * f_elec;
+    if (pll_cutoff_hz < smo->pll_cutoff_min) pll_cutoff_hz = smo->pll_cutoff_min;
+    if (pll_cutoff_hz > 1500.0f) pll_cutoff_hz = 1500.0f;
+
+    smo->pll_kp = 2.0f * TWO_PI * pll_cutoff_hz;
+    smo->pll_ki = smo->pll_kp * smo->pll_kp / 4.0f;
+
+    smo->pll_integral += smo->pll_ki * theta_err_clean * smo->dt;
     if (smo->pll_integral > smo->pll_int_max) {
         smo->pll_integral = smo->pll_int_max;
     } else if (smo->pll_integral < smo->pll_int_min) {
         smo->pll_integral = smo->pll_int_min;
     }
 
-    smo->omega_est = smo->pll_kp * theta_err + smo->pll_integral;
+    smo->omega_est = smo->pll_kp * theta_err_clean + smo->pll_integral;
     smo->theta_est += (smo->omega_est / PI) * smo->dt;
     smo->theta_est = normalize_angle(smo->theta_est);
 }
 
 CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, float Ialpha,
                             float Ibeta) {
+    /* Proposed Auto-Tune with Bandwidth Alignment */
+    float omega_obs = 2.0f * PI * CURRENT_LOOP_BW;
+    float R_ratio = omega_obs * smo->Ls - smo->Rs;
+    if (R_ratio <= 0.01f) R_ratio = 0.01f;
+
+    float omega_e = fabsf(smo->omega_est);
+    float E_est = omega_e * smo->psi;
+    smo->k_slide = 1.5f * E_est + 2.0f;
+
+    /* Clamp k_slide to prevent step instability, but ensure it is always larger than Back-EMF */
+    float k_slide_max = 15.0f * (smo->Ls / smo->dt);
+    float safety_net = 2.0f * E_est + 5.0f;
+    if (k_slide_max < safety_net) {
+        k_slide_max = safety_net;
+    }
+    if (smo->k_slide > k_slide_max) {
+        smo->k_slide = k_slide_max;
+    }
+
+    smo->k_sigmoid = smo->k_slide / R_ratio;
+
     float Ialpha_err = smo->Ialpha_est - Ialpha;
     float Ibeta_err = smo->Ibeta_est - Ibeta;
+    smo->current_err_sq = Ialpha_err * Ialpha_err + Ibeta_err * Ibeta_err;
 
     float Zalpha = sigmoid(Ialpha_err, smo->k_sigmoid) * smo->k_slide;
     float Zbeta = sigmoid(Ibeta_err, smo->k_sigmoid) * smo->k_slide;
@@ -125,10 +222,18 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     smo->Ealpha = Zalpha;
     smo->Ebeta = Zbeta;
 
-    smo->tau = 1.0f / (fabsf(smo->omega_est) * 4.0f + g_foc.cfg.motor_min_spd / 60 * TWO_PI);
-    smo->lpf_coeff = CONTROL_PERIOD / (CONTROL_PERIOD + smo->tau);
-    smo->Ealpha_flt += smo->lpf_coeff * (smo->Ealpha - smo->Ealpha_flt);
-    smo->Ebeta_flt += smo->lpf_coeff * (smo->Ebeta - smo->Ebeta_flt);
+    /* Self-Tuning Filter (STF) for BEMF using Backward Euler (unconditionally stable) */
+    float omega_stf = smo->omega_est_filt * (smo->omega_est >= 0.0f ? 1.0f : -1.0f);
+    float wc = TWO_PI * g_foc.cfg.smo_stf_bw;
+    float a = wc * smo->dt;
+    float b = omega_stf * smo->dt;
+    float D_inv = 1.0f / ((1.0f + a) * (1.0f + a) + b * b);
+
+    float r_alpha = smo->Ealpha_flt + a * smo->Ealpha;
+    float r_beta = smo->Ebeta_flt + a * smo->Ebeta;
+
+    smo->Ealpha_flt = ((1.0f + a) * r_alpha - b * r_beta) * D_inv;
+    smo->Ebeta_flt = (b * r_alpha + (1.0f + a) * r_beta) * D_inv;
 
     /* Current observer model: dI/dt = (V - R*I - E) / L */
     /* Using backward Euler: I_new = I_old + dt * dI/dt */
@@ -141,21 +246,16 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     SMO_PLL_Track(smo);
 }
 
-float SMO_GetAngle(SMO_Observer_t* smo) {
+CCMRAM_FUNC float SMO_GetAngle(SMO_Observer_t* smo) {
     return normalize_angle(smo->theta_est);
 }
 
-float SMO_GetSpeed(SMO_Observer_t* smo) {
+CCMRAM_FUNC float SMO_GetSpeed(SMO_Observer_t* smo) {
     return smo->omega_est;
 }
 
-float SMO_GetSpeedRPM(SMO_Observer_t* smo) {
+CCMRAM_FUNC float SMO_GetSpeedRPM(SMO_Observer_t* smo) {
     return (smo->omega_est / smo->poles) * (60.0f / TWO_PI);
-}
-
-void SMO_SetGains(SMO_Observer_t* smo, float k_slide, float k_sigmoid) {
-    smo->k_slide = k_slide;
-    smo->k_sigmoid = k_sigmoid;
 }
 
 void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float flux_linkage, float poles) {
@@ -166,15 +266,18 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float flux_link
     smo->poles = poles;
 }
 
-void SMO_SetFilterParams(SMO_Observer_t* smo, float pll_cutoff_hz) {
-    smo->pll_kp = 2.0f * TWO_PI * pll_cutoff_hz;
-    smo->pll_ki = smo->pll_kp * smo->pll_kp / 4.0f;
-}
-
 CCMRAM_FUNC void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta) {
-    smo->tau = 1.0f / (fabsf(smo->omega_est) * 4.0f + g_foc.cfg.motor_min_spd / 60 * TWO_PI);
-    smo->lpf_coeff = CONTROL_PERIOD / (CONTROL_PERIOD + smo->tau);
-    smo->Ealpha_flt += smo->lpf_coeff * (Ealpha - smo->Ealpha_flt);
-    smo->Ebeta_flt += smo->lpf_coeff * (Ebeta - smo->Ebeta_flt);
+    /* Self-Tuning Filter (STF) for BEMF using Backward Euler (unconditionally stable) */
+    float omega_stf = smo->omega_est_filt * (smo->omega_est >= 0.0f ? 1.0f : -1.0f);
+    float wc = TWO_PI * g_foc.cfg.smo_stf_bw;
+    float a = wc * smo->dt;
+    float b = omega_stf * smo->dt;
+    float D_inv = 1.0f / ((1.0f + a) * (1.0f + a) + b * b);
+
+    float r_alpha = smo->Ealpha_flt + a * Ealpha;
+    float r_beta = smo->Ebeta_flt + a * Ebeta;
+
+    smo->Ealpha_flt = ((1.0f + a) * r_alpha - b * r_beta) * D_inv;
+    smo->Ebeta_flt = (b * r_alpha + (1.0f + a) * r_beta) * D_inv;
     SMO_PLL_Track(smo);
 }

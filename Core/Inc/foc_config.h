@@ -62,7 +62,7 @@ extern volatile float ADC_Vref;
 #define TIM1_COUNTER_MAX TIM1_ARR
 
 /** Dead-time duration in nanoseconds (for compensation) */
-#define DEAD_TIME_NS (420.0f)
+#define DEAD_TIME_NS (480.0f)
 
 #define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY)
 /*===========================================================================*/
@@ -95,7 +95,7 @@ extern volatile float ADC_Vref;
 #define ADC_TICKS ((uint32_t)(ADC_TOTAL_TIME_S * (float)SYSCLK_FREQ + 0.5f))
 
 /** Safety margin [ticks] for ringing / settling / propagation */
-#define ADC_MARGIN_DEFAULT 30.0f
+#define ADC_MARGIN_DEFAULT 10.0f
 
 /** Default TIM1 CH4 compare value for ADC trigger at boot */
 #define TIM1_CH4_TRIGGER_DEFAULT (TIM1_ARR - ADC_TICKS - (uint32_t)ADC_MARGIN_DEFAULT)
@@ -121,11 +121,8 @@ extern volatile float ADC_Vref;
 /* 1.022... is an empirical calibration factor derived from measurements */
 #define ADC_TO_CURRENT (-(ADC_Vref / ((float)ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE)))
 
-/* IIR Lowpass filter coefficient (0 < ALPHA <= 1)
- * Smaller ALPHA = stronger filtering, more delay
- * Larger ALPHA = weaker filtering, faster response
- */
-#define CURRENT_FILTER_ALPHA 1.0f
+/* SMO Self-Tuning Filter (STF) default bandwidth [Hz] */
+#define SMO_STF_BW_DEFAULT 50.0f
 
 #define FOC_DQ_FILTER_CUTOFF_RAD (CURRENT_LOOP_BW * 8.0f)
 #define FOC_DQ_FILTER_ALPHA (FOC_DQ_FILTER_CUTOFF_RAD * CONTROL_PERIOD)
@@ -136,14 +133,23 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 
 /** Vbus voltage divider: R_high / R_low */
-#define VBUS_R_HIGH 10000.0f
-#define VBUS_R_LOW 1000.0f
+#define VBUS_R_HIGH 16000.0f
+#define VBUS_R_LOW 1200.0f
 
 /** Vbus divider ratio */
 #define VBUS_DIVIDER_RATIO ((VBUS_R_HIGH + VBUS_R_LOW) / VBUS_R_LOW)
 
 /** Vbus conversion factor: Vbus = ADC * factor */
 #define ADC_TO_VBUS ((ADC_Vref / (float)ADC_RESOLUTION) * VBUS_DIVIDER_RATIO)
+
+/** Phase voltage measurement configuration (3-resistor divider with bias) */
+#define PHASE_R_UP 150000.0f  /* Pull-up resistor to 3.3V (Vref) */
+#define PHASE_R_IN 100000.0f  /* Series input resistor from phase voltage */
+#define PHASE_R_DOWN 10000.0f /* Pull-down resistor to GND */
+
+/** Phase voltage conversion gain and offset factors */
+#define PHASE_VOLTAGE_GAIN (1.0f + (PHASE_R_IN / PHASE_R_UP) + (PHASE_R_IN / PHASE_R_DOWN))
+#define PHASE_VOLTAGE_OFFSET_FACTOR (PHASE_R_IN / PHASE_R_UP)
 
 /*===========================================================================*/
 /* Speed Ramp Configuration                                                  */
@@ -156,7 +162,7 @@ extern volatile float ADC_Vref;
 #define SPEED_RAMP_DECEL 20000.0f
 
 /** Current reference ramp rate [A/s] */
-#define CURRENT_RAMP_RATE 500.0f
+#define CURRENT_RAMP_RATE 50.0f
 
 /*===========================================================================*/
 /* PI Controller Default Gains                                               */
@@ -176,7 +182,7 @@ extern volatile float ADC_Vref;
 
 /** Speed PI controller gains */
 #define PI_SPEED_KP 0.0008f
-#define PI_SPEED_KI 0.0003f
+#define PI_SPEED_KI 0.002f
 
 /** Speed PI output limits [A] (Iq reference) */
 #define PI_SPEED_OUT_MAX MOTOR_CONT_CURRENT
@@ -204,19 +210,19 @@ extern volatile float ADC_Vref;
 #define SMO_PLL_INT_MAX (MOTOR_MAX_SPEED_RPM * (TWO_PI / 60.0f) * (float)MOTOR_POLE_PAIRS)
 #define SMO_PLL_INT_MIN (-SMO_PLL_INT_MAX)
 
-#define COMP_DELAY_SAMPLES 2.0f
+#define COMP_DELAY_SAMPLES 0.9f
 /*===========================================================================*/
 /* Startup Configuration                                                     */
 /*===========================================================================*/
 
 /** Alignment current [A] */
-#define ALIGN_CURRENT 0.6f
+#define ALIGN_CURRENT 0.3f
 
 /** Alignment duration [ms] */
 #define ALIGN_DURATION_MS 300
 
 /** Open-loop startup current [A] */
-#define STARTUP_CURRENT 0.2f
+#define STARTUP_CURRENT 0.5f
 
 /** Open-loop startup voltage [V] */
 #define STARTUP_VOLTAGE_MIN 0.5f
@@ -239,7 +245,7 @@ extern volatile float ADC_Vref;
 
 /*--- Overcurrent protection ---*/
 /** Software overcurrent threshold [A]**/
-#define FAULT_OVERCURRENT_THRESHOLD 25.0f
+#define FAULT_OVERCURRENT_THRESHOLD 10.0f
 
 /** Overcurrent deglitch: require N consecutive samples above threshold
  *  to avoid false trips from ADC noise. 1 = instant trip. */
@@ -247,10 +253,10 @@ extern volatile float ADC_Vref;
 
 /*--- Bus voltage protection ---*/
 /** Overvoltage threshold [V]*/
-#define FAULT_OVERVOLTAGE_THRESHOLD 15.0f
+#define FAULT_OVERVOLTAGE_THRESHOLD 24.0f
 
 /** Undervoltage threshold [V]*/
-#define FAULT_UNDERVOLTAGE_THRESHOLD 8.0f
+#define FAULT_UNDERVOLTAGE_THRESHOLD 12.0f
 
 /*--- Stall / locked-rotor protection ---*/
 /** Enable stall detection (0 = disable) */
@@ -258,9 +264,9 @@ extern volatile float ADC_Vref;
 
 /** Stall is detected when |speed| < SPEED_THRESHOLD AND |Iq| > CURRENT_THRESHOLD
  *  persists for longer than TIME_MS. */
-#define FAULT_STALL_SPEED_RPM 100.0f
-#define FAULT_STALL_CURRENT_A 0.5f
-#define FAULT_STALL_TIME_MS 500
+#define FAULT_STALL_SPEED_RPM 700.0f
+#define FAULT_STALL_CURRENT_A 35.0f
+#define FAULT_STALL_TIME_MS 100
 
 /*--- Stop ramp-down ---*/
 /** Maximum time for controlled stop ramp-down before forced shutdown [ms] */

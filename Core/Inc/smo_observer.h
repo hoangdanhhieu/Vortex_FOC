@@ -9,6 +9,8 @@
 #ifndef SMO_OBSERVER_H
 #define SMO_OBSERVER_H
 
+#include <stdint.h>
+
 /**
  * @brief SMO Observer structure
  */
@@ -43,6 +45,19 @@ typedef struct {
     float pll_int_min;  /**< PLL integral minimum limit */
     float pll_int_max;  /**< PLL integral maximum limit */
 
+    /* Dynamic PLL bandwidth parameters */
+    float pll_cutoff_min; /**< Minimum PLL bandwidth [Hz] */
+    float pll_alpha;      /**< Speed-to-bandwidth scaling factor */
+    float omega_est_filt; /**< Low-pass filtered electrical speed [rad/s] */
+
+    /* 6th Harmonic Adaptive Compensator parameters */
+    float Ac;                  /**< Cosine 6th harmonic coefficient */
+    float As;                  /**< Sine 6th harmonic coefficient */
+    float gamma_6th;           /**< Adaptive learning rate */
+    float max_comp_norm;       /**< Maximum compensation angle (normalized) */
+    float err_dc;              /**< Low-pass filter accumulator to extract DC error offset */
+    uint8_t enable_harmonic_comp; /**< Flag to enable/disable 6th harmonic compensator */
+
     /* Motor parameters (cached) */
     float Rs;     /**< Phase resistance */
     float Ls;     /**< Phase inductance */
@@ -51,6 +66,9 @@ typedef struct {
     float poles;  /**< Number of pole pairs */
     /* Sample time */
     float dt; /**< Control loop period */
+    
+    /* Diagnostics */
+    float current_err_sq; /**< Squared current estimation error magnitude [A^2] */
 } SMO_Observer_t;
 
 /**
@@ -106,20 +124,7 @@ float SMO_GetSpeedRPM(SMO_Observer_t* smo);
  */
 void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float flux_linkage, float poles);
 
-/**
- * @brief Set observer gains at runtime
- * @param smo Pointer to SMO structure
- * @param k_slide Sliding gain
- * @param k_sigmoid Sigmoid bandwidth
- */
-void SMO_SetGains(SMO_Observer_t* smo, float k_slide, float k_sigmoid);
 
-/**
- * @brief Set observer filter parameters at runtime
- * @param smo Pointer to SMO structure
- * @param pll_cutoff_hz PLL bandwidth frequency [Hz]
- */
-void SMO_SetFilterParams(SMO_Observer_t* smo, float pll_cutoff_hz);
 
 /**
  * @brief Feed external BEMF directly into PLL (bypass current observer)

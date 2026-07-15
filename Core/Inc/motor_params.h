@@ -20,10 +20,10 @@
 #define MOTOR_KV 2300
 
 /** Phase resistance [Ohm] - MEASURE THIS ON YOUR MOTOR */
-#define MOTOR_RS 0.070f
+#define MOTOR_RS 0.088252f
 
 /** Phase inductance [H] - MEASURE THIS ON YOUR MOTOR */
-#define MOTOR_LS 2.487e-5f
+#define MOTOR_LS 1.2e-5f
 
 /** BEMF constant [V/(rad/s)] = 60 / (Sqrt3 * 2PI * KV * PP) */
 #define MOTOR_KE (60.0f / (MOTOR_KV * 1.732 * 2 * 3.14159265f * MOTOR_POLE_PAIRS))

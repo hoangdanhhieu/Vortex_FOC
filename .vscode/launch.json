@@ -22,6 +22,25 @@
                 "enabled": true,
                 "samplesPerSecond": 4
             }
+        },
+        {
+            "name": "Attach STM32 (OpenOCD)",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Vortex_FOC.elf",
+            "request": "attach",
+            "type": "cortex-debug",
+            "servertype": "openocd",
+            "device": "STM32G431",
+            "configFiles": [
+                "interface/stlink.cfg",
+                "target/stm32g4x.cfg"
+            ],
+            "svdFile": "${workspaceFolder}/STM32G431.svd",
+            "toolchainPrefix": "arm-none-eabi",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            }
         }
     ]
 }

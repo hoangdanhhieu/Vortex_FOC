@@ -25,12 +25,9 @@ void cordic_sin_cos_f32(float theta, float* sin_out, float* cos_out);
 /* Clarke/Park Transforms                                                    */
 /*===========================================================================*/
 
-/**
- * @brief Clarke transform: Ia,Ib,Ic -> Ialpha,Ibeta
- */
-CCMRAM_FUNC static inline void clarke_transform(float Ia, float Ib, float* alpha, float* beta) {
-    *alpha = Ia;
-    *beta = (Ia + 2.0f * Ib) * SQRT3_INV;
+CCMRAM_FUNC static inline void clarke_transform(float Ia, float Ib, float Ic, float* alpha, float* beta) {
+    *alpha = (2.0f * Ia - Ib - Ic) * (1.0f / 3.0f);
+    *beta = (Ib - Ic) * SQRT3_INV;
 }
 
 /**
@@ -114,6 +111,27 @@ CCMRAM_FUNC static inline void foc_reconstruct_currents(void) {
  */
 CCMRAM_FUNC static inline float foc_adc_to_vbus(uint16_t adc_value) {
     return (float)adc_value * ADC_TO_VBUS;
+}
+
+/**
+ * @brief Convert ADC reading to Phase voltage using 3-resistor bias divider formula (differential with offset)
+ * @param adc_value Raw ADC value (12-bit)
+ * @param adc_offset Offset ADC value calibrated at zero phase voltage
+ * @return Phase voltage in Volts (can be positive or negative)
+ */
+CCMRAM_FUNC static inline float foc_adc_to_vphase(uint16_t adc_value, uint16_t adc_offset) {
+    float adc_diff = (float)adc_value - (float)adc_offset;
+    return adc_diff * (ADC_Vref / (float)ADC_RESOLUTION) * PHASE_VOLTAGE_GAIN;
+}
+
+/**
+ * @brief Convert ADC reading to absolute Phase voltage (without offset subtraction)
+ * @param adc_value Raw ADC value (12-bit)
+ * @return Absolute Phase voltage in Volts (referenced to MCU GND)
+ */
+CCMRAM_FUNC static inline float foc_adc_to_vphase_absolute(uint16_t adc_value) {
+    float v_adc = (float)adc_value * (ADC_Vref / (float)ADC_RESOLUTION);
+    return v_adc * PHASE_VOLTAGE_GAIN - ADC_Vref * PHASE_VOLTAGE_OFFSET_FACTOR;
 }
 
 #endif /* FOC_H */

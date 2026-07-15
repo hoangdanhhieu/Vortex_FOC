@@ -1,8 +1,8 @@
 """Main window — assembles all panels into a 3-panel layout."""
 
 from PySide6.QtWidgets import (
-    QMainWindow, QSplitter, QWidget, QVBoxLayout, QHBoxLayout,
-    QStatusBar, QLabel, QScrollArea
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QStatusBar, QLabel, QScrollArea, QTabWidget
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -31,8 +31,10 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(6, 6, 6, 0)
 
-        # Main splitter (horizontal: left | center | right)
-        splitter = QSplitter(Qt.Horizontal)
+        # Main horizontal layout (left connection/control | right tab widget)
+        main_layout_h = QHBoxLayout()
+        main_layout_h.setContentsMargins(0, 0, 0, 0)
+        main_layout.addLayout(main_layout_h, 1)
 
         # ── Left panel ──
         left_scroll = QScrollArea()
@@ -56,25 +58,26 @@ class MainWindow(QMainWindow):
         left_layout.addStretch()
         left_scroll.setWidget(left_widget)
 
-        splitter.addWidget(left_scroll)
+        main_layout_h.addWidget(left_scroll)
 
-        # ── Center panel ──
+        # ── Right tab widget ──
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setDocumentMode(True)
+
         self.param_editor = ParamEditor(self._serial)
-        splitter.addWidget(self.param_editor)
+        self.tab_widget.addTab(self.param_editor, "📋 Parameters")
 
-        # ── Right panel ──
         self.plot_panel = PlotPanel(self._serial)
-        splitter.addWidget(self.plot_panel)
+        self.tab_widget.addTab(self.plot_panel, "📈 Scope / Plot")
 
-        splitter.setSizes([260, 380, 500])
-        main_layout.addWidget(splitter, 1)
+        main_layout_h.addWidget(self.tab_widget, 1)
 
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready — Connect to a COM port to start")
 
-        # Status polling timer (every 500ms when connected)
+        # Status polling timer (every 50ms when connected)
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._poll_status)
 
@@ -90,7 +93,7 @@ class MainWindow(QMainWindow):
         
         if connected:
             self.status_bar.showMessage("Connected")
-            self._status_timer.start(500)
+            self._status_timer.start(50)
             # Read all params on connect
             self.param_editor._read_all()
         else:

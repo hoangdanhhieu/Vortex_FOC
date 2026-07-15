@@ -27,6 +27,7 @@
 #include "foc_config.h"
 #include "foc_state_machine.h"
 
+#define HardFault_Handler CubeMX_HardFault_Handler
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,6 +57,35 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+volatile uint32_t fault_pc = 0;
+volatile uint32_t fault_lr = 0;
+
+void HardFault_Handler_C(unsigned long* hardfault_args) {
+    LL_GPIO_SetOutputPin(LED_GPIO_Port, LED_Pin);
+    FOC_EnableDrivers(0);
+
+    fault_pc = hardfault_args[6]; /* Stacked Program Counter (PC) */
+    fault_lr = hardfault_args[5]; /* Stacked Link Register (LR) */
+
+    /* Save to Backup Registers (survives reset) */
+    HAL_PWR_EnableBkUpAccess();
+    TAMP->BKP0R = fault_pc;
+    TAMP->BKP1R = fault_lr;
+
+    while (1) {
+    }
+}
+
+#undef HardFault_Handler
+__attribute__((naked)) void HardFault_Handler(void) {
+    __asm volatile(
+        "tst lr, #4 \n"
+        "ite eq \n"
+        "mrseq r0, msp \n"
+        "mrsne r0, psp \n"
+        "b HardFault_Handler_C \n");
+}
+#define HardFault_Handler CubeMX_HardFault_Handler
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -68,7 +98,9 @@ extern volatile uint16_t raw_adc_vbus;
 
 extern volatile uint32_t adc_isr_us;
 extern uint8_t adc_isr_flag;
+
 extern void input_process(void);
+
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -92,10 +124,10 @@ void NMI_Handler(void) {
  */
 void HardFault_Handler(void) {
     /* USER CODE BEGIN HardFault_IRQn 0 */
+
     /* USER CODE END HardFault_IRQn 0 */
     while (1) {
         /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-        /* Blink LED or breakpoint here for debugging */
         /* USER CODE END W1_HardFault_IRQn 0 */
     }
 }
@@ -105,7 +137,7 @@ void HardFault_Handler(void) {
  */
 void MemManage_Handler(void) {
     /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+    LL_GPIO_SetOutputPin(LED_GPIO_Port, LED_Pin);
     /* USER CODE END MemoryManagement_IRQn 0 */
     while (1) {
         /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
@@ -118,7 +150,7 @@ void MemManage_Handler(void) {
  */
 void BusFault_Handler(void) {
     /* USER CODE BEGIN BusFault_IRQn 0 */
-
+    LL_GPIO_SetOutputPin(LED_GPIO_Port, LED_Pin);
     /* USER CODE END BusFault_IRQn 0 */
     while (1) {
         /* USER CODE BEGIN W1_BusFault_IRQn 0 */
@@ -131,7 +163,7 @@ void BusFault_Handler(void) {
  */
 void UsageFault_Handler(void) {
     /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+    LL_GPIO_SetOutputPin(LED_GPIO_Port, LED_Pin);
     /* USER CODE END UsageFault_IRQn 0 */
     while (1) {
         /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
@@ -218,15 +250,19 @@ void ADC1_2_IRQHandler(void) {
         LL_ADC_ClearFlag_JEOS(ADC1);
 
         // Read ADC1 Injected Data Registers
-        raw_adc_b = LL_ADC_INJ_ReadConversionData12(ADC1, LL_ADC_INJ_RANK_1);
+        raw_adc_a = LL_ADC_INJ_ReadConversionData12(ADC1, LL_ADC_INJ_RANK_1);
         raw_adc_vbus = LL_ADC_INJ_ReadConversionData12(ADC1, LL_ADC_INJ_RANK_2);
 
         // Read ADC2 Injected Data Registers (slave in dual mode)
-        raw_adc_a = LL_ADC_INJ_ReadConversionData12(ADC2, LL_ADC_INJ_RANK_1);
+        raw_adc_b = LL_ADC_INJ_ReadConversionData12(ADC2, LL_ADC_INJ_RANK_1);
         raw_adc_c = LL_ADC_INJ_ReadConversionData12(ADC2, LL_ADC_INJ_RANK_2);
         // Call FOC control loop
         FOC_HighFrequencyTask(raw_adc_a, raw_adc_b, raw_adc_c, raw_adc_vbus);
         adc_isr_us = TIM2->CNT - start_count;
+        if (adc_isr_us > TAMP->BKP2R) {
+            TAMP->BKP2R = adc_isr_us;
+        }
+        TAMP->BKP3R = adc_isr_us;
         adc_isr_flag = 1;
     }
     if (LL_ADC_IsActiveFlag_JEOS(ADC2)) {

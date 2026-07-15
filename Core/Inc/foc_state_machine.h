@@ -42,7 +42,8 @@ typedef enum {
     FOC_FAULT_UNDERVOLTAGE,
     FOC_FAULT_STARTUP_FAIL,
     FOC_FAULT_OBSERVER_FAIL,
-    FOC_FAULT_STALL
+    FOC_FAULT_STALL,
+    FOC_FAULT_GROUND
 } FOC_Fault_t;
 
 /*===========================================================================*/

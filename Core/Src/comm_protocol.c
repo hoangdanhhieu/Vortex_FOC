@@ -37,17 +37,18 @@ typedef enum {
 static ParseState_t parse_state = PARSE_WAIT_HEADER;
 static uint8_t rx_type;
 static uint8_t rx_len;
-static uint8_t rx_payload[COMM_MAX_PAYLOAD];
+static uint8_t rx_payload[COMM_MAX_PAYLOAD] __attribute__((aligned(4)));
 static uint8_t rx_idx;
 
-static uint8_t tx_buf[COMM_MAX_PAYLOAD + 4]; /* header + type + len + payload + crc */
+static uint8_t tx_buf[COMM_MAX_PAYLOAD + 4]
+    __attribute__((aligned(4))); /* header + type + len + payload + crc */
 
 #define PLOT_BATCH_SIZE 8
-static int16_t plot_batch_buf[PLOT_BATCH_SIZE * 12];
+static int16_t plot_batch_buf[PLOT_BATCH_SIZE * 12] __attribute__((aligned(4)));
 static uint8_t plot_batch_idx = 0;
 
 #define RX_RING_SIZE 512
-static uint8_t rx_ring_buf[RX_RING_SIZE];
+static uint8_t rx_ring_buf[RX_RING_SIZE] __attribute__((aligned(4)));
 static uint16_t rx_ring_head = 0;
 static uint16_t rx_ring_tail = 0;
 

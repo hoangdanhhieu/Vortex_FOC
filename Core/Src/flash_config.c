@@ -143,9 +143,11 @@ void FlashConfig_Apply(void) {
     float v_limit = g_foc.data.Vbus * SQRT3_INV; /* Vbus / sqrt(3) */
 
     PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
+    PI_SetLimits(&g_foc.ctrl.id, -v_limit, v_limit);
     PI_SetIntLimits(&g_foc.ctrl.id, -v_limit, v_limit);
 
     PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
+    PI_SetLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
     PI_SetIntLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
 
     PI_SetGains(&g_foc.ctrl.speed, g_foc.cfg.kp_spd, g_foc.cfg.ki_spd);
@@ -160,8 +162,6 @@ void FlashConfig_Apply(void) {
 
     SMO_SetMotorParams(&g_foc.ctrl.smo, g_foc.cfg.motor_rs, g_foc.cfg.motor_ls,
                        g_foc.cfg.motor_flux, g_foc.cfg.motor_poles);
-    SMO_SetGains(&g_foc.ctrl.smo, g_foc.cfg.smo_k_slide, g_foc.cfg.smo_k_sigmoid);
-    SMO_SetFilterParams(&g_foc.ctrl.smo, g_foc.cfg.smo_pll_cutoff);
 
     /* Update hardware-level constraints (ADC trigger shifting & Max Duty) */
     float margin = g_foc.cfg.adc_margin_ticks;

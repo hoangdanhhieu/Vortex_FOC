@@ -69,7 +69,8 @@ void MotorID_Stop(void);
  * @brief Run one step of the identification state machine.
  *        Called once per PWM ISR cycle (48 kHz).
  */
-void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq);
+__attribute__((section(".ccmram"))) void MotorID_RunStep(float id, float iq, float vbus, float* vd,
+                                                         float* vq);
 
 void MotorID_GetResults(MotorID_Result_t* results);
 

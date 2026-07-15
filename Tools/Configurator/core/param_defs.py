@@ -33,14 +33,11 @@ PARAM_DEFS = [
     (ParamId.M_POLES,  "Pole Pairs",    "",      "Motor",       1, 100, 1,     False),
     (ParamId.M_MAX_SPD, "Max Speed",     "RPM",   "Motor",       0, 100000, 10, False),
     (ParamId.M_MIN_SPD, "Min Speed",     "RPM",   "Motor",       0, 10000, 10,  False),
-    (ParamId.M_MAX_I,  "Max Current (Required for RL Measure)",   "A",     "Motor",       0, 100, 0.1,   False),
-    (ParamId.SMO_KS,   "SMO K_slide*",   "",     "SMO",         0, 10000, 0.00001,  False),
-    (ParamId.SMO_SIG,  "K Sigmoid*",     "",     "SMO",         0, 10000, 0.00001, False),
-    (ParamId.SMO_PLL,  "PLL Cutoff*",    "Hz",   "SMO",         1, 10000, 1,  False),
-    (ParamId.COMP_DELAY,"Comp Delay*",   "samp", "SMO",         0, 50, 0.01,  False),
+    (ParamId.M_MAX_I,  "Max Current",   "A",     "Motor",       0, 100, 0.1,   False),
+    (ParamId.COMP_DELAY,"Comp Delay*",   "samp", "ADC",         0, 50, 0.01,  False),
     # ADC
     (ParamId.ADC_MARG, "ADC Margin",    "ticks", "ADC",         10, 500, 1,   False),
-    (ParamId.ADC_FILT_A,"Ia,b LPF Alpha*","",     "ADC",         0.001, 1.0, 0.001, False),
+    (ParamId.SMO_STF_BW, "SMO STF BW*",   "Hz",    "ADC",         10, 1000, 1, False),
     (ParamId.DQ_FILT_A, "Id,q LPF Alpha*","",     "ADC",         0.001, 1.0, 0.001, False),
     # Safety
     (ParamId.OC_THR,   "OC Threshold*",  "A",     "Safety",      0, 100, 0.1,  False),
@@ -52,7 +49,7 @@ PARAM_DEFS = [
 ]
 
 # Groups in display order
-PARAM_GROUPS = ["Current PI", "Speed PI", "Startup", "Ramp Rates", "Motor", "SMO", "ADC", "Safety"]
+PARAM_GROUPS = ["Current PI", "Speed PI", "Startup", "Ramp Rates", "Motor", "ADC", "Safety"]
 
 
 def get_params_by_group(group: str):

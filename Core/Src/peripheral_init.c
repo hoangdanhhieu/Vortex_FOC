@@ -42,6 +42,7 @@ static uint16_t OPAMP_ReadADC(ADC_TypeDef* ADCx, uint32_t adc_channel) {
     while (!LL_ADC_IsActiveFlag_EOC(ADCx));
     uint16_t result = LL_ADC_REG_ReadConversionData12(ADCx);
     LL_ADC_ClearFlag_EOC(ADCx);
+    LL_ADC_ClearFlag_OVR(ADCx);
 
     return result;
 }

@@ -13,6 +13,7 @@ from ui.styles import GREEN, RED, TEXT_DIM, YELLOW
 from ui.widgets import WheelDoubleSpinBox
 
 STATE_NAMES = ["IDLE", "CAL", "DETECT", "FLY_START", "ALIGN", "STARTUP", "RUN", "STOP", "FAULT", "IDENT"]
+FAULT_NAMES = ["NONE", "OVERCURRENT", "OVERVOLTAGE", "UNDERVOLTAGE", "STARTUP_FAIL", "OBSERVER_FAIL", "STALL", "GROUND_FAULT"]
 STATE_COLORS = {
     0: TEXT_DIM, 1: YELLOW, 2: YELLOW, 3: YELLOW,
     4: YELLOW, 5: YELLOW, 6: GREEN, 7: YELLOW, 8: RED, 9: YELLOW,
@@ -135,6 +136,13 @@ class ControlPanel(QGroupBox):
     def _update_status(self, st: dict):
         state_idx = st.get('state', 0)
         name = STATE_NAMES[state_idx] if state_idx < len(STATE_NAMES) else "?"
+        
+        # Display specific fault description when in FAULT state
+        if state_idx == 8: # FAULT
+            fault_idx = st.get('fault', 0)
+            fault_name = FAULT_NAMES[fault_idx] if fault_idx < len(FAULT_NAMES) else f"UNKNOWN ({fault_idx})"
+            name = f"FAULT ({fault_name})"
+            
         color = STATE_COLORS.get(state_idx, TEXT_DIM)
         self.lbl_state.setText(f"State: {name}")
         self.lbl_state.setStyleSheet(f"color: {color}; font-weight: bold;")
@@ -149,8 +157,11 @@ class ControlPanel(QGroupBox):
         self.dir_combo.setCurrentIndex(dir_val)
         self.dir_combo.blockSignals(False)
 
-    def _update_ibus_from_plot(self, plot_data: tuple):
+    def _update_ibus_from_plot(self, plot_data_list: list):
         """Calculates Ibus from PLOT data (Vd, Vq, Id, Iq) and caches."""
+        if not plot_data_list:
+            return
+        plot_data = plot_data_list[-1]
         if len(plot_data) >= 4 and self._last_vbus > 2.0:
             vd, vq, id_meas, iq_meas = plot_data[:4]
             # Power conservation for amplitude-invariant transform: P_bus = 1.5 * (Vd*Id + Vq*Iq)
