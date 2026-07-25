@@ -83,6 +83,7 @@ typedef struct {
         float Vbus;
         float Vbus_inv;
         float duty_a, duty_b, duty_c;
+        float i_scale, v_scale;
     } data;
 
     /*--- References / Commands ---*/
@@ -232,6 +233,13 @@ void FOC_SetDirection(int8_t dir);
  * @return 1 = forward, -1 = reverse
  */
 int8_t FOC_GetDirection(void);
+
+void FOC_SlowTask(void);
+
+/**
+ * @brief Configure ADC Hardware Watchdogs based on FOC protection parameters.
+ */
+void FOC_ConfigureAWD(void);
 
 #endif /* FOC_STATE_MACHINE_H */
 

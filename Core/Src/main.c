@@ -47,8 +47,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 
-UART_HandleTypeDef huart3;
-
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -85,23 +83,16 @@ volatile uint32_t saved_pc = 0;
 volatile uint32_t saved_lr = 0;
 volatile uint32_t saved_max_isr_cycles = 0;
 volatile uint32_t saved_last_isr_cycles = 0;
+volatile uint32_t saved_r0 = 0;
+volatile uint32_t saved_r1 = 0;
+volatile uint32_t saved_r2 = 0;
+volatile uint32_t saved_r3 = 0;
+volatile uint32_t saved_r12 = 0;
+volatile uint32_t saved_psr = 0;
 volatile uint16_t adc_regular_buffer[4];
 uint8_t adc_isr_flag = 0;
 volatile float ADC_Vref = 3.3f;
 uint16_t input;
-void input_process(void) {
-    if (adc_regular_buffer[0] != 0) {
-        uint16_t vrefint_cal = *(uint16_t*)0x1FFF75AA;
-        ADC_Vref = 3.0f * (float)vrefint_cal / (float)adc_regular_buffer[0];
-
-        g_foc.data.Vphase_a =
-            foc_adc_to_vphase(adc_regular_buffer[1], g_foc.adc_cal.offset_vphase_a);
-        g_foc.data.Vphase_b =
-            foc_adc_to_vphase(adc_regular_buffer[2], g_foc.adc_cal.offset_vphase_b);
-        g_foc.data.Vphase_c =
-            foc_adc_to_vphase(adc_regular_buffer[3], g_foc.adc_cal.offset_vphase_c);
-    }
-}
 /* USER CODE END 0 */
 
 /**
@@ -135,11 +126,25 @@ int main(void) {
     saved_lr = TAMP->BKP1R;
     saved_max_isr_cycles = TAMP->BKP2R;
     saved_last_isr_cycles = TAMP->BKP3R;
+    saved_r0 = TAMP->BKP8R;
+    saved_r1 = TAMP->BKP9R;
+    saved_r2 = TAMP->BKP10R;
+    saved_r3 = TAMP->BKP11R;
+    saved_r12 = TAMP->BKP12R;
+    saved_psr = TAMP->BKP13R;
+    __NOP();
     /* Clear them to avoid reading stale crash info if the next reset is watchdog-induced */
     TAMP->BKP0R = 0;
     TAMP->BKP1R = 0;
     TAMP->BKP2R = 0;
     TAMP->BKP3R = 0;
+    TAMP->BKP8R = 0;
+    TAMP->BKP9R = 0;
+    TAMP->BKP10R = 0;
+    TAMP->BKP11R = 0;
+    TAMP->BKP12R = 0;
+    TAMP->BKP13R = 0;
+    TAMP->BKP14R = 0;
     /* USER CODE END SysInit */
 
     /* Initialize all configured peripherals */
@@ -159,9 +164,8 @@ int main(void) {
     MX_USART3_UART_Init();
     MX_USB_Device_Init();
     /* USER CODE BEGIN 2 */
-    LL_mDelay(2000);
+    LL_mDelay(500);
     Peripheral_Init();
-    MX_IWDG_Init();
     /* Initialize Flash config (load from Flash or defaults) */
     FlashConfig_Init();
 
@@ -172,11 +176,13 @@ int main(void) {
     LL_DAC_Enable(DAC1, LL_DAC_CHANNEL_1);  // Enable DAC for plotting
 
     FOC_Stop();
-
+    // FOC_Start();
+    // FOC_SetSpeedRef(9000.0f);
     /* USER CODE END 2 */
 
     /* Infinite loop */
     /* USER CODE BEGIN WHILE */
+    MX_IWDG_Init();
     while (1) {
         Comm_Update();
         if (g_foc.plot.ready) {
@@ -337,9 +343,7 @@ void MX_ADC1_Init(void) {
     ADC_REG_InitStruct.Overrun = LL_ADC_REG_OVR_DATA_OVERWRITTEN;
     LL_ADC_REG_Init(ADC1, &ADC_REG_InitStruct);
     LL_ADC_SetGainCompensation(ADC1, 0);
-    LL_ADC_SetOverSamplingScope(ADC1, LL_ADC_OVS_GRP_REGULAR_CONTINUED);
-    LL_ADC_ConfigOverSamplingRatioShift(ADC1, LL_ADC_OVS_RATIO_4, LL_ADC_OVS_SHIFT_RIGHT_2);
-    LL_ADC_SetOverSamplingDiscont(ADC1, LL_ADC_OVS_REG_CONT);
+    LL_ADC_SetOverSamplingScope(ADC1, LL_ADC_OVS_DISABLE);
     ADC_CommonInitStruct.CommonClock = LL_ADC_CLOCK_SYNC_PCLK_DIV4;
     ADC_CommonInitStruct.Multimode = LL_ADC_MULTI_DUAL_INJ_SIMULT;
     ADC_CommonInitStruct.MultiDMATransfer = LL_ADC_MULTI_REG_DMA_EACH_ADC;
@@ -370,6 +374,19 @@ void MX_ADC1_Init(void) {
         wait_loop_index--;
     }
 
+    /** Configure Analog WatchDog 1
+     */
+    LL_ADC_SetAnalogWDMonitChannels(ADC1, LL_ADC_AWD1, LL_ADC_AWD_CH_VOPAMP1_INJ);
+    LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD1, 4095, 0);
+    LL_ADC_SetAWDFilteringConfiguration(ADC1, LL_ADC_AWD1, LL_ADC_AWD_FILTERING_3SAMPLES);
+    LL_ADC_EnableIT_AWD1(ADC1);
+
+    /** Configure Analog WatchDog 2
+     */
+    LL_ADC_SetAnalogWDMonitChannels(ADC1, LL_ADC_AWD2, LL_ADC_AWD_CHANNEL_14_INJ);
+    LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD2, 4095, 0);
+    LL_ADC_EnableIT_AWD2(ADC1);
+
     /** Configure Injected Channel
      */
     LL_ADC_INJ_SetSequencerRanks(ADC1, LL_ADC_INJ_RANK_1, LL_ADC_CHANNEL_VOPAMP1);
@@ -379,13 +396,13 @@ void MX_ADC1_Init(void) {
     /** Configure Injected Channel
      */
     LL_ADC_INJ_SetSequencerRanks(ADC1, LL_ADC_INJ_RANK_2, LL_ADC_CHANNEL_14);
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_14, LL_ADC_SAMPLINGTIME_6CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_14, LL_ADC_SAMPLINGTIME_2CYCLES_5);
     LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_14, LL_ADC_SINGLE_ENDED);
 
     /** Configure Regular Channel
      */
     LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_VREFINT);
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_VREFINT, LL_ADC_SAMPLINGTIME_24CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_VREFINT, LL_ADC_SAMPLINGTIME_247CYCLES_5);
     LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_VREFINT, LL_ADC_SINGLE_ENDED);
     LL_ADC_SetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(ADC1), LL_ADC_PATH_INTERNAL_VREFINT);
 
@@ -475,6 +492,13 @@ void MX_ADC2_Init(void) {
         wait_loop_index--;
     }
 
+    /** Configure Analog WatchDog 1
+     */
+    LL_ADC_SetAnalogWDMonitChannels(ADC2, LL_ADC_AWD1, LL_ADC_AWD_ALL_CHANNELS_INJ);
+    LL_ADC_ConfigAnalogWDThresholds(ADC2, LL_ADC_AWD1, 4095, 0);
+    LL_ADC_SetAWDFilteringConfiguration(ADC2, LL_ADC_AWD1, LL_ADC_AWD_FILTERING_3SAMPLES);
+    LL_ADC_EnableIT_AWD1(ADC2);
+
     /** Configure Injected Channel
      */
     LL_ADC_INJ_SetSequencerRanks(ADC2, LL_ADC_INJ_RANK_1, LL_ADC_CHANNEL_VOPAMP2);
@@ -484,7 +508,7 @@ void MX_ADC2_Init(void) {
     /** Configure Injected Channel
      */
     LL_ADC_INJ_SetSequencerRanks(ADC2, LL_ADC_INJ_RANK_2, LL_ADC_CHANNEL_VOPAMP3_ADC2);
-    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_VOPAMP3_ADC2, LL_ADC_SAMPLINGTIME_6CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_VOPAMP3_ADC2, LL_ADC_SAMPLINGTIME_2CYCLES_5);
     LL_ADC_SetChannelSingleDiff(ADC2, LL_ADC_CHANNEL_VOPAMP3_ADC2, LL_ADC_SINGLE_ENDED);
     /* USER CODE BEGIN ADC2_Init 2 */
 
@@ -982,31 +1006,62 @@ static void MX_USART3_UART_Init(void) {
 
     /* USER CODE END USART3_Init 0 */
 
+    LL_USART_InitTypeDef USART_InitStruct = {0};
+
+    LL_GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    LL_RCC_SetUSARTClockSource(LL_RCC_USART3_CLKSOURCE_PCLK1);
+
+    /* Peripheral clock enable */
+    LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_USART3);
+
+    LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOC);
+    LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOB);
+    /**USART3 GPIO Configuration
+    PC11   ------> USART3_RX
+    PB9   ------> USART3_TX
+    */
+    GPIO_InitStruct.Pin = LL_GPIO_PIN_11;
+    GPIO_InitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
+    GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
+    GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
+    GPIO_InitStruct.Alternate = LL_GPIO_AF_7;
+    LL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = LL_GPIO_PIN_9;
+    GPIO_InitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
+    GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
+    GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
+    GPIO_InitStruct.Alternate = LL_GPIO_AF_7;
+    LL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
     /* USER CODE BEGIN USART3_Init 1 */
 
     /* USER CODE END USART3_Init 1 */
-    huart3.Instance = USART3;
-    huart3.Init.BaudRate = 115200;
-    huart3.Init.WordLength = UART_WORDLENGTH_8B;
-    huart3.Init.StopBits = UART_STOPBITS_1;
-    huart3.Init.Parity = UART_PARITY_NONE;
-    huart3.Init.Mode = UART_MODE_TX_RX;
-    huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart3.Init.OverSampling = UART_OVERSAMPLING_16;
-    huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-    huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
-    huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-    if (HAL_UART_Init(&huart3) != HAL_OK) {
-        Error_Handler();
-    }
-    if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK) {
-        Error_Handler();
-    }
-    if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK) {
-        Error_Handler();
-    }
-    if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK) {
-        Error_Handler();
+    USART_InitStruct.PrescalerValue = LL_USART_PRESCALER_DIV1;
+    USART_InitStruct.BaudRate = 115200;
+    USART_InitStruct.DataWidth = LL_USART_DATAWIDTH_8B;
+    USART_InitStruct.StopBits = LL_USART_STOPBITS_1;
+    USART_InitStruct.Parity = LL_USART_PARITY_NONE;
+    USART_InitStruct.TransferDirection = LL_USART_DIRECTION_TX_RX;
+    USART_InitStruct.HardwareFlowControl = LL_USART_HWCONTROL_NONE;
+    USART_InitStruct.OverSampling = LL_USART_OVERSAMPLING_16;
+    LL_USART_Init(USART3, &USART_InitStruct);
+    LL_USART_SetTXFIFOThreshold(USART3, LL_USART_FIFOTHRESHOLD_1_8);
+    LL_USART_SetRXFIFOThreshold(USART3, LL_USART_FIFOTHRESHOLD_1_8);
+    LL_USART_DisableFIFO(USART3);
+    LL_USART_ConfigAsyncMode(USART3);
+
+    /* USER CODE BEGIN WKUPType USART3 */
+
+    /* USER CODE END WKUPType USART3 */
+
+    LL_USART_Enable(USART3);
+
+    /* Polling USART3 initialisation */
+    while ((!(LL_USART_IsActiveFlag_TEACK(USART3))) || (!(LL_USART_IsActiveFlag_REACK(USART3)))) {
     }
     /* USER CODE BEGIN USART3_Init 2 */
 

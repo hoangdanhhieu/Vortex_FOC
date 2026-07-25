@@ -30,8 +30,24 @@
  * @param sin_out Pointer to store sine result
  */
 static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_out) {
+    if (!isfinite(angle_norm)) angle_norm = 0.0f;
+
+    /* Protect CORDIC hardware registers from interrupt preemption if called from Main Thread */
+    uint32_t isr_active = __get_IPSR();
+    uint32_t primask = 0;
+    if (!isr_active) {
+        primask = __get_PRIMASK();
+        __disable_irq();
+    }
+
     WRITE_REG(CORDIC->CSR, CORDIC_CFG_SINCOS);
     (void)READ_REG(CORDIC->CSR);  // Ensure write CSR is completed
+
+    /* Clamp angle_norm to [-0.9999999f, 0.9999999f] to prevent int32_t Q31 signed overflow */
+    if (angle_norm > 0.9999999f)
+        angle_norm = 0.9999999f;
+    else if (angle_norm < -0.9999999f)
+        angle_norm = -0.9999999f;
 
     int32_t angle_q31 = (int32_t)(angle_norm * CORDIC_SCALE_FACTOR);
 
@@ -43,6 +59,10 @@ static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_ou
     int32_t cos_raw = (int32_t)LL_CORDIC_ReadData(CORDIC);
     int32_t sin_raw = (int32_t)LL_CORDIC_ReadData(CORDIC);
 
+    if (!isr_active && !primask) {
+        __enable_irq();
+    }
+
     *cos_out = (float)cos_raw * CORDIC_Q31_TO_FLOAT;
     *sin_out = (float)sin_raw * CORDIC_Q31_TO_FLOAT;
 }
@@ -52,10 +72,18 @@ static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_ou
  * @return Normalized angle [-1, 1) representing [-π, π)
  */
 static float inline cordic_atan2(float y, float x) {
+    if (!isfinite(y) || !isfinite(x)) return 0.0f;
     float abs_x = fabsf(x);
     float abs_y = fabsf(y);
     float max_val = (abs_x > abs_y) ? abs_x : abs_y;
     if (max_val < 1e-9f) return 0.0f;
+
+    uint32_t isr_active = __get_IPSR();
+    uint32_t primask = 0;
+    if (!isr_active) {
+        primask = __get_PRIMASK();
+        __disable_irq();
+    }
 
     float scale = CORDIC_SCALE_FACTOR / max_val;
     int32_t x_q31 = (int32_t)(x * scale);
@@ -69,6 +97,10 @@ static float inline cordic_atan2(float y, float x) {
 
     int32_t phase_raw = (int32_t)LL_CORDIC_ReadData(CORDIC);
     (void)LL_CORDIC_ReadData(CORDIC);
+
+    if (!isr_active && !primask) {
+        __enable_irq();
+    }
 
     return (float)phase_raw * CORDIC_Q31_TO_FLOAT;
 }
@@ -84,10 +116,18 @@ static float inline cordic_atan2(float y, float x) {
  *       result is scaled back. Single CORDIC call, ~6 cycles.
  */
 static inline float cordic_modulus(float x, float y) {
+    if (!isfinite(x) || !isfinite(y)) return 0.0f;
     float abs_x = fabsf(x);
     float abs_y = fabsf(y);
     float max_val = (abs_x > abs_y) ? abs_x : abs_y;
     if (max_val < 1e-9f) return 0.0f;
+
+    uint32_t isr_active = __get_IPSR();
+    uint32_t primask = 0;
+    if (!isr_active) {
+        primask = __get_PRIMASK();
+        __disable_irq();
+    }
 
     float inv_max = CORDIC_SCALE_FACTOR / max_val;
     int32_t x_q31 = (int32_t)(x * inv_max);
@@ -100,6 +140,10 @@ static inline float cordic_modulus(float x, float y) {
     LL_CORDIC_WriteData(CORDIC, (uint32_t)y_q31);
 
     int32_t mod_raw = (int32_t)LL_CORDIC_ReadData(CORDIC);
+
+    if (!isr_active && !primask) {
+        __enable_irq();
+    }
 
     return (float)mod_raw * CORDIC_Q31_TO_FLOAT * max_val;
 }

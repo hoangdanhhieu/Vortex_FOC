@@ -52,19 +52,19 @@ class ParamId(IntEnum):
     # SMO
     COMP_DELAY = 23
     # ADC
-    ADC_MARG = 24; SMO_STF_BW = 25; DQ_FILT_A = 26
+    ADC_MARG = 24; DQ_FILT_A = 25
     # Safety
-    OC_THR = 27; OV_THR = 28; UV_THR = 29
-    STALL_SPD = 30; STALL_I = 31; STALL_MS = 32
+    OC_THR = 26; OV_THR = 27; UV_THR = 28
+    STALL_SPD = 29; STALL_I = 30; STALL_MS = 31
     
     # Internal
-    DIRECTION = 33; OC_COUNT = 34; STALL_EN = 35
+    DIRECTION = 32; OC_COUNT = 33; STALL_EN = 34
     
     # Live Params
-    SPD_REF = 36; TRQ_REF = 37; VBUS = 38; RPM = 39
-    ID_MEAS = 40; IQ_MEAS = 41; IA = 42; IB = 43
-    ID_RS_MEAS = 44; ID_LS_MEAS = 45
-    PID_COUNT = 46
+    SPD_REF = 35; TRQ_REF = 36; VBUS = 37; RPM = 38
+    ID_MEAS = 39; IQ_MEAS = 40; IA = 41; IB = 42
+    ID_RS_MEAS = 43; ID_LS_MEAS = 44
+    PID_COUNT = 45
 
 
 

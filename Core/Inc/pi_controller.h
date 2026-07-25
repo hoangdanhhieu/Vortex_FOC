@@ -6,6 +6,8 @@
 #ifndef PI_CONTROLLER_H
 #define PI_CONTROLLER_H
 
+#include <math.h>
+
 #include "foc_config.h"
 /**
  * @brief PI Controller structure
@@ -45,15 +47,15 @@ void PI_Reset(PI_Controller_t* pi);
  * @return Controller output
  */
 CCMRAM_FUNC static inline float PI_Update(PI_Controller_t* pi, float error) {
+    if (isnan(error) || isnan(pi->integral)) {
+        error = 0.0f;
+        if (isnan(pi->integral)) pi->integral = 0.0f;
+    }
+
     float p_term = pi->Kp * error;
 
     float new_integral = pi->integral + pi->Ki * error * pi->dt;
-
-    if (new_integral > pi->int_max) {
-        new_integral = pi->int_max;
-    } else if (new_integral < pi->int_min) {
-        new_integral = pi->int_min;
-    }
+    new_integral = clampf(new_integral, pi->int_min, pi->int_max);
 
     float output = p_term + new_integral;
 

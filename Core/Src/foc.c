@@ -14,29 +14,36 @@ CCMRAM_FUNC void svpwm_calculate(void) {
     float Vbus_inv = g_foc.data.Vbus_inv;
 
     /* Normalize voltages to Vbus */
-    float va_norm = g_foc.data.Valpha * Vbus_inv;
-    float vb_norm = g_foc.data.Vbeta * Vbus_inv;
-
-    /* Clamp voltage vector magnitude to SVPWM linear range considering max_duty.
-     * To prevent clipping/flattening the sine peaks when max_duty < 1.0,
-     * we scale the maximum linear voltage magnitude proportionally:
-     * V_max_limit = (1 / sqrt(3)) * 2 * (max_duty - 0.5) */
+    /* Vd-Priority Voltage Vector Limiting:
+     * Preserve 100% of Vd voltage (Id=0A control) to prevent magnetic axis angle slip,
+     * and allocate all remaining voltage margin exclusively to Vq. */
     float max_duty = g_foc.max_duty;
     float v_max_limit = SQRT3_INV * 2.0f * (max_duty - 0.5f);
     if (v_max_limit < 0.0f) v_max_limit = 0.0f;
-    float v_max_limit_sq = v_max_limit * v_max_limit;
-    float v_sq = va_norm * va_norm + vb_norm * vb_norm;
-    if (v_sq > v_max_limit_sq) {
-        float v_mag = cordic_modulus(va_norm, vb_norm);
-        if (v_mag > 1e-6f) {
-            float scale = v_max_limit / v_mag;
-            va_norm *= scale;
-            vb_norm *= scale;
-        }
-    }
 
-    g_foc.data.Valpha = va_norm * g_foc.data.Vbus;
-    g_foc.data.Vbeta = vb_norm * g_foc.data.Vbus;
+    float vd_norm = g_foc.data.Vd * Vbus_inv;
+    float vq_norm = g_foc.data.Vq * Vbus_inv;
+
+    /* Priority 1: Preserve Vd up to v_max_limit */
+    vd_norm = saturatef(vd_norm, v_max_limit);
+
+    /* Priority 2: Allocate remaining voltage margin to Vq */
+    float vq_max_sq = v_max_limit * v_max_limit - vd_norm * vd_norm;
+    float vq_max = (vq_max_sq > 0.0f) ? sqrtf(vq_max_sq) : 0.0f;
+    vq_norm = saturatef(vq_norm, vq_max);
+
+    /* Update real Vd and Vq */
+    g_foc.data.Vd = vd_norm * g_foc.data.Vbus;
+    g_foc.data.Vq = vq_norm * g_foc.data.Vbus;
+
+    /* Recompute real Valpha and Vbeta from prioritized (Vd, Vq) */
+    float cos_th, sin_th;
+    cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
+    inverse_park_transform(g_foc.data.Vd, g_foc.data.Vq, cos_th, sin_th, &g_foc.data.Valpha,
+                           &g_foc.data.Vbeta);
+
+    float va_norm = g_foc.data.Valpha * Vbus_inv;
+    float vb_norm = g_foc.data.Vbeta * Vbus_inv;
 
     /* Calculate phase voltages using inverse Clarke */
     float Va = va_norm;

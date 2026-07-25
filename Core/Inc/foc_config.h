@@ -9,6 +9,9 @@
 /* Place function in CCM SRAM for zero wait-state execution */
 #define CCMRAM_FUNC __attribute__((section(".ccmram")))
 
+/* Place function in SRAM1 (.RamFunc)*/
+#define RAM_FUNC __attribute__((section(".RamFunc")))
+
 /*===========================================================================*/
 /* Math Constants                                                            */
 /*===========================================================================*/
@@ -22,6 +25,25 @@
 #define SQRT3_INV 0.5773502691896257f
 #define TWO_THIRDS 0.6666666666666666f
 #define ONE_THIRD 0.3333333333333333f
+
+/**
+ * @brief Fast float clamp helper to range [min_val, max_val]
+ */
+CCMRAM_FUNC static inline float clampf(float val, float min_val, float max_val) {
+    if (val < min_val) return min_val;
+    if (val > max_val) return max_val;
+    return val;
+}
+
+/**
+ * @brief Fast float symmetric saturation helper to range [-max_val, max_val]
+ */
+CCMRAM_FUNC static inline float saturatef(float val, float max_val) {
+    if (val < -max_val) return -max_val;
+    if (val > max_val) return max_val;
+    return val;
+}
+
 #include "motor_params.h"
 
 extern volatile float ADC_Vref;
@@ -62,9 +84,9 @@ extern volatile float ADC_Vref;
 #define TIM1_COUNTER_MAX TIM1_ARR
 
 /** Dead-time duration in nanoseconds (for compensation) */
-#define DEAD_TIME_NS (480.0f)
-
+#define DEAD_TIME_NS 480.0f
 #define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY)
+
 /*===========================================================================*/
 /* ADC Trigger Timing → MAX_DUTY derivation                                  */
 /*===========================================================================*/
@@ -77,9 +99,9 @@ extern volatile float ADC_Vref;
 #define ADC_CLK_HZ ((float)SYSCLK_FREQ / (float)ADC_PRESCALER) /* 42.5 MHz */
 
 /** ADC cycles per channel: sampling + 12.5 conversion cycles (12-bit) */
-#define ADC_SAMPLE_CYCLES 6.5f
+#define ADC_SAMPLE_CYCLES 2.5f
 #define ADC_CONV_CYCLES 12.5f
-#define ADC_CYCLES_PER_CH (ADC_SAMPLE_CYCLES + ADC_CONV_CYCLES) /* 19 */
+#define ADC_CYCLES_PER_CH (ADC_SAMPLE_CYCLES + ADC_CONV_CYCLES)
 
 /** Injected ranks per ADC (dual simultaneous → ranks run sequentially) */
 #define ADC_INJ_RANKS 2U
@@ -97,15 +119,12 @@ extern volatile float ADC_Vref;
 /** Safety margin [ticks] for ringing / settling / propagation */
 #define ADC_MARGIN_DEFAULT 10.0f
 
-/** Default TIM1 CH4 compare value for ADC trigger at boot */
-#define TIM1_CH4_TRIGGER_DEFAULT (TIM1_ARR - ADC_TICKS - (uint32_t)ADC_MARGIN_DEFAULT)
-
 /*===========================================================================*/
 /* Current Sensing Configuration                                             */
 /*===========================================================================*/
 
 /** Shunt resistance [Ohm] */
-#define SHUNT_RESISTANCE 0.001f
+#define SHUNT_RESISTANCE 0.005f
 
 /** OPAMP gain */
 #define OPAMP_GAIN 31.0f
@@ -114,15 +133,12 @@ extern volatile float ADC_Vref;
 #define ADC_RESOLUTION 4096
 
 /** Current offset (bias point) at 0A [ADC counts] ~= Vref/2 */
-#define ADC_CURRENT_OFFSET 2048
+#define ADC_CURRENT_OFFSET 0
 
 /** Current conversion factor: I = (ADC - offset) * factor */
 /** factor = Vref / (ADC_res * Gain * R_shunt) */
 /* 1.022... is an empirical calibration factor derived from measurements */
-#define ADC_TO_CURRENT (-(ADC_Vref / ((float)ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE)))
-
-/* SMO Self-Tuning Filter (STF) default bandwidth [Hz] */
-#define SMO_STF_BW_DEFAULT 50.0f
+#define ADC_TO_CURRENT (-(1 / ((float)ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE)))
 
 #define FOC_DQ_FILTER_CUTOFF_RAD (CURRENT_LOOP_BW * 8.0f)
 #define FOC_DQ_FILTER_ALPHA (FOC_DQ_FILTER_CUTOFF_RAD * CONTROL_PERIOD)
@@ -210,7 +226,7 @@ extern volatile float ADC_Vref;
 #define SMO_PLL_INT_MAX (MOTOR_MAX_SPEED_RPM * (TWO_PI / 60.0f) * (float)MOTOR_POLE_PAIRS)
 #define SMO_PLL_INT_MIN (-SMO_PLL_INT_MAX)
 
-#define COMP_DELAY_SAMPLES 0.9f
+#define COMP_DELAY_SAMPLES 0.3f
 /*===========================================================================*/
 /* Startup Configuration                                                     */
 /*===========================================================================*/
@@ -219,7 +235,7 @@ extern volatile float ADC_Vref;
 #define ALIGN_CURRENT 0.3f
 
 /** Alignment duration [ms] */
-#define ALIGN_DURATION_MS 300
+#define ALIGN_DURATION_MS 500
 
 /** Open-loop startup current [A] */
 #define STARTUP_CURRENT 0.5f

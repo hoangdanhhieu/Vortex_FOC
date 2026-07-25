@@ -161,13 +161,13 @@ SECTIONS
     . = ALIGN(4);
   } >CCMRAM AT> FLASH
 
-  _eccmram = ALIGN(_sccmram + SIZEOF(.ccmram) + 256, 4);
+  _eccmram = ALIGN(_sccmram + SIZEOF(.ccmram), 4);
 
   /* used by the startup to initialize data */
   _sidata = LOADADDR(.data);
 
   /* Initialized data sections goes into RAM, load LMA copy after code */
-  .data : AT (ALIGN(LOADADDR(.ccmram) + SIZEOF(.ccmram) + 256, 4))
+  .data : AT (ALIGN(LOADADDR(.ccmram) + SIZEOF(.ccmram), 4))
   {
     . = ALIGN(4);
     _sdata = .;        /* create a global symbol at data start */
@@ -175,6 +175,8 @@ SECTIONS
     *(.data*)          /* .data* sections */
     *(.RamFunc)        /* .RamFunc sections */
     *(.RamFunc*)       /* .RamFunc* sections */
+    *(.ramfunc)        /* .ramfunc sections */
+    *(.ramfunc*)       /* .ramfunc* sections */
 
     . = ALIGN(4);
     _edata = .;        /* define a global symbol at data end */

@@ -49,13 +49,14 @@ typedef struct {
     float pll_cutoff_min; /**< Minimum PLL bandwidth [Hz] */
     float pll_alpha;      /**< Speed-to-bandwidth scaling factor */
     float omega_est_filt; /**< Low-pass filtered electrical speed [rad/s] */
+    float omega_stf;      /**< 48kHz LPF filtered speed for STF center frequency [rad/s] */
 
     /* 6th Harmonic Adaptive Compensator parameters */
-    float Ac;                  /**< Cosine 6th harmonic coefficient */
-    float As;                  /**< Sine 6th harmonic coefficient */
-    float gamma_6th;           /**< Adaptive learning rate */
-    float max_comp_norm;       /**< Maximum compensation angle (normalized) */
-    float err_dc;              /**< Low-pass filter accumulator to extract DC error offset */
+    float Ac;                     /**< Cosine 6th harmonic coefficient */
+    float As;                     /**< Sine 6th harmonic coefficient */
+    float gamma_6th;              /**< Adaptive learning rate */
+    float max_comp_norm;          /**< Maximum compensation angle (normalized) */
+    float err_dc;                 /**< Low-pass filter accumulator to extract DC error offset */
     uint8_t enable_harmonic_comp; /**< Flag to enable/disable 6th harmonic compensator */
 
     /* Motor parameters (cached) */
@@ -66,9 +67,10 @@ typedef struct {
     float poles;  /**< Number of pole pairs */
     /* Sample time */
     float dt; /**< Control loop period */
-    
+
     /* Diagnostics */
     float current_err_sq; /**< Squared current estimation error magnitude [A^2] */
+    float tau_current;    /**< Cached current observer time constant [s] */
 } SMO_Observer_t;
 
 /**
@@ -92,6 +94,11 @@ void SMO_Reset(SMO_Observer_t* smo);
  * @param Ibeta Measured beta current [A]
  */
 void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, float Ialpha, float Ibeta);
+
+/**
+ * @brief 1 kHz SMO adaptation task (adjust pll_kp, pll_ki, k_slide and k_sigmoid).
+ */
+void SMO_SlowTask(SMO_Observer_t* smo);
 
 /**
  * @brief Get estimated electrical angle
@@ -123,8 +130,6 @@ float SMO_GetSpeedRPM(SMO_Observer_t* smo);
  * @param poles Number of pole pairs
  */
 void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float flux_linkage, float poles);
-
-
 
 /**
  * @brief Feed external BEMF directly into PLL (bypass current observer)

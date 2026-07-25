@@ -33,10 +33,7 @@ static float s_Id_filt = 0.0f;
 static float s_Iq_filt = 0.0f;
 
 /* Safety check state */
-static uint8_t oc_count = 0;            /* Overcurrent deglitch counter */
-static uint32_t stall_counter = 0;      /* Stall timer (ISR ticks) */
-static uint32_t ov_count = 0;           /* Overvoltage deglitch counter */
-static uint32_t uv_count = 0;           /* Undervoltage deglitch counter */
+static uint32_t stall_counter = 0;      /* Stall timer (ticks) */
 static uint32_t ground_fault_count = 0; /* Ground fault deglitch counter */
 
 /* Transition blending state (open-loop → closed-loop) */
@@ -80,11 +77,7 @@ extern volatile float ADC_Vref;
  * @brief Normalize angle to [-1, 1) range (corresponds to [-pi, pi))
  */
 CCMRAM_FUNC static inline float normalize_angle_norm(float angle) {
-    angle += 1.0f;
-    angle -= 2.0f * (float)((int)(angle * 0.5f));
-    if (angle >= 2.0f) angle -= 2.0f;
-    if (angle < 0.0f) angle += 2.0f;
-    return angle - 1.0f;
+    return angle - 2.0f * floorf((angle + 1.0f) * 0.5f);
 }
 
 /*===========================================================================*/
@@ -108,15 +101,12 @@ static inline void FOC_ApplyDeadtimeCompensation(float* out_a, float* out_b, flo
 /*===========================================================================*/
 
 void FOC_Init(void) {
-    /* Block ISR state machine until init completes */
     foc_initialized = 0;
 
-    /* Clear control structure */
     g_foc.status.state = FOC_STATE_IDLE;
     g_foc.status.control_mode = FOC_MODE_SPEED;
     g_foc.status.fault = FOC_FAULT_NONE;
 
-    /* Clear measurements */
     g_foc.data.Ia = g_foc.data.Ib = g_foc.data.Ic = 0.0f;
     g_foc.data.Ialpha = g_foc.data.Ibeta = 0.0f;
     g_foc.data.Id = g_foc.data.Iq = 0.0f;
@@ -124,25 +114,19 @@ void FOC_Init(void) {
     g_foc.data.Valpha = g_foc.data.Vbeta = 0.0f;
     g_foc.data.Vbus = 12.0f;
 
-    /* Clear references */
     g_foc.cmd.Id_ref = 0.0f;
     g_foc.cmd.Iq_ref = 0.0f;
     g_foc.cmd.speed_ref = 0.0f;
-
-    /* Clear estimates */
     g_foc.data.theta_elec = 0.0f;
     g_foc.data.omega_elec = 0.0f;
     g_foc.data.speed_rpm = 0.0f;
 
-    /* Initialize startup variables */
     g_foc.startup.theta = 0.0f;
     g_foc.startup.omega = 0.0f;
     g_foc.startup.counter = 0;
 
-    /* Initialize duty cycles */
     g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.5f;
 
-    /* Initialize PI controllers with compile-time defaults. */
     PI_Init(&g_foc.ctrl.id, PI_ID_KP, PI_ID_KI, -12.0f, 12.0f, CONTROL_PERIOD);
     PI_SetIntLimits(&g_foc.ctrl.id, -12.0f, 12.0f);
 
@@ -153,13 +137,10 @@ void FOC_Init(void) {
             CONTROL_PERIOD);
     PI_SetIntLimits(&g_foc.ctrl.speed, PI_SPEED_INT_MIN, PI_SPEED_INT_MAX);
 
-    /* Initialize SMO observer */
     SMO_Init(&g_foc.ctrl.smo);
 
-    /* Initialize PID Profiler */
     BIST_Init(&g_foc.ctrl.bist);
 
-    /* Initialize ADC calibration */
     g_foc.adc_cal.offset_a = ADC_CURRENT_OFFSET;
     g_foc.adc_cal.offset_b = ADC_CURRENT_OFFSET;
     g_foc.adc_cal.offset_c = ADC_CURRENT_OFFSET;
@@ -168,19 +149,15 @@ void FOC_Init(void) {
     g_foc.adc_cal.offset_vphase_c = 234;
     g_foc.adc_cal.cal_samples = 0;
 
-    /* Statistics */
     g_foc.status.run_counter = 0;
     g_foc.isr_time_cycles = 0;
 
-    /* Disable drivers initially */
     FOC_EnableDrivers(0);
 
-    /* Initialize Motor ID */
     MotorID_Init();
 
     g_foc.status.reverse = 1.0f;
 
-    /* Runtime config defaults (will be overwritten by FlashConfig_Apply) */
     g_foc.cfg.startup_current = STARTUP_CURRENT;
     g_foc.cfg.align_current = ALIGN_CURRENT;
     g_foc.cfg.startup_accel = STARTUP_ACCEL;
@@ -196,53 +173,48 @@ void FOC_Init(void) {
     g_foc.cfg.fault_stall_current = FAULT_STALL_CURRENT_A;
     g_foc.cfg.fault_stall_time_ms = FAULT_STALL_TIME_MS;
 
-    /* Allow ISR to process state machine */
     foc_initialized = 1;
 }
 
 void FOC_Start(void) {
     if (g_foc.status.state == FOC_STATE_IDLE) {
-        /* Reset controllers */
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
         PI_Reset(&g_foc.ctrl.speed);
         SMO_Reset(&g_foc.ctrl.smo);
 
+        /* Ensure PI controllers use original default gains from config */
+        PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
+        PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
+
         s_Id_filt = 0.0f;
         s_Iq_filt = 0.0f;
 
-        /* Reset transition state */
         s_blend_alpha = 0.0f;
         s_transition_counter = 0;
         s_in_transition = 0;
 
-        /* Reset stop state */
         s_stopping = 0;
         s_stop_counter = 0;
 
-        /* Calculate flying start timing from runtime config */
         float f_elec_min = g_foc.cfg.motor_min_spd * g_foc.cfg.motor_poles / 60.0f;
         if (f_elec_min < 1.0f) f_elec_min = 1.0f;
         s_detect_samples = (uint32_t)(2.0f / f_elec_min * (float)CONTROL_FREQUENCY);
         s_lock_samples = (uint32_t)(5.0f / (TWO_PI * SMO_PPL_CUTOFF) * (float)CONTROL_FREQUENCY);
-        /* Ensure at least 50 ms for stable PLL lock tracking */
         uint32_t min_lock_samples = (uint32_t)(0.05f * (float)CONTROL_FREQUENCY);  // 50 ms
         if (s_lock_samples < min_lock_samples) s_lock_samples = min_lock_samples;
-        s_bemf_threshold = g_foc.cfg.motor_min_spd / g_foc.cfg.motor_kv * 0.5f;
+        s_bemf_threshold = g_foc.cfg.motor_min_spd / g_foc.cfg.motor_kv * 0.8f;
         if (s_bemf_threshold < 0.05f) s_bemf_threshold = 0.05f;
 
-        /* Reset flying start state */
         s_detect_counter = 0;
         s_detect_peak = 0.0f;
         s_flying_start_counter = 0;
 
-        /* Enter calibration state */
         g_foc.adc_cal.offset_a = 0;
         g_foc.adc_cal.offset_b = 0;
         g_foc.adc_cal.offset_c = 0;
         g_foc.adc_cal.cal_samples = 0;
 
-        /* Reset phase voltage calibration accumulators and min/max states */
         s_vphase_a_accum = 0;
         s_vphase_b_accum = 0;
         s_vphase_c_accum = 0;
@@ -276,89 +248,88 @@ void FOC_Stop(void) {
     g_foc.status.state = FOC_STATE_STOP;
 }
 
-__attribute__((noinline)) static void FOC_CheckSafety(void) {
-    if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_CALIBRATION ||
-        g_foc.status.state == FOC_STATE_FAULT || g_foc.status.state == FOC_STATE_DETECT ||
-        g_foc.status.state == FOC_STATE_FLYING_START) {
-        oc_count = 0;
-        stall_counter = 0;
-        ov_count = 0;
-        uv_count = 0;
-        ground_fault_count = 0;
-        return;
+void FOC_SlowTask(void) {
+    if (!foc_initialized) return;
+
+    if (adc_regular_buffer[0] != 0) {
+        uint16_t vrefint_cal = *(uint16_t*)0x1FFF75AA;
+        ADC_Vref = 3.0f * (float)vrefint_cal / (float)adc_regular_buffer[0];
+        //
+        g_foc.data.i_scale = ADC_Vref * ADC_TO_CURRENT;
+        g_foc.data.v_scale = ADC_Vref * (VBUS_DIVIDER_RATIO / 4096.0f);
     }
 
-    float abs_ia = fabsf(g_foc.data.Ia);
-    float abs_ib = fabsf(g_foc.data.Ib);
-    float abs_ic = fabsf(g_foc.data.Ic);
+    if (g_foc.status.state == FOC_STATE_RUN) {
+        if (g_foc.data.duty_a < 0.85f && g_foc.data.duty_b < 0.85f && g_foc.data.duty_c < 0.85f &&
+            g_foc.data.duty_a > 0.15f && g_foc.data.duty_b > 0.15f && g_foc.data.duty_c > 0.15f) {
+            float current_sum = g_foc.data.Ia + g_foc.data.Ib + g_foc.data.Ic;
+            float gf_threshold = 0.40f * g_foc.cfg.motor_max_curr;
+            if (gf_threshold < 1.0f) gf_threshold = 1.0f;
 
-    if (abs_ia > g_foc.cfg.fault_oc_threshold || abs_ib > g_foc.cfg.fault_oc_threshold ||
-        abs_ic > g_foc.cfg.fault_oc_threshold) {
-        if (++oc_count >= g_foc.cfg.fault_oc_count) {
-            g_foc.status.fault = FOC_FAULT_OVERCURRENT;
-            g_foc.status.state = FOC_STATE_FAULT;
-        }
-    } else {
-        if (oc_count > 0) oc_count--;
-    }
-
-    /*--- Bus Voltage protection with Deglitch counters ---*/
-    if (g_foc.data.Vbus > g_foc.cfg.fault_ov_threshold) {
-        if (++ov_count >= 100) {
-            g_foc.status.fault = FOC_FAULT_OVERVOLTAGE;
-            g_foc.status.state = FOC_STATE_FAULT;
-        }
-    } else {
-        if (ov_count > 0) ov_count--;
-    }
-
-    if (g_foc.data.Vbus < g_foc.cfg.fault_uv_threshold) {
-        if (++uv_count >= 500) {
-            g_foc.status.fault = FOC_FAULT_UNDERVOLTAGE;
-            g_foc.status.state = FOC_STATE_FAULT;
-        }
-    } else {
-        if (uv_count > 0) uv_count--;
-    }
-
-    /*--- Ground Fault & Sensor Symmetry Check (Only run when PWM duty cycles are inside sampleable
-     * range 15% - 85%) ---*/
-    if (g_foc.data.duty_a < 0.85f && g_foc.data.duty_b < 0.85f && g_foc.data.duty_c < 0.85f &&
-        g_foc.data.duty_a > 0.15f && g_foc.data.duty_b > 0.15f && g_foc.data.duty_c > 0.15f) {
-        float current_sum = g_foc.data.Ia + g_foc.data.Ib + g_foc.data.Ic;
-        float gf_threshold = 0.40f * g_foc.cfg.motor_max_curr;
-        if (gf_threshold < 1.0f) gf_threshold = 1.0f;
-
-        if (fabsf(current_sum) > gf_threshold) {
-            if (++ground_fault_count >= 500) {
-                g_foc.status.fault = FOC_FAULT_GROUND;
-                g_foc.status.state = FOC_STATE_FAULT;
+            if (fabsf(current_sum) > gf_threshold) {
+                if (++ground_fault_count >= 2) {
+                    FOC_EnableDrivers(0);
+                    g_foc.status.fault = FOC_FAULT_GROUND;
+                    g_foc.status.state = FOC_STATE_FAULT;
+                }
+            } else {
+                if (ground_fault_count > 0) ground_fault_count--;
             }
         } else {
             if (ground_fault_count > 0) ground_fault_count--;
         }
-    } else {
-        if (ground_fault_count > 0) ground_fault_count--;
-    }
 
-    /*--- Stall / Loss of Sync detection ---*/
-    if (g_foc.cfg.fault_stall_enable && g_foc.status.state == FOC_STATE_RUN) {
-        // Use user-configured fault_stall_current from GUI as estimation error threshold
-        float threshold_c = g_foc.cfg.fault_stall_current;
-        float threshold_c_sq = threshold_c * threshold_c;
+        if (g_foc.cfg.fault_stall_enable) {
+            float threshold_c = g_foc.cfg.fault_stall_current;
+            float threshold_c_sq = threshold_c * threshold_c;
 
-        if (g_foc.ctrl.smo.current_err_sq > threshold_c_sq) {
-            stall_counter++;
-            if (stall_counter >
-                (uint32_t)(g_foc.cfg.fault_stall_time_ms / (CONTROL_PERIOD * 1000.0f))) {
-                g_foc.status.fault = FOC_FAULT_STALL;
-                g_foc.status.state = FOC_STATE_FAULT;
+            if (g_foc.ctrl.smo.current_err_sq > threshold_c_sq) {
+                stall_counter++;
+                if (stall_counter >= g_foc.cfg.fault_stall_time_ms) {
+                    FOC_EnableDrivers(0);
+                    g_foc.status.fault = FOC_FAULT_STALL;
+                    g_foc.status.state = FOC_STATE_FAULT;
+                }
+            } else {
+                if (stall_counter > 0) stall_counter--;
             }
         } else {
-            if (stall_counter > 0) stall_counter--;
+            stall_counter = 0;
         }
     } else {
+        ground_fault_count = 0;
         stall_counter = 0;
+    }
+
+    if (g_foc.status.state == FOC_STATE_RUN) {
+        if (g_foc.status.control_mode == FOC_MODE_SPEED) {
+            float accel_rate =
+                g_foc.cfg.speed_ramp_accel * RPM_TO_RAD * g_foc.cfg.motor_poles * 0.001f;
+            float decel_rate =
+                g_foc.cfg.speed_ramp_decel * RPM_TO_RAD * g_foc.cfg.motor_poles * 0.001f;
+            float ramp_error = g_foc.cmd.speed_ref_target - g_foc.cmd.speed_ref;
+
+            if (ramp_error > accel_rate) {
+                g_foc.cmd.speed_ref += accel_rate;
+            } else if (ramp_error < -decel_rate) {
+                g_foc.cmd.speed_ref -= decel_rate;
+            } else {
+                g_foc.cmd.speed_ref = g_foc.cmd.speed_ref_target;
+            }
+
+            float speed_error = g_foc.cmd.speed_ref - g_foc.data.omega_elec;
+            g_foc.cmd.Iq_ref = PI_Update(&g_foc.ctrl.speed, speed_error);
+        } else if (g_foc.status.control_mode == FOC_MODE_TORQUE) {
+            float current_ramp_step = g_foc.cfg.current_ramp_rate * 0.001f;
+            float ramp_error = g_foc.cmd.Iq_ref_target - g_foc.cmd.Iq_ref;
+            if (ramp_error > current_ramp_step) {
+                g_foc.cmd.Iq_ref += current_ramp_step;
+            } else if (ramp_error < -current_ramp_step) {
+                g_foc.cmd.Iq_ref -= current_ramp_step;
+            } else {
+                g_foc.cmd.Iq_ref = g_foc.cmd.Iq_ref_target;
+            }
+        }
     }
 }
 
@@ -447,20 +418,63 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_
         s_closed_loop_counter = 0;
         g_foc.ctrl.smo.enable_harmonic_comp = 0;
     }
-    g_foc.data.Vbus = foc_adc_to_vbus(adc_vbus);
+
+    float i_scale = g_foc.data.i_scale;
+    float v_scale = g_foc.data.v_scale;
+    if (i_scale == 0.0f || v_scale == 0.0f) {
+        float vref = ADC_Vref;
+        if (vref < 1.0f) vref = 3.3f;
+        i_scale = vref * (-0.007875504f);
+        v_scale = vref * (VBUS_DIVIDER_RATIO / 4096.0f);
+    }
+
+    g_foc.data.Vbus = (float)adc_vbus * v_scale;
     if (g_foc.data.Vbus < 1.0f) g_foc.data.Vbus = 1.0f;
     g_foc.data.Vbus_inv = 1.0f / g_foc.data.Vbus;
-    g_foc.data.Ia = ((float)adc_ia - (float)g_foc.adc_cal.offset_a) * ADC_TO_CURRENT;
-    g_foc.data.Ib = ((float)adc_ib - (float)g_foc.adc_cal.offset_b) * ADC_TO_CURRENT;
-    g_foc.data.Ic = ((float)adc_ic - (float)g_foc.adc_cal.offset_c) * ADC_TO_CURRENT;
+    g_foc.data.Ia = ((float)adc_ia - (float)g_foc.adc_cal.offset_a) * i_scale;
+    g_foc.data.Ib = ((float)adc_ib - (float)g_foc.adc_cal.offset_b) * i_scale;
+    g_foc.data.Ic = ((float)adc_ic - (float)g_foc.adc_cal.offset_c) * i_scale;
+    // reconstruct current
+    if (g_foc.status.state != FOC_STATE_SELF_COMMISSION) {
+        foc_reconstruct_currents();
+    }
+    if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_FAULT) {
+        if (g_foc.status.state == FOC_STATE_IDLE) {
+            FOC_StateIdle();
+        } else {
+            FOC_StateFault();
+        }
+
+        /* Plot streaming: snapshot current data every N-th ISR cycle */
+        static uint16_t plot_div = 0;
+        if (g_foc.plot.enabled && ++plot_div >= PLOT_DECIMATION) {
+            plot_div = 0;
+            g_foc.plot.Vd = g_foc.data.Vd;
+            g_foc.plot.Vq = g_foc.data.Vq;
+            g_foc.plot.Id = g_foc.data.Id;
+            g_foc.plot.Iq = g_foc.data.Iq;
+            g_foc.plot.Iq_ref = g_foc.cmd.Iq_ref;
+            g_foc.plot.theta_elec = g_foc.data.theta_elec;
+            g_foc.plot.Ia = g_foc.data.Ia;
+            g_foc.plot.Ib = g_foc.data.Ib;
+            g_foc.plot.Ic = g_foc.data.Ic;
+            g_foc.plot.duty_a = g_foc.data.duty_a;
+            g_foc.plot.duty_b = g_foc.data.duty_b;
+            g_foc.plot.duty_c = g_foc.data.duty_c;
+            g_foc.plot.ready = 1;
+        }
+
+        foc_set_pwm_duty(0.5f, 0.5f, 0.5f);
+        g_foc.status.run_counter++;
+        return;
+    }
+
     float noise = (g_foc.data.Ia + g_foc.data.Ib + g_foc.data.Ic) * 0.33333333f;
     g_foc.data.Ia -= noise;
     g_foc.data.Ib -= noise;
     g_foc.data.Ic -= noise;
     LL_DAC_ConvertData12RightAligned(DAC1, LL_DAC_CHANNEL_1, adc_ia);
     g_foc.status.run_counter++;
-
-    FOC_CheckSafety();
 
     if (g_foc.status.reverse < 0.0f) {
         float t = g_foc.data.Ib;
@@ -575,7 +589,7 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_
     float out_b = g_foc.data.duty_b;
     float out_c = g_foc.data.duty_c;
 
-    FOC_ApplyDeadtimeCompensation(&out_a, &out_b, &out_c);
+    // FOC_ApplyDeadtimeCompensation(&out_a, &out_b, &out_c);
 
     if (g_foc.status.reverse > 0) {
         foc_set_pwm_duty(out_a, out_b, out_c);
@@ -599,6 +613,79 @@ static void FOC_StateIdle(void) {
     g_foc.data.duty_c = 0.5f;
 }
 
+void FOC_ConfigureAWD(void) {
+    if (g_foc.adc_cal.offset_a < 200 || g_foc.adc_cal.offset_b < 200 ||
+        g_foc.adc_cal.offset_c < 200) {
+        LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD1, 4095, 0);
+        LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD2, 255, 0);
+        LL_ADC_ConfigAnalogWDThresholds(ADC2, LL_ADC_AWD1, 4095, 0);
+
+        LL_ADC_DisableIT_AWD1(ADC1);
+        LL_ADC_DisableIT_AWD2(ADC1);
+        LL_ADC_DisableIT_AWD1(ADC2);
+        return;
+    }
+
+    float vref = ADC_Vref;
+    if (vref < 1.0f) vref = 3.3f;
+
+    // 1. Calculate Overcurrent thresholds in LSB counts
+    const float gain = ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE;
+    float current_to_adc = gain / vref;
+    float adc_step = g_foc.cfg.fault_oc_threshold * current_to_adc;
+
+    // Phase A (ADC1 AWD1)
+    int32_t high_a = g_foc.adc_cal.offset_a + (int32_t)adc_step;
+    int32_t low_a = g_foc.adc_cal.offset_a - (int32_t)adc_step;
+    if (high_a > 4095) high_a = 4095;
+    if (low_a < 0) low_a = 0;
+
+    // Phase B and C (ADC2 AWD1 - monitors all injected channels)
+    int32_t avg_offset_bc = (g_foc.adc_cal.offset_b + g_foc.adc_cal.offset_c) / 2;
+    int32_t high_bc = avg_offset_bc + (int32_t)adc_step;
+    int32_t low_bc = avg_offset_bc - (int32_t)adc_step;
+    if (high_bc > 4095) high_bc = 4095;
+    if (low_bc < 0) low_bc = 0;
+
+    // 2. Calculate Vbus overvoltage/undervoltage thresholds in LSB counts
+    // Vbus_voltage = ADC_value * (vref / 4096) * VBUS_DIVIDER_RATIO
+    // ADC_value = Vbus_voltage * 4096 / (vref * VBUS_DIVIDER_RATIO)
+    float vbus_scale = (vref * VBUS_DIVIDER_RATIO) / 4096.0f;
+    int32_t high_vbus = (int32_t)(g_foc.cfg.fault_ov_threshold / vbus_scale);
+    int32_t low_vbus = (int32_t)(g_foc.cfg.fault_uv_threshold / vbus_scale);
+    if (high_vbus > 4095) high_vbus = 4095;
+    if (low_vbus < 0) low_vbus = 0;
+
+    // Shift right by 4 since AWD2 is an 8-bit watchdog
+    high_vbus >>= 4;
+    low_vbus >>= 4;
+
+    // 3. Program hardware registers using LL driver
+    // ADC1: AWD1 for Phase A, AWD2 for Vbus
+    LL_ADC_SetAnalogWDMonitChannels(ADC1, LL_ADC_AWD1, LL_ADC_AWD_CH_VOPAMP1_INJ);
+    LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD1, high_a, low_a);
+    LL_ADC_SetAWDFilteringConfiguration(ADC1, LL_ADC_AWD1, LL_ADC_AWD_FILTERING_3SAMPLES);
+
+    LL_ADC_SetAnalogWDMonitChannels(ADC1, LL_ADC_AWD2, LL_ADC_AWD_CHANNEL_14_INJ);
+    LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD2, high_vbus, low_vbus);
+
+    // ADC2: AWD1 for all Injected Channels (Phase B and Phase C)
+    LL_ADC_SetAnalogWDMonitChannels(ADC2, LL_ADC_AWD1, LL_ADC_AWD_ALL_CHANNELS_INJ);
+    LL_ADC_ConfigAnalogWDThresholds(ADC2, LL_ADC_AWD1, high_bc, low_bc);
+    LL_ADC_SetAWDFilteringConfiguration(ADC2, LL_ADC_AWD1, LL_ADC_AWD_FILTERING_3SAMPLES);
+
+    // Clear all pending AWD flags first to prevent stale interrupt triggers
+    LL_ADC_ClearFlag_AWD1(ADC1);
+    LL_ADC_ClearFlag_AWD2(ADC1);
+    LL_ADC_ClearFlag_AWD1(ADC2);
+    LL_ADC_ClearFlag_AWD2(ADC2);
+
+    // Now safely enable the AWD interrupts
+    LL_ADC_EnableIT_AWD1(ADC1);
+    LL_ADC_EnableIT_AWD2(ADC1);
+    LL_ADC_EnableIT_AWD1(ADC2);
+}
+
 static void FOC_StateCalibration(void) {
     if (g_foc.adc_cal.cal_samples >= CAL_SAMPLES) {
         g_foc.adc_cal.offset_a /= CAL_SAMPLES;
@@ -612,12 +699,14 @@ static void FOC_StateCalibration(void) {
         uint16_t diff_c = s_vphase_c_max - s_vphase_c_min;
 
         uint8_t is_spinning = (diff_a > 30) || (diff_b > 30) || (diff_c > 30);
-
         if (!is_spinning) {
             g_foc.adc_cal.offset_vphase_a = s_vphase_a_accum / CAL_SAMPLES;
             g_foc.adc_cal.offset_vphase_b = s_vphase_b_accum / CAL_SAMPLES;
             g_foc.adc_cal.offset_vphase_c = s_vphase_c_accum / CAL_SAMPLES;
         }
+
+        // Configure hardware watchdogs dynamically based on offsets
+        FOC_ConfigureAWD();
 
         g_foc.startup.theta = 0.0f;
         g_foc.startup.omega = 0.0f;
@@ -648,21 +737,15 @@ static void FOC_StateDetect(void) {
         if (s_detect_peak > thr_sq) {
             SMO_Reset(&g_foc.ctrl.smo);
 
-            /* Seed speed and angle from the last measured back-EMF peak/vector */
-            float E_amp_real = sqrtf(s_detect_peak) * TWO_THIRDS; /* scale back by 1.5 */
+            float E_amp_real = sqrtf(s_detect_peak) * TWO_THIRDS;
             float est_omega = E_amp_real / g_foc.cfg.motor_flux;
             if (est_omega > SMO_PLL_INT_MAX) est_omega = SMO_PLL_INT_MAX;
 
-            /* Match the direction of target speed */
-            if (g_foc.cmd.speed_ref_target < 0.0f) {
-                est_omega = -est_omega;
-            }
+            float theta_init = cordic_atan2(-E_alpha, E_beta);
+            g_foc.ctrl.smo.theta_est = theta_init;
 
             g_foc.ctrl.smo.omega_est = est_omega;
             g_foc.ctrl.smo.pll_integral = est_omega;
-
-            float theta_init = cordic_atan2(-E_alpha, E_beta);
-            g_foc.ctrl.smo.theta_est = theta_init;
 
             s_flying_start_counter = 0;
             g_foc.status.state = FOC_STATE_FLYING_START;
@@ -685,20 +768,9 @@ static void FOC_StateFlyingStart(void) {
     SMO_FeedBEMF(&g_foc.ctrl.smo, E_alpha, E_beta);
 
     if (s_flying_start_counter < s_lock_samples) {
-        /* Normal flying start: drivers OFF, output 0V, PLL tracking */
         g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.5f;
 
     } else if (s_flying_start_counter == s_lock_samples) {
-        /* -----------------------------------------------------------
-         * PRECHARGE CYCLE: Compute correct SVPWM duties that match
-         * back-EMF. These values go to the CCR preload register via
-         * foc_set_pwm_duty() at the end of this ISR. The timer update
-         * event (at counter underflow) will transfer them to the shadow
-         * register BEFORE the next ISR fires.
-         *
-         * DO NOT enable drivers here — the shadow register still has
-         * the old 0.5 duty from previous cycles!
-         * ----------------------------------------------------------- */
         float omega_now = g_foc.ctrl.smo.omega_est;
         float theta_now = SMO_GetAngle(&g_foc.ctrl.smo);
         float E_bemf = omega_now * g_foc.cfg.motor_flux;
@@ -710,7 +782,7 @@ static void FOC_StateFlyingStart(void) {
         cordic_sincos(theta_now, &cos_th, &sin_th);
         inverse_park_transform(g_foc.data.Vd, g_foc.data.Vq, cos_th, sin_th, &g_foc.data.Valpha,
                                &g_foc.data.Vbeta);
-        svpwm_calculate(); /* duty_a/b/c now match back-EMF */
+        svpwm_calculate();
 
     } else {
         /* -----------------------------------------------------------
@@ -776,8 +848,26 @@ static void FOC_StateFlyingStart(void) {
 
 static void FOC_StateAlign(void) {
     g_foc.startup.counter++;
+    if (g_foc.startup.counter == 1) {
+        /* Calculate dynamic startup PI gains based on 4x Handoff Speed and apply them once at start
+         * of Align */
+        float handoff_omega = g_foc.cfg.startup_handoff_speed * RPM_TO_RAD * g_foc.cfg.motor_poles;
+        float bw_startup = 4.0f * handoff_omega;
+        float kp_startup = g_foc.cfg.motor_ls * bw_startup;
+        float ki_startup = g_foc.cfg.motor_rs * bw_startup;
+        PI_SetGains(&g_foc.ctrl.id, kp_startup, ki_startup);
+        PI_SetGains(&g_foc.ctrl.iq, kp_startup, ki_startup);
+    }
 
-    g_foc.data.theta_elec = 0.0f;
+    float align_samples = (float)ALIGN_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY;
+
+    /* Two-stage alignment to break the 180-degree electrical angle dead spot */
+    if (g_foc.startup.counter < (uint32_t)(align_samples * 0.5f)) {
+        g_foc.data.theta_elec = -0.5f; /* -90 degrees electrical */
+    } else {
+        g_foc.data.theta_elec = 0.0f; /* 0 degrees electrical */
+    }
+
     g_foc.data.omega_elec = 0.0f;
     g_foc.data.speed_rpm = 0.0f;
 
@@ -800,7 +890,6 @@ static void FOC_StateAlign(void) {
 
     svpwm_calculate();
 
-    float align_samples = (float)ALIGN_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY;
     if (g_foc.startup.counter > (uint32_t)align_samples) {
         g_foc.startup.counter = 0;
         g_foc.startup.theta = 0.0f;
@@ -835,26 +924,25 @@ static void FOC_StateStartup(void) {
     g_foc.cmd.Id_ref = 0.0f;
     g_foc.cmd.Iq_ref = g_foc.cfg.startup_current;
 
-    /* Calculate startup voltage directly (open-loop) */
-    float v_resistive = g_foc.cmd.Iq_ref * g_foc.cfg.motor_rs;
-    float v_bemf = g_foc.startup.omega * g_foc.cfg.motor_flux; /* Back-EMF term */
-    float startup_voltage = v_resistive + v_bemf;
+    float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
+    float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
 
-    /* Ensure minimum voltage to overcome friction and start rotation */
-    float min_voltage = -g_foc.data.Vbus / SQRT3; /* Minimum voltage [V] */
-    if (startup_voltage < min_voltage) {
-        startup_voltage = min_voltage;
+    /* Calculate voltage commands using closed-loop current PI controllers + Feedforward */
+    float omega_e = g_foc.startup.omega;
+    float omega_Ls = omega_e * g_foc.cfg.motor_ls;
+    float E_bemf = omega_e * g_foc.cfg.motor_flux;
+
+    g_foc.data.Vd = PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq;
+    g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + omega_Ls * g_foc.data.Id + E_bemf;
+
+    /* Clamp (Vd, Vq) vector magnitude to 0.57735 * Vbus (SVPWM linear limit) */
+    float max_v = SQRT3_INV * g_foc.data.Vbus;
+    float v_sq = g_foc.data.Vd * g_foc.data.Vd + g_foc.data.Vq * g_foc.data.Vq;
+    if (v_sq > max_v * max_v && v_sq > 1e-6f) {
+        float inv_v = max_v / sqrtf(v_sq);
+        g_foc.data.Vd *= inv_v;
+        g_foc.data.Vq *= inv_v;
     }
-
-    /* Clamp to safe maximum */
-    float max_voltage = g_foc.data.Vbus / SQRT3;
-    if (startup_voltage > max_voltage) {
-        startup_voltage = max_voltage;
-    }
-
-    /* Apply voltage in q-axis only (for torque), d-axis = 0 */
-    g_foc.data.Vd = 0.0f;
-    g_foc.data.Vq = startup_voltage;
 
     /* Inverse Park */
     inverse_park_transform(g_foc.data.Vd, g_foc.data.Vq, cos_th, sin_th, &g_foc.data.Valpha,
@@ -870,8 +958,9 @@ static void FOC_StateStartup(void) {
         g_foc.ctrl.smo.pll_integral = g_foc.startup.omega;
         g_foc.ctrl.smo.omega_est = g_foc.startup.omega;
 
-        g_foc.ctrl.iq.integral = g_foc.data.Vq;
-        g_foc.ctrl.id.integral = g_foc.data.Vd;
+        /* Restore original default PI gains from config */
+        PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
+        PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
 
         s_Id_filt = g_foc.data.Id;
         s_Iq_filt = g_foc.data.Iq;
@@ -887,6 +976,7 @@ static void FOC_StateStartup(void) {
         s_transition_samples = (uint32_t)(TRANSITION_BLEND_MS * 0.001f * (float)CONTROL_FREQUENCY);
         if (s_transition_samples < 1) s_transition_samples = 1;
         s_in_transition = 1;
+
         g_foc.cmd.Id_ref = 0.0f;
         g_foc.status.state = FOC_STATE_RUN;
     }
@@ -902,7 +992,6 @@ static void FOC_StateStartup(void) {
 }
 
 CCMRAM_FUNC static void FOC_StateRun(void) {
-    /* Gate the 6th harmonic compensator to start 200 ms after entering closed-loop */
     s_closed_loop_counter++;
     uint32_t gate_samples = (uint32_t)(0.2f * (float)CONTROL_FREQUENCY);
     if (s_closed_loop_counter >= gate_samples) {
@@ -925,6 +1014,10 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
         if (s_blend_alpha >= 1.0f) {
             s_blend_alpha = 1.0f;
             s_in_transition = 0;
+
+            /* Restore original default PI gains from config */
+            PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
+            PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
         }
 
         g_foc.startup.theta += (g_foc.startup.omega * CONTROL_PERIOD) / PI;
@@ -944,61 +1037,25 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
 
     float sin_th, cos_th;
     cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
+
     park_transform(g_foc.data.Ialpha, g_foc.data.Ibeta, cos_th, sin_th, &g_foc.data.Id,
                    &g_foc.data.Iq);
-    s_Id_filt += g_foc.cfg.dq_filt_a * (g_foc.data.Id - s_Id_filt);
-    s_Iq_filt += g_foc.cfg.dq_filt_a * (g_foc.data.Iq - s_Iq_filt);
+    float filt_a = g_foc.cfg.dq_filt_a;
+    if (filt_a < 0.001f) filt_a = 0.001f;
+    s_Id_filt += filt_a * (g_foc.data.Id - s_Id_filt);
+    s_Iq_filt += filt_a * (g_foc.data.Iq - s_Iq_filt);
 
-    /* Cross-coupling compensation for rotating-frame LPF phase lag. */
-    float tau = CONTROL_PERIOD * (1.0f / g_foc.cfg.dq_filt_a - 1.0f);
-    float omega_tau = g_foc.data.omega_elec * tau;
+    float tau = CONTROL_PERIOD * (1.0f / filt_a - 1.0f);
+    float omega_tau = saturatef(g_foc.data.omega_elec * tau, 0.5f);
     g_foc.data.Id = s_Id_filt + omega_tau * s_Iq_filt;
     g_foc.data.Iq = s_Iq_filt - omega_tau * s_Id_filt;
-
-    /*=======================================================================*/
-    /* Speed / Torque Control                                                */
-    /*=======================================================================*/
-    if (g_foc.status.control_mode == FOC_MODE_SPEED) {
-        float accel_rate =
-            g_foc.cfg.speed_ramp_accel * RPM_TO_RAD * g_foc.cfg.motor_poles * CONTROL_PERIOD;
-        float decel_rate =
-            g_foc.cfg.speed_ramp_decel * RPM_TO_RAD * g_foc.cfg.motor_poles * CONTROL_PERIOD;
-
-        float ramp_error = g_foc.cmd.speed_ref_target - g_foc.cmd.speed_ref;
-
-        if (ramp_error > accel_rate) {
-            g_foc.cmd.speed_ref += accel_rate;
-        } else if (ramp_error < -decel_rate) {
-            g_foc.cmd.speed_ref -= decel_rate;
-        } else {
-            g_foc.cmd.speed_ref = g_foc.cmd.speed_ref_target;
-        }
-
-        float speed_error = g_foc.cmd.speed_ref - g_foc.data.omega_elec;
-        g_foc.cmd.Iq_ref = PI_Update(&g_foc.ctrl.speed, speed_error);
-    } else if (g_foc.status.control_mode == FOC_MODE_TORQUE) {
-        float current_ramp_step = g_foc.cfg.current_ramp_rate * CONTROL_PERIOD;
-        float ramp_error = g_foc.cmd.Iq_ref_target - g_foc.cmd.Iq_ref;
-        if (ramp_error > current_ramp_step) {
-            g_foc.cmd.Iq_ref += current_ramp_step;
-        } else if (ramp_error < -current_ramp_step) {
-            g_foc.cmd.Iq_ref -= current_ramp_step;
-        } else {
-            g_foc.cmd.Iq_ref = g_foc.cmd.Iq_ref_target;
-        }
-    }
 
     if (g_foc.ctrl.bist.mode != BIST_MODE_OFF) {
         BIST_Update(&g_foc.ctrl.bist, (float*)&g_foc.cmd.Iq_ref);
     }
 
     g_foc.cmd.Id_ref = 0.0f;
-
-    if (g_foc.cmd.Iq_ref > g_foc.cfg.motor_max_curr) {
-        g_foc.cmd.Iq_ref = g_foc.cfg.motor_max_curr;
-    } else if (g_foc.cmd.Iq_ref < -g_foc.cfg.motor_max_curr) {
-        g_foc.cmd.Iq_ref = -g_foc.cfg.motor_max_curr;
-    }
+    g_foc.cmd.Iq_ref = saturatef(g_foc.cmd.Iq_ref, g_foc.cfg.motor_max_curr);
 
     float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
     float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
@@ -1010,15 +1067,25 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     g_foc.data.Vd = PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq;
     g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + omega_Ls * g_foc.data.Id + E_bemf;
 
-    /* Compute advanced angle for voltage command (Inverse Park) to compensate for PWM delay */
+    /* Clamp (Vd, Vq) vector magnitude to 0.57735 * Vbus (SVPWM linear limit) */
+    float max_v = SQRT3_INV * g_foc.data.Vbus;
+    float v_sq = g_foc.data.Vd * g_foc.data.Vd + g_foc.data.Vq * g_foc.data.Vq;
+    if (v_sq > max_v * max_v && v_sq > 1e-6f) {
+        float inv_v = max_v / sqrtf(v_sq);
+        g_foc.data.Vd *= inv_v;
+        g_foc.data.Vq *= inv_v;
+    }
+
     float theta_adv = g_foc.data.theta_elec +
                       g_foc.data.omega_elec * (g_foc.cfg.comp_delay_samples * CONTROL_PERIOD) / PI;
     theta_adv = normalize_angle_norm(theta_adv);
+
     float cos_th_adv, sin_th_adv;
     cordic_sincos(theta_adv, &cos_th_adv, &sin_th_adv);
 
     inverse_park_transform(g_foc.data.Vd, g_foc.data.Vq, cos_th_adv, sin_th_adv, &g_foc.data.Valpha,
                            &g_foc.data.Vbeta);
+
     svpwm_calculate();
 
     /*=======================================================================*/
@@ -1118,6 +1185,12 @@ FOC_Fault_t FOC_GetFault(void) {
 
 void FOC_ClearFault(void) {
     if (g_foc.status.state == FOC_STATE_FAULT) {
+        // Clear all hardware AWD flags before transitioning out of FAULT state
+        LL_ADC_ClearFlag_AWD1(ADC1);
+        LL_ADC_ClearFlag_AWD2(ADC1);
+        LL_ADC_ClearFlag_AWD1(ADC2);
+        LL_ADC_ClearFlag_AWD2(ADC2);
+
         g_foc.status.fault = FOC_FAULT_NONE;
         g_foc.status.state = FOC_STATE_IDLE;
     }

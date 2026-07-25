@@ -164,17 +164,19 @@ void FlashConfig_Apply(void) {
                        g_foc.cfg.motor_flux, g_foc.cfg.motor_poles);
 
     /* Update hardware-level constraints (ADC trigger shifting & Max Duty) */
-    float margin = g_foc.cfg.adc_margin_ticks;
-    float max_duty = 1.0f - (float)(ADC_TICKS + margin) / (float)TIM1_ARR;
+    float margin = g_foc.cfg.adc_margin_ticks + DEAD_TIME_NS * 1e-9f * (float)SYSCLK_FREQ;
+    float total_sampling_ticks = ADC_TICKS / 2.0f + margin;
+    float max_duty = 1.0f - total_sampling_ticks / (float)TIM1_ARR;
 
     /* Clamp max duty to safe operating region [10%, 99%] */
-    if (max_duty < 0.10f) max_duty = 0.10f;
-    if (max_duty > 0.99f) max_duty = 0.99f;
-    g_foc.max_duty = max_duty;
+    g_foc.max_duty = clampf(max_duty, 0.10f, 0.99f);
 
     /* Update TIM1 CH4 dynamically to shift ADC trigger point based on margin */
-    uint32_t trigger = TIM1_ARR - ADC_TICKS - (uint32_t)margin;
+    uint32_t trigger = TIM1_ARR - ADC_TICKS / 2.0f;
     LL_TIM_OC_SetCompareCH4(TIM1, trigger);
+
+    /* Update hardware watchdogs dynamically with the new safety limits */
+    FOC_ConfigureAWD();
 }
 
 int FlashConfig_Save(void) {

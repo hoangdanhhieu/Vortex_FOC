@@ -36,8 +36,7 @@ PARAM_DEFS = [
     (ParamId.M_MAX_I,  "Max Current",   "A",     "Motor",       0, 100, 0.1,   False),
     (ParamId.COMP_DELAY,"Comp Delay*",   "samp", "ADC",         0, 50, 0.01,  False),
     # ADC
-    (ParamId.ADC_MARG, "ADC Margin",    "ticks", "ADC",         10, 500, 1,   False),
-    (ParamId.SMO_STF_BW, "SMO STF BW*",   "Hz",    "ADC",         10, 1000, 1, False),
+    (ParamId.ADC_MARG, "ADC Margin",    "ticks", "ADC",         1, 500, 1,   False),
     (ParamId.DQ_FILT_A, "Id,q LPF Alpha*","",     "ADC",         0.001, 1.0, 0.001, False),
     # Safety
     (ParamId.OC_THR,   "OC Threshold*",  "A",     "Safety",      0, 100, 0.1,  False),

@@ -71,6 +71,12 @@ void HardFault_Handler_C(unsigned long* hardfault_args) {
     HAL_PWR_EnableBkUpAccess();
     TAMP->BKP0R = fault_pc;
     TAMP->BKP1R = fault_lr;
+    TAMP->BKP8R = hardfault_args[0];  /* R0 */
+    TAMP->BKP9R = hardfault_args[1];  /* R1 */
+    TAMP->BKP10R = hardfault_args[2]; /* R2 */
+    TAMP->BKP11R = hardfault_args[3]; /* R3 */
+    TAMP->BKP12R = hardfault_args[4]; /* R12 */
+    TAMP->BKP13R = hardfault_args[7]; /* PSR */
 
     while (1) {
     }
@@ -98,8 +104,6 @@ extern volatile uint16_t raw_adc_vbus;
 
 extern volatile uint32_t adc_isr_us;
 extern uint8_t adc_isr_flag;
-
-extern void input_process(void);
 
 /* USER CODE END EV */
 
@@ -244,6 +248,31 @@ void DMA1_Channel2_IRQHandler(void) {
  */
 void ADC1_2_IRQHandler(void) {
     /* USER CODE BEGIN ADC1_2_IRQn 0 */
+
+    // Check AWD1 on ADC1 (Phase A overcurrent)
+    if (LL_ADC_IsActiveFlag_AWD1(ADC1)) {
+        LL_ADC_ClearFlag_AWD1(ADC1);
+        FOC_EnableDrivers(0);
+        g_foc.status.fault = FOC_FAULT_OVERCURRENT;
+        g_foc.status.state = FOC_STATE_FAULT;
+    }
+
+    // Check AWD2 on ADC1 (Vbus overvoltage/undervoltage)
+    if (LL_ADC_IsActiveFlag_AWD2(ADC1)) {
+        LL_ADC_ClearFlag_AWD2(ADC1);
+        FOC_EnableDrivers(0);
+        g_foc.status.fault = FOC_FAULT_OVERVOLTAGE;
+        g_foc.status.state = FOC_STATE_FAULT;
+    }
+
+    // Check AWD1 on ADC2 (Phase B and C overcurrent)
+    if (LL_ADC_IsActiveFlag_AWD1(ADC2)) {
+        LL_ADC_ClearFlag_AWD1(ADC2);
+        FOC_EnableDrivers(0);
+        g_foc.status.fault = FOC_FAULT_OVERCURRENT;
+        g_foc.status.state = FOC_STATE_FAULT;
+    }
+
     if (LL_ADC_IsActiveFlag_JEOS(ADC1)) {
         uint32_t start_count = TIM2->CNT;
         //  Clear the JEOS flag
@@ -308,7 +337,9 @@ void TIM6_DAC_IRQHandler(void) {
     /* USER CODE BEGIN TIM6_DAC_IRQn 0 */
     if (LL_TIM_IsActiveFlag_UPDATE(TIM6)) {
         LL_TIM_ClearFlag_UPDATE(TIM6);
-        input_process();
+
+        FOC_SlowTask();
+        SMO_SlowTask(&g_foc.ctrl.smo);
     }
     /* USER CODE END TIM6_DAC_IRQn 0 */
     /* USER CODE BEGIN TIM6_DAC_IRQn 1 */

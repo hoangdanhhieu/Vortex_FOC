@@ -25,7 +25,8 @@ void cordic_sin_cos_f32(float theta, float* sin_out, float* cos_out);
 /* Clarke/Park Transforms                                                    */
 /*===========================================================================*/
 
-CCMRAM_FUNC static inline void clarke_transform(float Ia, float Ib, float Ic, float* alpha, float* beta) {
+CCMRAM_FUNC static inline void clarke_transform(float Ia, float Ib, float Ic, float* alpha,
+                                                float* beta) {
     *alpha = (2.0f * Ia - Ib - Ic) * (1.0f / 3.0f);
     *beta = (Ib - Ic) * SQRT3_INV;
 }
@@ -114,7 +115,8 @@ CCMRAM_FUNC static inline float foc_adc_to_vbus(uint16_t adc_value) {
 }
 
 /**
- * @brief Convert ADC reading to Phase voltage using 3-resistor bias divider formula (differential with offset)
+ * @brief Convert ADC reading to Phase voltage using 3-resistor bias divider formula (differential
+ * with offset)
  * @param adc_value Raw ADC value (12-bit)
  * @param adc_offset Offset ADC value calibrated at zero phase voltage
  * @return Phase voltage in Volts (can be positive or negative)

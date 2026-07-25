@@ -49,8 +49,8 @@ static uint8_t plot_batch_idx = 0;
 
 #define RX_RING_SIZE 512
 static uint8_t rx_ring_buf[RX_RING_SIZE] __attribute__((aligned(4)));
-static uint16_t rx_ring_head = 0;
-static uint16_t rx_ring_tail = 0;
+static volatile uint16_t rx_ring_head = 0;
+static volatile uint16_t rx_ring_tail = 0;
 
 /* Internal parser function (private) */
 static void comm_process_byte(uint8_t byte);
@@ -493,6 +493,11 @@ void Comm_SendPlotPacket(void) {
     if (!g_foc.plot.enabled) {
         plot_batch_idx = 0;
         return;
+    }
+
+    /* Safety boundary check to prevent out-of-bounds array write */
+    if (plot_batch_idx >= PLOT_BATCH_SIZE) {
+        plot_batch_idx = 0;
     }
 
     uint16_t offset = plot_batch_idx * 12;

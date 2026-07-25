@@ -270,18 +270,18 @@ class PlotPanel(QWidget):
                             vd, vq, id_meas, iq_meas = vals[0:4]
                             theta_now = vals[5]
                             
-                            # Reconstruct high-frequency RPM by differentiating electrical angle theta
+                            # Reconstruct high-frequency RPM by differentiating electrical angle theta (in normalized [-1, 1) units)
                             if idx == 0:
                                 rpm_now = status_rpm
                                 rpm_filt = status_rpm
                             else:
                                 d_theta = theta_now - theta_prev
-                                if d_theta > math.pi:
-                                    d_theta -= 2 * math.pi
-                                elif d_theta < -math.pi:
-                                    d_theta += 2 * math.pi
+                                if d_theta > 1.0:
+                                    d_theta -= 2.0
+                                elif d_theta < -1.0:
+                                    d_theta += 2.0
                                     
-                                rpm_raw = (d_theta / dt) * (30.0 / (math.pi * poles))
+                                rpm_raw = (d_theta / dt) * (30.0 / poles)
                                 rpm_filt += 0.05 * (rpm_raw - rpm_filt)
                                 rpm_now = rpm_filt
                                 
