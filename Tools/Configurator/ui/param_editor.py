@@ -182,28 +182,16 @@ class ParamEditor(QWidget):
             grid.addWidget(group_box, last_row, 0, 1, 4)
             last_row += 1
 
-        # Add Alpha Calculator for "ADC" group
-        if group == "ADC":
-            group_box = QGroupBox("Filter Calculator")
+        # Add Auto-Compute b0 button at the bottom for "Speed LADRC" group
+        if group == "Speed LADRC":
+            group_box = QGroupBox("LADRC Tuning Helper")
             group_layout = QHBoxLayout()
             
-            group_layout.addWidget(QLabel("Multiplier:"))
-            self.spin_alpha_mult = WheelDoubleSpinBox()
-            self.spin_alpha_mult.setRange(0.1, 100.0)
-            self.spin_alpha_mult.setValue(8.0)
-            self.spin_alpha_mult.setSingleStep(0.5)
-            self.spin_alpha_mult.setFixedWidth(80)
-            self.spin_alpha_mult.setFixedHeight(28)
-            group_layout.addWidget(self.spin_alpha_mult)
-
-            group_layout.addSpacing(10)
-
-            self.btn_compute_alpha = QPushButton("Compute Alpha from BW")
-            self.btn_compute_alpha.clicked.connect(self._compute_alpha)
-            self.btn_compute_alpha.setFixedHeight(30)
-            self.btn_compute_alpha.setToolTip("Calculates Alpha = (BW_CUR * Multiplier) * Ts (Ts=1/48kHz)")
-            group_layout.addWidget(self.btn_compute_alpha)
-            group_layout.addStretch()
+            self.btn_compute_b0 = QPushButton("Compute b0 from J (Inertia)")
+            self.btn_compute_b0.clicked.connect(self._auto_compute_b0)
+            self.btn_compute_b0.setFixedHeight(30)
+            self.btn_compute_b0.setToolTip("Calculates b0 = 1.5 * Poles^2 * Flux / J using current Motor Pole Pairs, Flux, and Inertia J.")
+            group_layout.addWidget(self.btn_compute_b0)
             
             group_box.setLayout(group_layout)
             grid.addWidget(group_box, last_row, 0, 1, 4)
@@ -281,6 +269,34 @@ class ParamEditor(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to compute PI gains: {e}")
 
+    def _auto_compute_b0(self):
+        try:
+            poles_spin = self._spinboxes.get(protocol.ParamId.M_POLES)
+            flux_spin = self._spinboxes.get(protocol.ParamId.M_FLUX)
+            j_spin = self._spinboxes.get(protocol.ParamId.M_J)
+            b0_spin = self._spinboxes.get(protocol.ParamId.LADRC_B0)
+
+            if poles_spin is None or flux_spin is None or j_spin is None or b0_spin is None:
+                raise ValueError("Pole Pairs, Flux, Inertia J, or LADRC b0 fields are not available.")
+
+            poles = poles_spin.value()
+            flux = flux_spin.value()
+            j = j_spin.value()
+
+            if poles <= 0 or flux <= 0 or j <= 0:
+                QMessageBox.warning(self, "Invalid Parameters", "Poles, Flux, and Inertia J must be greater than 0.")
+                return
+
+            # b0 = 1.5 * (poles^2) * flux / J
+            b0 = 1.5 * (poles ** 2) * flux / j
+
+            b0_spin.setValue(b0)
+            self._serial.send(protocol.build_set(protocol.ParamId.LADRC_B0, b0))
+            QMessageBox.information(self, "Success", f"LADRC b0 computed and sent!\nb0: {b0:.2f}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to compute LADRC b0:\n{e}")
+
     def _compute_alpha(self):
         try:
             bw_spin = self._spinboxes.get(protocol.ParamId.BW_CUR)
@@ -312,6 +328,8 @@ class ParamEditor(QWidget):
     def _measure_rl(self):
         self._measured_rs = None
         self._measured_ls = None
+        self._measured_isat = None
+        self._measured_alpha = None
         self._is_measuring = True
         
         self._serial.send(protocol.build_simple(protocol.CmdType.IDENT))
@@ -421,6 +439,14 @@ class ParamEditor(QWidget):
             self._measured_ls = val
             self._check_apply_identification()
             return
+        if pid == protocol.ParamId.ID_ISAT_MEAS:
+            self._measured_isat = val
+            self._check_apply_identification()
+            return
+        if pid == protocol.ParamId.ID_ALPHA_MEAS:
+            self._measured_alpha = val
+            self._check_apply_identification()
+            return
 
         spin = self._spinboxes.get(pid)
         if spin:
@@ -441,31 +467,47 @@ class ParamEditor(QWidget):
                 self.btn_measure.setEnabled(True)
                 self.btn_measure.setText("Start Identification (RL Measure)")
             
-            # Fetch the new measurement results
+            # Fetch all 4 measurement results
             self._serial.send(protocol.build_get(protocol.ParamId.ID_RS_MEAS))
             self._serial.send(protocol.build_get(protocol.ParamId.ID_LS_MEAS))
+            self._serial.send(protocol.build_get(protocol.ParamId.ID_ISAT_MEAS))
+            self._serial.send(protocol.build_get(protocol.ParamId.ID_ALPHA_MEAS))
 
     def _check_apply_identification(self):
-        if self._measured_rs is not None and self._measured_ls is not None:
-            msg = (f"Motor Identification Complete!\n\n"
-                   f"Measured Phase Resistance (Rs): {self._measured_rs:.5f} Ω\n"
-                   f"Measured Phase Inductance (Ls): {self._measured_ls:.6f} H\n\n"
-                   f"Do you want to apply these values to the system?")
+        if (self._measured_rs is not None and self._measured_ls is not None and 
+            self._measured_isat is not None and self._measured_alpha is not None):
             
-            reply = QMessageBox.question(self, "Apply Identification Results", msg,
+            msg = (f"Motor Identification Complete!\n\n"
+                   f"Measured Parameters:\n"
+                   f"• Phase Resistance (Rs): {self._measured_rs:.5f} Ω\n"
+                   f"• Phase Inductance (Ls): {self._measured_ls:.6f} H ({self._measured_ls*1e6:.1f} µH)\n"
+                   f"• Saturation Current (Isat): {self._measured_isat:.2f} A\n"
+                   f"• Saturation Alpha: {self._measured_alpha:.6f} 1/A²\n\n"
+                   f"Do you want to fill these values into the configuration fields?\n"
+                   f"(Values will only be applied to hardware when you click 'Write All' or 'Save to Flash')")
+            
+            reply = QMessageBox.question(self, "Identification Results", msg,
                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
             
             if reply == QMessageBox.Yes:
-                # Update spinboxes and send to MCU
-                for pid, val in [(protocol.ParamId.M_RS, self._measured_rs), 
-                                (protocol.ParamId.M_LS, self._measured_ls)]:
+                # Update UI spinboxes only (as requested by user workflow)
+                updates = [
+                    (protocol.ParamId.M_RS, self._measured_rs),
+                    (protocol.ParamId.M_LS, self._measured_ls),
+                    (protocol.ParamId.M_ISAT, self._measured_isat),
+                    (protocol.ParamId.M_ALPHA, self._measured_alpha)
+                ]
+                for pid, val in updates:
                     spin = self._spinboxes.get(pid)
                     if spin:
                         spin.setValue(val)
-                        self._serial.send(protocol.build_set(pid, val))
                 
-                QMessageBox.information(self, "Success", "Motor parameters updated!")
+                QMessageBox.information(self, "Values Updated", 
+                                      "Configuration fields have been filled with measured values.\n"
+                                      "Click 'Write All' or 'Save to Flash' to apply them to the motor controller.")
             
             # Clear results
             self._measured_rs = None
             self._measured_ls = None
+            self._measured_isat = None
+            self._measured_alpha = None

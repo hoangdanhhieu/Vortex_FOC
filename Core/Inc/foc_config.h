@@ -78,13 +78,21 @@ extern volatile float ADC_Vref;
 #define CONTROL_PERIOD_F CONTROL_PERIOD
 
 /** TIM1 Auto-reload value */
-#define TIM1_ARR 1769
+#define TIM1_ARR 1770
 
 /** TIM1 counter max */
 #define TIM1_COUNTER_MAX TIM1_ARR
 
-/** Dead-time duration in nanoseconds (for compensation) */
+/** Dead-time duration in nanoseconds */
 #define DEAD_TIME_NS 480.0f
+#define DEADTIME_NS_TO_TICKS(ns)                                                                 \
+    ((uint8_t)(((ns) <= 747.0f)    ? ((uint32_t)((ns) * 170.0f / 1000.0f + 0.5f))                \
+               : ((ns) <= 1494.0f) ? (0x80 | ((uint32_t)((ns) * 170.0f / 2000.0f + 0.5f) - 64))  \
+               : ((ns) <= 2964.0f) ? (0xC0 | ((uint32_t)((ns) * 170.0f / 8000.0f + 0.5f) - 32))  \
+               : ((ns) <= 5929.0f) ? (0xE0 | ((uint32_t)((ns) * 170.0f / 16000.0f + 0.5f) - 32)) \
+                                   : 0xFF))
+#define TIM1_DEADTIME_TICKS DEADTIME_NS_TO_TICKS(DEAD_TIME_NS)
+
 #define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY)
 
 /*===========================================================================*/
@@ -104,7 +112,7 @@ extern volatile float ADC_Vref;
 #define ADC_CYCLES_PER_CH (ADC_SAMPLE_CYCLES + ADC_CONV_CYCLES)
 
 /** Injected ranks per ADC (dual simultaneous → ranks run sequentially) */
-#define ADC_INJ_RANKS 2U
+#define ADC_INJ_RANKS 1U
 
 /** Oversampling ratio */
 #define ADC_OVS_RATIO 1U
@@ -119,15 +127,20 @@ extern volatile float ADC_Vref;
 /** Safety margin [ticks] for ringing / settling / propagation */
 #define ADC_MARGIN_DEFAULT 10.0f
 
+#define MAX_DUTY_HIGH 0.95
+
 /*===========================================================================*/
 /* Current Sensing Configuration                                             */
 /*===========================================================================*/
+
+/** Cutoff frequency for the Current Self-Tuning Filter [Hz] */
+#define CURRENT_STF_FC 500.0f
 
 /** Shunt resistance [Ohm] */
 #define SHUNT_RESISTANCE 0.005f
 
 /** OPAMP gain */
-#define OPAMP_GAIN 31.0f
+#define OPAMP_GAIN 7.0f
 
 /** ADC resolution (12-bit) */
 #define ADC_RESOLUTION 4096
@@ -140,17 +153,13 @@ extern volatile float ADC_Vref;
 /* 1.022... is an empirical calibration factor derived from measurements */
 #define ADC_TO_CURRENT (-(1 / ((float)ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE)))
 
-#define FOC_DQ_FILTER_CUTOFF_RAD (CURRENT_LOOP_BW * 8.0f)
-#define FOC_DQ_FILTER_ALPHA (FOC_DQ_FILTER_CUTOFF_RAD * CONTROL_PERIOD)
-#define FOC_DQ_FILTER_TAU (1.0f / FOC_DQ_FILTER_CUTOFF_RAD)
-
 /*===========================================================================*/
 /* Vbus Measurement Configuration                                            */
 /*===========================================================================*/
 
 /** Vbus voltage divider: R_high / R_low */
-#define VBUS_R_HIGH 16000.0f
-#define VBUS_R_LOW 1200.0f
+#define VBUS_R_HIGH 15000.0f
+#define VBUS_R_LOW 1000.0f
 
 /** Vbus divider ratio */
 #define VBUS_DIVIDER_RATIO ((VBUS_R_HIGH + VBUS_R_LOW) / VBUS_R_LOW)
@@ -159,9 +168,9 @@ extern volatile float ADC_Vref;
 #define ADC_TO_VBUS ((ADC_Vref / (float)ADC_RESOLUTION) * VBUS_DIVIDER_RATIO)
 
 /** Phase voltage measurement configuration (3-resistor divider with bias) */
-#define PHASE_R_UP 150000.0f  /* Pull-up resistor to 3.3V (Vref) */
-#define PHASE_R_IN 100000.0f  /* Series input resistor from phase voltage */
-#define PHASE_R_DOWN 10000.0f /* Pull-down resistor to GND */
+#define PHASE_R_UP 15000.0f  /* Pull-up resistor to 3.3V (Vref) */
+#define PHASE_R_IN 10000.0f  /* Series input resistor from phase voltage */
+#define PHASE_R_DOWN 1000.0f /* Pull-down resistor to GND */
 
 /** Phase voltage conversion gain and offset factors */
 #define PHASE_VOLTAGE_GAIN (1.0f + (PHASE_R_IN / PHASE_R_UP) + (PHASE_R_IN / PHASE_R_DOWN))
@@ -187,8 +196,8 @@ extern volatile float ADC_Vref;
 /** Current loop bandwidth [Hz]*/
 #define CURRENT_LOOP_BW 4800.0f
 
-/** Speed loop bandwidth [rad/s]*/
-#define SPEED_LOOP_BW 300.0f
+/** Voltage ramp rate default [V/s] */
+#define VOLTAGE_RAMP_RATE 50.0f
 
 /** Current PI controller gains (Kp = Ls * BW, Ki = Rs * BW) */
 #define PI_ID_KP (MOTOR_LS * CURRENT_LOOP_BW)
@@ -226,7 +235,14 @@ extern volatile float ADC_Vref;
 #define SMO_PLL_INT_MAX (MOTOR_MAX_SPEED_RPM * (TWO_PI / 60.0f) * (float)MOTOR_POLE_PAIRS)
 #define SMO_PLL_INT_MIN (-SMO_PLL_INT_MAX)
 
-#define COMP_DELAY_SAMPLES 0.3f
+#define COMP_DELAY_SAMPLES 0.0f
+
+/** Vbus IIR low-pass filter coefficient (alpha = 0.95, ~16 Hz cutoff at 1 kHz) */
+#define VBUS_IIR_ALPHA 0.95f
+
+/** ADC channel switching hysteresis (duty difference threshold to prevent jitter) */
+#define SKIP_HYSTERESIS 0.03f
+
 /*===========================================================================*/
 /* Startup Configuration                                                     */
 /*===========================================================================*/
@@ -251,7 +267,7 @@ extern volatile float ADC_Vref;
 #define STARTUP_HANDOFF_SPEED 1000.0f
 
 /** Transition blend duration from open-loop to closed-loop [ms] */
-#define TRANSITION_BLEND_MS (500.0f / (TWO_PI * SMO_PPL_CUTOFF))
+#define TRANSITION_BLEND_MS 20.0f
 
 /** Startup timeout [ms] - set to 0 to disable */
 #define STARTUP_TIMEOUT_MS 0
@@ -302,7 +318,7 @@ extern volatile float ADC_Vref;
 /** Maximum runtime before auto-stop [ms] - set to 0 to disable */
 #define DEBUG_RUN_TIMEOUT_MS 0
 
-#define BEEP_PERIOD_TICKS (2 * CONTROL_FREQUENCY)     // 2 giây kêu một lần
-#define BEEP_DURATION_TICKS (CONTROL_FREQUENCY / 16)  // Kêu trong ~60ms cho đanh tiếng
+#define BEEP_PERIOD_TICKS (2 * CONTROL_FREQUENCY)
+#define BEEP_DURATION_TICKS (CONTROL_FREQUENCY / 16)
 #define BEEP_STEP_FREQ 4500.0f * CONTROL_PERIOD
 #endif /* FOC_CONFIG_H */

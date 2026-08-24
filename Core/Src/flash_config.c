@@ -150,9 +150,9 @@ void FlashConfig_Apply(void) {
     PI_SetLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
     PI_SetIntLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
 
-    PI_SetGains(&g_foc.ctrl.speed, g_foc.cfg.kp_spd, g_foc.cfg.ki_spd);
-    PI_SetLimits(&g_foc.ctrl.speed, -i_limit, i_limit);
-    PI_SetIntLimits(&g_foc.ctrl.speed, -i_limit * 0.5f, i_limit * 0.5f);
+    LADRC_SetGains(&g_foc.ctrl.speed, g_foc.cfg.ladrc_omega_c, g_foc.cfg.ladrc_omega_o,
+                   g_foc.cfg.ladrc_b0);
+    LADRC_SetLimits(&g_foc.ctrl.speed, -i_limit, i_limit);
 
     /* Update SMO Observer - Only re-init if motor is stopped */
     if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_STOP ||
@@ -161,18 +161,18 @@ void FlashConfig_Apply(void) {
     }
 
     SMO_SetMotorParams(&g_foc.ctrl.smo, g_foc.cfg.motor_rs, g_foc.cfg.motor_ls,
-                       g_foc.cfg.motor_flux, g_foc.cfg.motor_poles);
+                       g_foc.cfg.motor_alpha, g_foc.cfg.motor_flux, g_foc.cfg.motor_poles,
+                       g_foc.cfg.motor_max_spd, g_foc.cfg.motor_min_spd);
 
     /* Update hardware-level constraints (ADC trigger shifting & Max Duty) */
     float margin = g_foc.cfg.adc_margin_ticks + DEAD_TIME_NS * 1e-9f * (float)SYSCLK_FREQ;
-    float total_sampling_ticks = ADC_TICKS / 2.0f + margin;
+    float total_sampling_ticks = margin + ADC_TICKS / 2.0f;
     float max_duty = 1.0f - total_sampling_ticks / (float)TIM1_ARR;
 
     /* Clamp max duty to safe operating region [10%, 99%] */
     g_foc.max_duty = clampf(max_duty, 0.10f, 0.99f);
 
-    /* Update TIM1 CH4 dynamically to shift ADC trigger point based on margin */
-    uint32_t trigger = TIM1_ARR - ADC_TICKS / 2.0f;
+    uint32_t trigger = TIM1_ARR - ADC_TICKS / 2;
     LL_TIM_OC_SetCompareCH4(TIM1, trigger);
 
     /* Update hardware watchdogs dynamically with the new safety limits */

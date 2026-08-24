@@ -32,7 +32,7 @@ COLORS = {
 }
 
 DEFAULT_WINDOW = 0.5    # seconds
-SAMPLE_RATE = 24000      # 24kHz
+SAMPLE_RATE = 48000      # 24kHz
 DISPLAY_FPS = 30        # GUI refresh rate
 
 

@@ -1,267 +1,192 @@
 /**
  * @file motor_id.c
- * @brief Motor Parameter Identification — PI-DC Rs + Dual-Frequency AC Ls
+ * @brief Motor Parameter Identification — Safe Ramp Rs + Saturation Profiler L(I)
  *
  * ALGORITHM OVERVIEW
  * ──────────────────
+ * 1. ALIGN (150 ms)
+ *    Safe linear voltage ramp (30 V/s) locks the rotor along the d-axis at I1.
+ *    theta_elec = 0 throughout. 0% overshoot across all motor sizes.
  *
- * 1. ALIGN (300 ms)
- *    Slow integral controller ramps Vd to lock the rotor along the d-axis
- *    at a small holding current (5 % of I_max). theta_elec = 0 throughout.
+ * 2. MEASURE_RS — Dual-filter 2-point steady-state DC measurement
+ *    Vd1 = Rs * I1 + Vdead
+ *    Vd2 = Rs * I2 + Vdead
+ *    → Rs = (Vd2 − Vd1) / (I2 − I1)  [Dead-time completely cancels!]
+ *    → Vdead = max(Vd1 − Rs * I1, 0)
  *
- * 2. MEASURE_RS — PI-controlled DC 2-point injection
- *    With the rotor locked and pure DC (no AC), the inductor is a short:
- *        Vd = Rs * Id + Vdead(sign(Id))
- *    Vdead is CONSTANT for Id > 0.  Two operating points:
- *        Vd1 = Rs * I1 + Vdead
- *        Vd2 = Rs * I2 + Vdead
- *        → Rs = (Vd2 − Vd1) / (I2 − I1)   [dead-time cancels!]
- *    A pure integrator (no P) controls Vd until Id settles.
- *    Vd is averaged over a measurement window for noise rejection.
+ * 3. FREQ_DETECT (10 ms)
+ *    Quick 10-cycle probe at 1000 Hz to measure Z_1000.
+ *    Automatically selects optimal frequency:
+ *      - 4800 Hz: Whoop / Gimbal (Rs > 1.0 Ω or I_max <= 3A)
+ *      - 250 Hz: Large Inductance Hub / Spindle (Z_1000 > 1.5 Ω)
+ *      - 2400 Hz: FPV Drone / Slotless BLDC
  *
- * 3. FREQ_DETECT — Frequency pair selection
- *    Quick AC probe at 1000 Hz, 10 cycles, fixed V_probe = 1 V.
- *    The raw impedance angle φ_app = arctan(ω·Ls_raw / Rapp_raw) is computed
- *    (delay-ignorant; good enough for frequency selection).
- *    From φ_app the motor corner frequency f_corner = R/(2π·L) is estimated,
- *    then the target f1 is chosen to give φ_m1 ≈ 25° (optimal for k=4):
- *        f1_ideal = f_corner × tan(25°) = f_corner × 0.4663
- *    f1 is rounded to the nearest candidate in {250, 500, 1000, 2000} Hz.
- *    f2 = 4 × f1 if f2 ≤ 4000 Hz, else f2 = 2 × f1.
- *
- * 4. MEASURE_LS_F1  /  MEASURE_LS_F2 — AC lock-in at f1 and f2
- *    Each phase: probe sweep to find Vsweet (optimal injection amplitude),
- *    then 25-cycle synchronous demodulation (lock-in).
- *    RAW phasors (I_re_raw, I_im_raw) are stored WITHOUT delay compensation.
- *    Rapp_raw and Ls_raw are derived from the raw phasors.
- *
- * 5. EXTRACT — Self-calibrating delay + final Ls
- *    The corrected Ls as a function of the unknown delay N (samples):
- *        Ls_c(f, N) = Ls_raw · cos(φ) − (Rapp_raw/ω) · sin(φ),
- *        where φ = ω·N/Fs
- *    At the true hardware delay N*, both frequencies give the same Ls:
- *        f(N) = Ls_c(f1, N) − Ls_c(f2, N) = 0   at N = N*
- *    The scan minimises |f(N)| over N ∈ [0.0, 5.0] step 0.05 (100 points).
- *    Result: N* → id_result.identified_delay_samples
- *            Ls → id_result.measured_ls
- *    If the minimum is not well-defined (Δf flat → high-L/R motor at low freq),
- *    the raw Ls at f1 with a fixed N = 0.5 is used as a safe fallback.
+ * 4. MEASURE_SAT_PROFILE — 6-Level DC Bias + AC Injection + Exact ZOH Inversion
+ *    Measures L at 6 DC bias currents (20%, 35%, 50%, 65%, 80%, 95% I_max).
+ *    Direct feedforward bias Vd_bias = Vdead + Rs * I_bias (Current never crosses zero).
+ *    Lock-in DFT demodulation with 1-sample Preload delay compensation.
+ *    Extracts L using Exact Quadratic Discrete ZOH Inversion:
+ *        (M − 1)·a^2 − 2·(M − cos(phi))·a + (M − 1) = 0, where a = exp(−Rs·Ts / L)
+ *    Fits full saturation curve via Rational Least Squares:
+ *        1 / L(I) = A + B · I^2 → L0 = 1 / A, Isat = sqrt(A / B), alpha = B / A.
  */
 
 #include "motor_id.h"
 
 #include <math.h>
+#include <stdbool.h>
 
-#include "cordic_math.h"
+#include "flash_config.h"
 #include "foc_config.h"
 #include "foc_state_machine.h"
 
 /*===========================================================================*/
-/* Configuration Constants                                                   */
+/* Configuration Constants & Limits                                          */
 /*===========================================================================*/
 
-/* ---- Alignment ---- */
-#define ID_ALIGN_TIME_MS 300
-#define ID_ALIGN_KI 0.0002f /* Integrator gain [V/(A·sample)] */
+#define ID_MAX_DFT_N 192
 
-/* ---- Rs Measurement ---- */
-#define ID_RS_KI 0.0001f    /* Pure-I controller gain [V/(A·sample)] */
-#define ID_RS_I1_FRAC 0.05f /* First current point: 5% of I_max  [–] */
-#define ID_RS_I2_FRAC 0.20f /* Second current point: 20% of I_max [–] */
-#define ID_RS_SETTLE_MS 150 /* Time to wait for current to settle  [ms] */
-#define ID_RS_MEAS_MS 80    /* Averaging window for Vd and Id      [ms] */
-
-/* ---- Frequency Detection ---- */
-#define ID_FD_PROBE_HZ 1000.0f /* Base probe frequency                [Hz] */
-#define ID_FD_V_PROBE 1.0f     /* Fixed probe voltage during detect    [V]  */
-#define ID_FD_SKIP_CYC 2       /* Skip initial cycles for settle             */
-#define ID_FD_MEAS_CYC 8       /* Measurement cycles for freq detect         */
-
-/* ---- Ls Probe Sweep ---- */
-#define ID_LS_PROBE_V_INIT 1.0f /* Initial probe voltage               [V]   */
-#define ID_LS_PROBE_V_STEP 0.5f /* Probe voltage increment             [V]   */
-#define ID_LS_PROBE_V_MAX 10.0f /* Hard limit on probe voltage         [V]   */
-#define ID_LS_PROBE_I_MIN 0.40f /* Minimum acceptable I_amp            [A]   */
-#define ID_LS_PROBE_I_MAX 4.50f /* Maximum acceptable I_amp            [A]   */
-#define ID_LS_PROBE_CYC 5       /* Cycles per probe attempt                   */
-
-/* ---- Ls Measurement ---- */
-#define ID_LS_SKIP_CYC 8   /* Skip cycles for settle                     */
-#define ID_LS_MEAS_CYC 25  /* Measurement averaging cycles               */
-#define ID_LS_SETTLE_MS 80 /* Settle time before injection (Vd=0) [ms]  */
-
-/* ---- Extract ---- */
-#define ID_EXTRACT_N_MIN 0.0f
-#define ID_EXTRACT_N_MAX 5.0f
-#define ID_EXTRACT_N_STEP 0.05f /* 100 points total                          */
-#define ID_EXTRACT_PER_ISR 10   /* Points processed per ISR call             */
-
-/* ---- Candidate frequency list (≤ 4000 Hz for aliasing reasons) ---- */
-static const float id_ls_candidates[] = {250.0f, 500.0f, 1000.0f, 2000.0f, 4000.0f};
-#define ID_LS_NCANDIDATES 5
-
-/*===========================================================================*/
-/* Private State                                                             */
-/*===========================================================================*/
-
-MotorID_Result_t id_result;
+/* Frequency generation tables and DFT buffers */
+static float sin_table_cmd[ID_MAX_DFT_N];
+static float cos_table_cmd[ID_MAX_DFT_N];
+static float sin_table_demod[ID_MAX_DFT_N];
+static float cos_table_demod[ID_MAX_DFT_N];
+static float buf_s[ID_MAX_DFT_N];
+static float buf_c[ID_MAX_DFT_N];
+static float run_sum_s;
+static float run_sum_c;
+static uint16_t buf_idx;
+static uint16_t step_in_cycle;
+static uint16_t N_DFT;
+static float sat_freq;
+static float sat_omega;
+static float sat_phase_inc;
 
 /* Timekeeping */
 static uint32_t id_timer_ms;
 static uint32_t tick_counter;
 
-/* Current low-pass filter */
+/* Current low-pass filters for steady-state detection */
 static float id_filt;
+static float id_filt_fast;
+static float id_filt_slow;
 
-/* Previous state (for driver enable edge detection) */
-static MotorID_State_t prev_state;
-
-/* ── ALIGN ── */
+/* Align */
 static float align_vd;
 
-/* ── MEASURE_RS ── */
-/* Sub-states: 0=SETTLE_I1, 1=MEAS_I1, 2=SETTLE_I2, 3=MEAS_I2, 4=COMPUTE */
+/* Measure Rs */
 static uint8_t rs_sub;
-static float rs_vd_integrator;
+static float rs_vd_out;
 static float rs_id_target;
-static double rs_vd_sum; /* double for accuracy on long sum */
-static double rs_id_sum;
+static float rs_vd_sum;
+static float rs_id_sum;
 static uint32_t rs_sum_count;
-static float rs_vd1, rs_id1; /* Stored point 1 */
-static float rs_vbus_avg;    /* Vbus averaged during Rs measurement */
+static float rs_vd1;
+static float rs_id1;
+static uint16_t rs_settle_counter;
 
-/* ── FREQ_DETECT ── */
-static float    fd_vprobe;       /* Adaptive probe voltage [V] */
-static float    fd_theta;
-static float    fd_phase_inc;
-static uint32_t fd_sample_count;
-static float    fd_sum_sin;
-static float    fd_sum_cos;
-static uint32_t fd_meas_count;
-static uint32_t fd_skip_samp;
-static uint32_t fd_total_samp;
+/* Measure Saturation Profile */
+static const float sat_current_levels[6] = {0.08f, 0.18f, 0.30f, 0.42f, 0.55f, 0.70f};
+static uint8_t sat_level_idx;
+static float sat_vd_bias;
+static uint8_t sat_sub;
+static uint16_t sat_settle_cnt;
+static uint32_t meas_cycles;
+static float v_inj;
 
-/* ── MEASURE_LS (shared between F1 and F2) ── */
-/* Sub-states: 0=SETTLE, 1=PROBE, 2=MEASURE */
-static uint8_t ls_sub;
-static float ls_freq;
-static float ls_omega;
-static float ls_phase_inc;
-static uint32_t ls_spr; /* Samples per revolution at ls_freq */
-static float ls_vprobe;
-static float ls_vsweet;
-static float ls_theta;
-static uint32_t ls_sample_count;
-static float ls_sum_sin;
-static float ls_sum_cos;
-static uint32_t ls_meas_count;
-static uint32_t ls_skip_samp;
-static uint32_t ls_total_samp;
-static uint32_t ls_probe_samp;
+static float sat_lut_i[6];
+static float sat_lut_l[6];
+static uint8_t sat_lut_count;
 
-/* Stored raw phasors for EXTRACT */
-static float rapp_raw_f1, ls_raw_f1, iamp_f1;
-static float rapp_raw_f2, ls_raw_f2, iamp_f2;
-static float omega_f1, omega_f2;
+static float meas_accum_L[500];
+static uint16_t meas_accum_count;
 
-/* ── EXTRACT ── */
-static int ext_idx; /* Current scan index (0..99) */
-static float ext_best_N;
-static float ext_best_res; /* Smallest |Ls_c1 - Ls_c2| seen so far */
-static float ext_res_at_0; /* Residual at N=0 (for convergence check) */
+/* Public Result */
+MotorID_Result_t id_result;
 
 /*===========================================================================*/
-/* Private Helpers                                                           */
+/* Private Helper Functions                                                  */
 /*===========================================================================*/
 
-/** Update all per-frequency derived parameters */
-static void ls_update_freq_params(float freq) {
-    ls_freq = freq;
-    ls_omega = TWO_PI * freq;
-    ls_phase_inc = TWO_PI * freq * CONTROL_PERIOD_F;
-    ls_spr = (uint32_t)(PWM_FREQUENCY / freq + 0.5f);
-    ls_skip_samp = ID_LS_SKIP_CYC * ls_spr;
-    ls_probe_samp = (ID_LS_SKIP_CYC + ID_LS_PROBE_CYC) * ls_spr;
-    ls_total_samp = (ID_LS_SKIP_CYC + ID_LS_MEAS_CYC) * ls_spr;
+static void configure_freq(float f_probe) {
+    sat_freq = f_probe;
+    sat_omega = TWO_PI * sat_freq;
+    sat_phase_inc = TWO_PI * sat_freq * CONTROL_PERIOD_F;
+    N_DFT = (uint16_t)((float)PWM_FREQUENCY / sat_freq + 0.5f);
+    if (N_DFT > ID_MAX_DFT_N) N_DFT = ID_MAX_DFT_N;
+    if (N_DFT < 4) N_DFT = 4;
+
+    /* Compensate exact 1.5-cycle PWM hardware delay (0.5 sample ADC + 1.0 sample Timer shadow
+     * reload) */
+    float delay_phase = 1.5f * sat_phase_inc;
+    for (uint16_t k = 0; k < N_DFT; k++) {
+        float phase_cmd = sat_phase_inc * (float)k;
+        sin_table_cmd[k] = sinf(phase_cmd);
+        cos_table_cmd[k] = cosf(phase_cmd);
+        sin_table_demod[k] = sinf(phase_cmd - delay_phase);
+        cos_table_demod[k] = cosf(phase_cmd - delay_phase);
+        buf_s[k] = 0.0f;
+        buf_c[k] = 0.0f;
+    }
+    run_sum_s = 0.0f;
+    run_sum_c = 0.0f;
+    buf_idx = 0;
+    step_in_cycle = 0;
 }
 
-/** Reset synchronous demodulator accumulators */
-static void ls_reset_lockin(void) {
-    ls_theta = 0.0f;
-    ls_sample_count = 0;
-    ls_sum_sin = 0.0f;
-    ls_sum_cos = 0.0f;
-    ls_meas_count = 0;
-}
-
-/**
- * Find the candidate frequency (from id_ls_candidates[]) nearest to f_target
- * on a logarithmic scale.
- */
-static float find_nearest_candidate(float f_target) {
-    float best = id_ls_candidates[0];
-    /* Compare ratio log2(f/best): smallest absolute log-ratio wins */
-    float best_ratio = f_target / best;
-    if (best_ratio < 1.0f) best_ratio = 1.0f / best_ratio;
-
-    for (int i = 1; i < ID_LS_NCANDIDATES; i++) {
-        float ratio = f_target / id_ls_candidates[i];
-        if (ratio < 1.0f) ratio = 1.0f / ratio;
-        if (ratio < best_ratio) {
-            best_ratio = ratio;
-            best = id_ls_candidates[i];
+static float quick_median(float* arr, int n) {
+    if (n <= 0) return 0.0f;
+    for (int i = 1; i < n; i++) {
+        float key = arr[i];
+        int j = i - 1;
+        while (j >= 0 && arr[j] > key) {
+            arr[j + 1] = arr[j];
+            j = j - 1;
         }
+        arr[j + 1] = key;
     }
-    return best;
-}
-
-/** Return 1 if f is present in the candidate list (within 1 Hz tolerance) */
-static int is_candidate(float f) {
-    for (int i = 0; i < ID_LS_NCANDIDATES; i++) {
-        if (fabsf(f - id_ls_candidates[i]) < 1.0f) return 1;
+    if (n % 2 != 0) {
+        return arr[n / 2];
+    } else {
+        return 0.5f * (arr[(n - 1) / 2] + arr[n / 2]);
     }
-    return 0;
-}
-
-/** Reset all timekeeping (call when entering a new phase) */
-static void reset_timer(void) {
-    id_timer_ms = 0;
-    tick_counter = 0;
 }
 
 /*===========================================================================*/
-/* Public API                                                                */
+/* Public API Functions                                                      */
 /*===========================================================================*/
 
 void MotorID_Init(void) {
-    id_result.state = MOTOR_ID_STATE_IDLE;
     id_result.measured_rs = 0.0f;
     id_result.measured_ls = 0.0f;
-    id_result.error_code = 0;
-    id_result.identified_v_err = 0.0f;
+    id_result.sat_isat = 0.0f;
+    id_result.sat_alpha = 0.0f;
+    id_result.measured_vdead = 0.0f;
     id_result.identified_deadtime_ns = 0.0f;
-    id_result.identified_delay_samples = 0.0f;
-    id_result.dbg_f1_hz = 0.0f;
-    id_result.dbg_f2_hz = 0.0f;
-    id_result.dbg_phi_detect_deg = 0.0f;
-    id_result.dbg_rapp_raw_f1 = 0.0f;
-    id_result.dbg_ls_raw_f1 = 0.0f;
-    id_result.dbg_iamp_f1 = 0.0f;
-    id_result.dbg_rapp_raw_f2 = 0.0f;
-    id_result.dbg_ls_raw_f2 = 0.0f;
-    id_result.dbg_iamp_f2 = 0.0f;
-    id_result.dbg_ls_comp_f1 = 0.0f;
-    id_result.dbg_ls_comp_f2 = 0.0f;
-    prev_state = MOTOR_ID_STATE_IDLE;
+    id_result.selected_freq_hz = 2400.0f;
+    id_result.state = MOTOR_ID_STATE_IDLE;
+    id_result.error_code = 0;
+
+    id_timer_ms = 0;
+    tick_counter = 0;
+
+    id_filt = 0.0f;
+    id_filt_fast = 0.0f;
+    id_filt_slow = 0.0f;
+
+    align_vd = 0.0f;
+    rs_sub = 0;
+    sat_sub = 0;
+    sat_level_idx = 0;
+    sat_lut_count = 0;
+    meas_accum_count = 0;
+
+    configure_freq(2400.0f);
 }
 
 void MotorID_Start(void) {
     MotorID_Init();
-    align_vd = 0.0f;
-    id_filt = 0.0f;
-    reset_timer();
     id_result.state = MOTOR_ID_STATE_ALIGN;
-    prev_state = MOTOR_ID_STATE_IDLE;
 }
 
 void MotorID_Stop(void) {
@@ -269,574 +194,349 @@ void MotorID_Stop(void) {
 }
 
 void MotorID_GetResults(MotorID_Result_t* results) {
-    if (results) *results = id_result;
+    if (results != NULL) {
+        *results = id_result;
+    }
 }
 
 /*===========================================================================*/
-/* Main State Machine                                                        */
+/* Core State Machine Step (Called at 48 kHz PWM Interrupt)                  */
 /*===========================================================================*/
 
 void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
     (void)iq;
+    *vq = 0.0f;
+    float vd_out = 0.0f;
 
-    /* 1-ms tick counter */
-    if (++tick_counter >= (PWM_FREQUENCY / 1000)) {
+    if (id_result.state == MOTOR_ID_STATE_IDLE || id_result.state == MOTOR_ID_STATE_COMPLETE ||
+        id_result.state == MOTOR_ID_STATE_ERROR) {
+        *vd = 0.0f;
+        return;
+    }
+
+    tick_counter++;
+    if (tick_counter >= (PWM_FREQUENCY / 1000U)) {
         id_timer_ms++;
         tick_counter = 0;
     }
 
-    /* Filtered current for monitoring */
-    id_filt += CURRENT_FILTER_COEFF * (id - id_filt);
+    /* Update current tracking filters */
+    id_filt += 0.02f * (id - id_filt);
+    id_filt_fast += 0.02f * (id - id_filt_fast);
+    id_filt_slow += 0.002f * (id - id_filt_slow);
 
-    /* Driver enable edge detection */
-    if (id_result.state != prev_state) {
-        int drivers_on = (id_result.state == MOTOR_ID_STATE_ALIGN ||
-                          id_result.state == MOTOR_ID_STATE_MEASURE_RS ||
-                          id_result.state == MOTOR_ID_STATE_FREQ_DETECT ||
-                          id_result.state == MOTOR_ID_STATE_MEASURE_LS_F1 ||
-                          id_result.state == MOTOR_ID_STATE_MEASURE_LS_F2);
-        FOC_EnableDrivers(drivers_on ? 1 : 0);
-        prev_state = id_result.state;
+    float motor_max_curr = FlashConfig_Get()->motor_max_curr;
+    if (motor_max_curr < 0.5f) motor_max_curr = 2.0f;
+    float v_ramp_step = 30.0f * CONTROL_PERIOD_F; /* ~0.625 mV per PWM tick */
+
+    /* ===================================================================== */
+    /* 1. STATE_ALIGN (Safe 30 V/s Voltage Ramp to Align Rotor at I1)        */
+    /* ===================================================================== */
+    if (id_result.state == MOTOR_ID_STATE_ALIGN) {
+        float target = 0.20f * motor_max_curr;
+        if (target < 0.08f) target = 0.08f;
+        float v_max = 0.35f * vbus;
+
+        if (id_filt < target && align_vd < v_max) {
+            align_vd += v_ramp_step;
+        }
+        vd_out = align_vd;
+
+        if (id_timer_ms >= 150) {
+            rs_sub = 0; /* SETTLE_I1 */
+            rs_vd_out = align_vd;
+            rs_vd_sum = 0.0f;
+            rs_id_sum = 0.0f;
+            rs_sum_count = 0;
+            rs_settle_counter = 0;
+            id_timer_ms = 0;
+            id_result.state = MOTOR_ID_STATE_MEASURE_RS;
+        }
     }
 
-    *vd = 0.0f;
-    *vq = 0.0f;
+    /* ===================================================================== */
+    /* 2. STATE_MEASURE_RS (2-Point DC: Settle I1 -> Ramp to I2 -> Settle I2)*/
+    /* ===================================================================== */
+    else if (id_result.state == MOTOR_ID_STATE_MEASURE_RS) {
+        float v_max = 0.45f * vbus;
+        float diff = fabsf(id_filt_fast - id_filt_slow);
+        float is_flat_thr = g_foc.noise_profile.is_flat_thr + 0.010f * id_filt;
+        bool is_flat = (diff < is_flat_thr);
 
-    switch (id_result.state) {
-        /* ================================================================== */
-        case MOTOR_ID_STATE_IDLE:
-        case MOTOR_ID_STATE_COMPLETE:
-            break;
+        if (rs_sub == 0) { /* SETTLE_I1 */
+            vd_out = rs_vd_out;
+            if (is_flat && id_timer_ms > 15) {
+                rs_settle_counter++;
+                rs_vd_sum += rs_vd_out;
+                rs_id_sum += id;
+                rs_sum_count++;
 
-        /* ================================================================== */
-        case MOTOR_ID_STATE_ERROR:
-            FOC_EnableDrivers(0);
-            break;
+                if (rs_settle_counter >= 360) { /* ~7.5 ms average */
+                    rs_vd1 = rs_vd_sum / (float)rs_sum_count;
+                    rs_id1 = rs_id_sum / (float)rs_sum_count;
 
-        /* ================================================================== */
-        /* ALIGN: Slow integrator ramps Id to 5% I_max over 300 ms           */
-        /* ================================================================== */
-        case MOTOR_ID_STATE_ALIGN: {
-            float target = ID_RS_I1_FRAC * g_foc.cfg.motor_max_curr;
-            float err = target - id_filt;
-            align_vd += ID_ALIGN_KI * err;
+                    rs_id_target = 0.50f * motor_max_curr;
+                    if (rs_id_target < 2.5f * rs_id1) rs_id_target = 2.5f * rs_id1;
 
-            /* Anti-windup: clamp to [0, 30% Vbus] */
-            float v_max = 0.30f * vbus;
-            if (align_vd < 0.0f)
-                align_vd = 0.0f;
-            else if (align_vd > v_max)
-                align_vd = v_max;
-
-            *vd = align_vd;
-            *vq = 0.0f;
-
-            if (id_timer_ms >= ID_ALIGN_TIME_MS) {
-                /* Enter MEASURE_RS */
-                rs_sub = 0;
-                rs_vd_integrator = align_vd; /* Start from alignment voltage */
-                rs_id_target = ID_RS_I1_FRAC * g_foc.cfg.motor_max_curr;
-                rs_vd_sum = 0.0;
-                rs_id_sum = 0.0;
+                    rs_sub = 1; /* RAMP_TO_I2 */
+                    rs_settle_counter = 0;
+                    rs_vd_sum = 0.0f;
+                    rs_id_sum = 0.0f;
+                    rs_sum_count = 0;
+                    id_timer_ms = 0;
+                }
+            }
+        } else if (rs_sub == 1) { /* RAMP_TO_I2 */
+            if (id_filt < rs_id_target && rs_vd_out < v_max) {
+                rs_vd_out += v_ramp_step;
+            } else {
+                rs_sub = 2; /* Transition to SETTLE_I2 */
+                rs_settle_counter = 0;
+                rs_vd_sum = 0.0f;
+                rs_id_sum = 0.0f;
                 rs_sum_count = 0;
-                rs_vbus_avg = vbus;
-                reset_timer();
-                id_result.state = MOTOR_ID_STATE_MEASURE_RS;
+                id_timer_ms = 0;
             }
-        } break;
+            vd_out = rs_vd_out;
+        } else if (rs_sub == 2) { /* SETTLE_I2 */
+            vd_out = rs_vd_out;
+            if (is_flat && id_timer_ms > 15) {
+                rs_settle_counter++;
+                rs_vd_sum += rs_vd_out;
+                rs_id_sum += id;
+                rs_sum_count++;
 
-        /* ================================================================== */
-        /* MEASURE_RS: Pure-I controller, 2-point DC measurement              */
-        /*                                                                    */
-        /*  Sub 0: Settle at I1 (ID_RS_SETTLE_MS)                            */
-        /*  Sub 1: Average Vd and Id over ID_RS_MEAS_MS → (Vd1, Id1)        */
-        /*  Sub 2: Switch target to I2, settle (ID_RS_SETTLE_MS)             */
-        /*  Sub 3: Average → (Vd2, Id2)                                     */
-        /*  Sub 4: Compute Rs = (Vd2-Vd1)/(Id2-Id1)                         */
-        /* ================================================================== */
-        case MOTOR_ID_STATE_MEASURE_RS: {
-            /* Pure integrator: no P term — guaranteed convergence, no overshoot */
-            float err = rs_id_target - id;
-            rs_vd_integrator += ID_RS_KI * err;
+                if (rs_settle_counter >= 360) { /* ~7.5 ms average */
+                    float vd2 = rs_vd_sum / (float)rs_sum_count;
+                    float id2 = rs_id_sum / (float)rs_sum_count;
 
-            /* Anti-windup: clamp to [0, 45% Vbus] */
-            float v_max = 0.45f * vbus;
-            if (rs_vd_integrator < 0.0f)
-                rs_vd_integrator = 0.0f;
-            else if (rs_vd_integrator > v_max)
-                rs_vd_integrator = v_max;
+                    float delta_v = vd2 - rs_vd1;
+                    float delta_i = id2 - rs_id1;
 
-            *vd = rs_vd_integrator;
-            *vq = 0.0f;
+                    if (delta_i > 0.02f) {
+                        float rs = delta_v / delta_i;
+                        if (rs > 0.002f && rs < 50.0f) {
+                            id_result.measured_rs = rs;
+                            float vdead = rs_vd1 - rs * rs_id1;
+                            if (vdead < 0.0f) vdead = 0.0f;
+                            id_result.measured_vdead = vdead;
+                            id_result.identified_deadtime_ns =
+                                (vdead / vbus) * (1.0e9f / (float)PWM_FREQUENCY);
 
-            const uint32_t settle_ms = ID_RS_SETTLE_MS;
-            const uint32_t meas_ms = ID_RS_MEAS_MS;
-
-            switch (rs_sub) {
-                case 0: /* Settle at I1 */
-                    if (id_timer_ms >= settle_ms) {
-                        rs_vd_sum = 0.0;
-                        rs_id_sum = 0.0;
-                        rs_sum_count = 0;
-                        rs_sub = 1;
-                        reset_timer();
-                    }
-                    break;
-
-                case 1: /* Measure at I1 */
-                    rs_vd_sum += rs_vd_integrator;
-                    rs_id_sum += id;
-                    rs_sum_count++;
-                    rs_vbus_avg += (vbus - rs_vbus_avg) * 0.001f; /* slow LP filter */
-
-                    if (id_timer_ms >= meas_ms) {
-                        rs_vd1 = (float)(rs_vd_sum / rs_sum_count);
-                        rs_id1 = (float)(rs_id_sum / rs_sum_count);
-                        /* Switch to I2 */
-                        rs_id_target = ID_RS_I2_FRAC * g_foc.cfg.motor_max_curr;
-                        rs_vd_sum = 0.0;
-                        rs_id_sum = 0.0;
-                        rs_sum_count = 0;
-                        rs_sub = 2;
-                        reset_timer();
-                    }
-                    break;
-
-                case 2: /* Settle at I2 */
-                    if (id_timer_ms >= settle_ms) {
-                        rs_vd_sum = 0.0;
-                        rs_id_sum = 0.0;
-                        rs_sum_count = 0;
-                        rs_sub = 3;
-                        reset_timer();
-                    }
-                    break;
-
-                case 3: /* Measure at I2 */
-                    rs_vd_sum += rs_vd_integrator;
-                    rs_id_sum += id;
-                    rs_sum_count++;
-
-                    if (id_timer_ms >= meas_ms) {
-                        float vd2 = (float)(rs_vd_sum / rs_sum_count);
-                        float id2 = (float)(rs_id_sum / rs_sum_count);
-
-                        float delta_v = vd2 - rs_vd1;
-                        float delta_i = id2 - rs_id1;
-
-                        if (delta_i > 0.02f) {
-                            float rs = delta_v / delta_i;
-                            if (rs > 0.005f && rs < 20.0f) {
-                                id_result.measured_rs = rs;
-                                /* Enter FREQ_DETECT */
-                                fd_vprobe = ID_LS_PROBE_V_INIT;
-                                fd_theta = 0.0f;
-                                fd_phase_inc = TWO_PI * ID_FD_PROBE_HZ * CONTROL_PERIOD_F;
-                                uint32_t spr = (uint32_t)(PWM_FREQUENCY / ID_FD_PROBE_HZ + 0.5f);
-                                fd_skip_samp = ID_FD_SKIP_CYC * spr;
-                                fd_total_samp = (ID_FD_SKIP_CYC + ID_FD_MEAS_CYC) * spr;
-                                fd_sample_count = 0;
-                                fd_sum_sin = 0.0f;
-                                fd_sum_cos = 0.0f;
-                                fd_meas_count = 0;
-                                reset_timer();
-                                id_result.state = MOTOR_ID_STATE_FREQ_DETECT;
-                            } else {
-                                id_result.error_code = 1; /* Rs out of [0.005, 20] Ω */
-                                id_result.state = MOTOR_ID_STATE_ERROR;
-                            }
+                            /* Enter Quick FREQ_DETECT Probe at 1000 Hz (10 ms) */
+                            configure_freq(1000.0f);
+                            rs_sub = 3; /* FREQ_DETECT_PROBE */
+                            meas_cycles = 0;
+                            buf_idx = 0;
+                            id_timer_ms = 0;
                         } else {
-                            /* Delta current too small — integrator did not converge */
-                            id_result.error_code = 7;
+                            id_result.error_code = 1;
                             id_result.state = MOTOR_ID_STATE_ERROR;
                         }
-                        reset_timer();
-                    }
-                    break;
-            }
-        } break;
-
-        /* ================================================================== */
-        /* FREQ_DETECT: Adaptive probe at 1000 Hz, select f1 and f2          */
-        /*                                                                    */
-        /* Uses adaptive voltage sweep (same as LS probe) to guarantee       */
-        /* adequate SNR before computing phi. A fixed low voltage (1 V)      */
-        /* would give I_amp ≈ 0.11 A for high-impedance motors (e.g. Nidec) */
-        /* — near the ADC noise floor — making phi completely unreliable.    */
-        /* ================================================================== */
-        case MOTOR_ID_STATE_FREQ_DETECT: {
-            /* 50 ms settle: let residual DC from MEASURE_RS decay to zero.
-             * For Nidec: τ = L/R = 0.75 ms → after 50 ms essentially zero. */
-            if (id_timer_ms < 50) {
-                *vd = 0.0f;
-                *vq = 0.0f;
-                break;
-            }
-
-            /* Adaptive phase accumulation */
-            fd_theta += fd_phase_inc;
-            if (fd_theta >= PI) fd_theta -= TWO_PI;
-
-            float s, c;
-            cordic_sincos(fd_theta / PI, &c, &s);
-
-            *vd = fd_vprobe * s;
-            *vq = 0.0f;
-
-            fd_sample_count++;
-
-            if (fd_sample_count > fd_skip_samp) {
-                fd_sum_sin += id * s;
-                fd_sum_cos += id * c;
-                fd_meas_count++;
-            }
-
-            if (fd_sample_count >= fd_total_samp) {
-                float inv_N  = 1.0f / (float)fd_meas_count;
-                float I_re   = 2.0f * fd_sum_sin * inv_N;
-                float I_im   = -2.0f * fd_sum_cos * inv_N;
-                float I_amp_sq = I_re * I_re + I_im * I_im;
-                float I_amp  = sqrtf(I_amp_sq);
-
-                if (I_amp < ID_LS_PROBE_I_MIN) {
-                    /* Current too low → increase probe voltage and retry */
-                    fd_vprobe += ID_LS_PROBE_V_STEP;
-                    float v_safe = 0.45f * vbus;
-                    if (v_safe > ID_LS_PROBE_V_MAX) v_safe = ID_LS_PROBE_V_MAX;
-                    if (fd_vprobe > v_safe) fd_vprobe = v_safe; /* cap and proceed */
-
-                    /* Reset accumulators, keep settle timer running */
-                    fd_theta        = 0.0f;
-                    fd_sample_count = 0;
-                    fd_sum_sin      = 0.0f;
-                    fd_sum_cos      = 0.0f;
-                    fd_meas_count   = 0;
-                    break; /* retry next ISR cycles */
-                }
-
-                if (I_amp_sq < 1e-6f) {
-                    /* No current at max voltage — wiring issue */
-                    id_result.error_code = 2;
-                    id_result.state = MOTOR_ID_STATE_ERROR;
-                    break;
-                }
-
-                /* Adequate current: compute phi with good SNR */
-                float omega_fd = TWO_PI * ID_FD_PROBE_HZ;
-                float rapp_fd  = fd_vprobe * I_re / I_amp_sq;
-                float ls_fd    = fd_vprobe * I_im / (omega_fd * I_amp_sq);
-
-                /* Impedance angle (ignoring small delay — acceptable for freq selection) */
-                float phi_app = atan2f(fabsf(ls_fd * omega_fd), fabsf(rapp_fd));
-                id_result.dbg_phi_detect_deg = phi_app * (180.0f / PI);
-
-                /* Motor corner frequency f_corner = R/(2π·L):
-                 * At f_probe: tan(φ) = ω·Ls/Rs → f_corner = f_probe / tan(φ) */
-                float tan_phi   = tanf(phi_app);
-                float f_corner  = (tan_phi > 0.01f) ? (ID_FD_PROBE_HZ / tan_phi) : 100000.0f;
-
-                /* Target φ_m1 ≈ 25° for k=4 → f1 = f_corner × tan(25°) = f_corner × 0.4663 */
-                float f1_ideal_k4 = f_corner * 0.4663f;
-                float f1_k4       = find_nearest_candidate(f1_ideal_k4);
-                float f2_k4       = f1_k4 * 4.0f;
-
-                float chosen_f1, chosen_f2;
-                if (f1_k4 >= 100.0f && f2_k4 <= 4000.0f && is_candidate(f2_k4) && f1_k4 != f2_k4) {
-                    chosen_f1 = f1_k4;
-                    chosen_f2 = f2_k4;
-                } else {
-                    /* Fallback: k=2, target φ_m1 ≈ 35° → f1 = f_corner × 0.7002 */
-                    float f1_ideal_k2 = f_corner * 0.7002f;
-                    float f1_k2       = find_nearest_candidate(f1_ideal_k2);
-                    float f2_k2       = f1_k2 * 2.0f;
-
-                    if (f1_k2 >= 100.0f && f2_k2 <= 4000.0f && is_candidate(f2_k2) && f1_k2 != f2_k2) {
-                        chosen_f1 = f1_k2;
-                        chosen_f2 = f2_k2;
                     } else {
-                        /* Final fallback for very low L/R motors (drone BLDC):
-                         * f_corner >> 4 kHz, use the two highest safe candidates. */
-                        chosen_f1 = 2000.0f;
-                        chosen_f2 = 4000.0f;
+                        id_result.error_code = 7;
+                        id_result.state = MOTOR_ID_STATE_ERROR;
                     }
                 }
-
-                id_result.dbg_f1_hz = chosen_f1;
-                id_result.dbg_f2_hz = chosen_f2;
-                omega_f1 = TWO_PI * chosen_f1;
-                omega_f2 = TWO_PI * chosen_f2;
-
-                /* Enter MEASURE_LS_F1 */
-                ls_update_freq_params(chosen_f1);
-                ls_vprobe = ID_LS_PROBE_V_INIT;
-                ls_vsweet = ID_LS_PROBE_V_INIT;
-                ls_sub = 0; /* SETTLE */
-                ls_reset_lockin();
-                reset_timer();
-                id_result.state = MOTOR_ID_STATE_MEASURE_LS_F1;
             }
-        } break;
+        } else if (rs_sub == 3) { /* FREQ_DETECT_PROBE at 1000 Hz (10 ms) */
+            float v_probe = 0.50f;
+            float sin_cmd = sin_table_cmd[step_in_cycle];
+            vd_out = id_result.measured_vdead + id_result.measured_rs * 0.15f * motor_max_curr +
+                     v_probe * sin_cmd;
 
-        /* ================================================================== */
-        /* MEASURE_LS_F1 / MEASURE_LS_F2 — shared logic via ls_sub           */
-        /*   Sub 0: SETTLE  (Vd=0, ID_LS_SETTLE_MS)                          */
-        /*   Sub 1: PROBE   (sweep voltage to find Vsweet)                   */
-        /*   Sub 2: MEASURE (full lock-in, store raw phasors)                */
-        /* ================================================================== */
-        case MOTOR_ID_STATE_MEASURE_LS_F1:
-        case MOTOR_ID_STATE_MEASURE_LS_F2: {
-            switch (ls_sub) {
-                /* ---- SETTLE: output 0, wait for motor current to decay ---- */
-                case 0:
-                    *vd = 0.0f;
-                    *vq = 0.0f;
-                    if (id_timer_ms >= ID_LS_SETTLE_MS) {
-                        ls_sub = 1;
-                        reset_timer();
-                    }
-                    break;
+            buf_s[buf_idx] = id * sin_table_demod[step_in_cycle];
+            buf_c[buf_idx] = id * cos_table_demod[step_in_cycle];
 
-                /* ---- PROBE: inject and check current amplitude ---- */
-                case 1: {
-                    ls_theta += ls_phase_inc;
-                    if (ls_theta >= PI) ls_theta -= TWO_PI;
+            buf_idx = (buf_idx + 1) % N_DFT;
+            step_in_cycle = (step_in_cycle + 1) % N_DFT;
+            meas_cycles++;
 
-                    float s, c;
-                    cordic_sincos(ls_theta / PI, &c, &s);
-                    *vd = ls_vprobe * s;
-                    *vq = 0.0f;
+            if (meas_cycles >= (uint32_t)(N_DFT * 10)) { /* 10 cycles = 10 ms */
+                float sum_s = 0.0f, sum_c = 0.0f;
+                for (uint16_t k = 0; k < N_DFT; k++) {
+                    sum_s += buf_s[k];
+                    sum_c += buf_c[k];
+                }
+                float i_r = 2.0f * (sum_s / (float)N_DFT);
+                float i_i = 2.0f * (sum_c / (float)N_DFT);
+                float i_amp = sqrtf(i_r * i_r + i_i * i_i);
+                float z_1000 = (i_amp > 1e-4f) ? (v_probe / i_amp) : 100.0f;
+                float rs_sq = id_result.measured_rs * id_result.measured_rs;
+                float x_sq = (z_1000 * z_1000 > rs_sq) ? (z_1000 * z_1000 - rs_sq) : 0.0f;
+                float l_est_probe = sqrtf(x_sq) / (TWO_PI * 1000.0f);
 
-                    ls_sample_count++;
+                float f_chosen = 2400.0f;
+                if (l_est_probe > 0.0004f || z_1000 > 3.0f) {
+                    f_chosen = 250.0f; /* High Inductance > 400 uH -> 250 Hz */
+                } else if (l_est_probe > 0.00008f || z_1000 > 1.0f) {
+                    f_chosen = 1000.0f; /* Medium Inductance 80-400 uH -> 1000 Hz */
+                } else if (l_est_probe > 0.000025f) {
+                    f_chosen = 2400.0f; /* Low Inductance 25-80 uH -> 2400 Hz */
+                } else {
+                    f_chosen = 4800.0f; /* Ultra Low Inductance < 25 uH -> 4800 Hz */
+                }
 
-                    if (ls_sample_count > ls_skip_samp) {
-                        ls_sum_sin += id * s;
-                        ls_sum_cos += id * c;
-                        ls_meas_count++;
-                    }
+                configure_freq(f_chosen);
+                id_result.selected_freq_hz = f_chosen;
 
-                    if (ls_sample_count >= ls_probe_samp) {
-                        float inv_N = 1.0f / (float)ls_meas_count;
-                        float I_re = 2.0f * ls_sum_sin * inv_N;
-                        float I_im = -2.0f * ls_sum_cos * inv_N;
-                        float I_amp = sqrtf(I_re * I_re + I_im * I_im);
+                /* Advance to Standstill Saturation Profiler */
+                sat_level_idx = 0;
+                sat_lut_count = 0;
+                sat_sub = 0;
+                sat_settle_cnt = 0;
+                id_timer_ms = 0;
+                id_result.state = MOTOR_ID_STATE_MEASURE_SAT_PROFILE;
+            }
+        }
+    }
 
-                        if (I_amp >= ID_LS_PROBE_I_MIN && I_amp <= ID_LS_PROBE_I_MAX) {
-                            /* Good current range → set Vsweet, advance to MEASURE */
-                            ls_vsweet = ls_vprobe;
-                            ls_sub = 2;
-                            ls_reset_lockin();
-                            reset_timer();
+    /* ===================================================================== */
+    /* 3. STATE_MEASURE_SAT_PROFILE (Direct Bias + AC Injection + ZOH Inv)   */
+    /* ===================================================================== */
+    else if (id_result.state == MOTOR_ID_STATE_MEASURE_SAT_PROFILE) {
+        float target_i_bias = sat_current_levels[sat_level_idx] * motor_max_curr;
+        float v_max = 0.45f * vbus;
 
-                        } else if (I_amp > ID_LS_PROBE_I_MAX) {
-                            /* Over-current: scale down */
-                            ls_vsweet = ls_vprobe *
-                                        ((ID_LS_PROBE_I_MIN + ID_LS_PROBE_I_MAX) * 0.5f / I_amp);
-                            if (ls_vsweet < 0.5f) ls_vsweet = 0.5f;
-                            ls_sub = 2;
-                            ls_reset_lockin();
-                            reset_timer();
+        sat_vd_bias = id_result.measured_vdead + id_result.measured_rs * target_i_bias;
+        if (sat_vd_bias > v_max) sat_vd_bias = v_max;
 
-                        } else {
-                            /* Too little current: raise voltage */
-                            ls_vprobe += ID_LS_PROBE_V_STEP;
-                            float v_safe = 0.45f * vbus;
-                            if (v_safe > ID_LS_PROBE_V_MAX) v_safe = ID_LS_PROBE_V_MAX;
-                            if (ls_vprobe > v_safe) {
-                                /* Max voltage reached but still low current.
-                                 * Use V_safe as Vsweet (high-inductance motor). */
-                                ls_vsweet = v_safe;
-                                ls_sub = 2;
-                                ls_reset_lockin();
-                                reset_timer();
-                            } else {
-                                ls_reset_lockin();
+        float est_l_guess = (sat_lut_count > 0) ? sat_lut_l[sat_lut_count - 1]
+                                                : ((sat_freq <= 500.0f) ? 0.0020f : 20.0e-6f);
+        float zhf = sqrtf(id_result.measured_rs * id_result.measured_rs +
+                          (sat_omega * est_l_guess) * (sat_omega * est_l_guess));
+        float target_ac_curr = clampf(0.12f * motor_max_curr, g_foc.noise_profile.i_inj_min, 0.50f);
+        v_inj = clampf(target_ac_curr * zhf, 0.20f, 0.30f * vbus);
+
+        float sin_cmd = sin_table_cmd[step_in_cycle];
+
+        if (sat_sub == 0) { /* SETTLE_AT_DC_BIAS */
+            vd_out = sat_vd_bias;
+            sat_settle_cnt++;
+            uint16_t settle_target = (sat_freq == 250.0f) ? 960 : 360; /* ~7.5 - 20 ms */
+            if (sat_settle_cnt >= settle_target) {
+                sat_sub = 1;
+                meas_accum_count = 0;
+                meas_cycles = 0;
+                buf_idx = 0;
+                run_sum_s = 0.0f;
+                run_sum_c = 0.0f;
+                for (uint16_t k = 0; k < N_DFT; k++) {
+                    buf_s[k] = 0.0f;
+                    buf_c[k] = 0.0f;
+                }
+                id_timer_ms = 0;
+            }
+        } else if (sat_sub == 1) { /* INJECT_SINE_ON_TOP_OF_DC */
+            vd_out = sat_vd_bias + v_inj * sin_cmd;
+
+            float new_s = id * sin_table_demod[step_in_cycle];
+            float new_c = id * cos_table_demod[step_in_cycle];
+
+            /* O(1) Sliding DFT: update running sum by adding new and subtracting oldest */
+            run_sum_s += new_s - buf_s[buf_idx];
+            run_sum_c += new_c - buf_c[buf_idx];
+
+            buf_s[buf_idx] = new_s;
+            buf_c[buf_idx] = new_c;
+
+            buf_idx = (buf_idx + 1) % N_DFT;
+            step_in_cycle = (step_in_cycle + 1) % N_DFT;
+            meas_cycles++;
+
+            /* Evaluate ZOH extraction once per AC period when step_in_cycle == 0 */
+            if (step_in_cycle == 0 && meas_cycles > (uint32_t)(N_DFT * 2)) {
+                float i_real = 2.0f * (run_sum_s / (float)N_DFT);
+                float i_imag = 2.0f * (run_sum_c / (float)N_DFT);
+                float i_mag_sq = i_real * i_real + i_imag * i_imag;
+
+                if (i_mag_sq > 1e-10f) {
+                    float Z_mag_sq = (v_inj * v_inj) / i_mag_sq;
+                    float M = Z_mag_sq / (id_result.measured_rs * id_result.measured_rs);
+                    float phi = sat_phase_inc;
+
+                    /* Exact Quadratic Discrete ZOH Equation:
+                     * (M - 1)·a^2 - 2·(M - cos(phi))·a + (M - 1) = 0 */
+                    float A_quad = M - 1.0f;
+                    float B_quad = -2.0f * (M - cosf(phi));
+                    float C_quad = M - 1.0f;
+
+                    float delta = B_quad * B_quad - 4.0f * A_quad * C_quad;
+                    if (delta >= 0.0f && fabsf(A_quad) > 1e-7f) {
+                        float sqrt_delta = sqrtf(delta);
+                        float a1 = (-B_quad - sqrt_delta) / (2.0f * A_quad);
+                        float a2 = (-B_quad + sqrt_delta) / (2.0f * A_quad);
+                        float a_sol = (a1 > 0.0f && a1 < 1.0f) ? a1 : a2;
+                        if (a_sol > 0.0f && a_sol < 0.999999f) {
+                            float ls_sample =
+                                -id_result.measured_rs * CONTROL_PERIOD_F / logf(a_sol);
+                            if (ls_sample > 1e-7f && meas_accum_count < 500) {
+                                meas_accum_L[meas_accum_count++] = ls_sample;
                             }
                         }
-                    }
-                } break;
-
-                /* ---- MEASURE: full lock-in, 25 cycles ---- */
-                case 2: {
-                    /* Settle time: output 0 until settled */
-                    if (id_timer_ms < ID_LS_SETTLE_MS) {
-                        *vd = 0.0f;
-                        *vq = 0.0f;
-                        break;
-                    }
-
-                    ls_theta += ls_phase_inc;
-                    if (ls_theta >= PI) ls_theta -= TWO_PI;
-
-                    float s, c;
-                    cordic_sincos(ls_theta / PI, &c, &s);
-                    *vd = ls_vsweet * s;
-                    *vq = 0.0f;
-
-                    ls_sample_count++;
-
-                    if (ls_sample_count > ls_skip_samp) {
-                        ls_sum_sin += id * s;
-                        ls_sum_cos += id * c;
-                        ls_meas_count++;
-                    }
-
-                    if (ls_sample_count >= ls_total_samp) {
-                        float inv_N = 1.0f / (float)ls_meas_count;
-                        float I_re = 2.0f * ls_sum_sin * inv_N;
-                        float I_im = -2.0f * ls_sum_cos * inv_N;
-                        float I_amp_sq = I_re * I_re + I_im * I_im;
-
-                        if (I_amp_sq < 1e-4f) {
-                            id_result.error_code = 2;
-                            id_result.state = MOTOR_ID_STATE_ERROR;
-                            break;
+                    } else if (Z_mag_sq > id_result.measured_rs * id_result.measured_rs) {
+                        float ls_sample =
+                            sqrtf(Z_mag_sq - id_result.measured_rs * id_result.measured_rs) /
+                            sat_omega;
+                        if (ls_sample > 1e-7f && meas_accum_count < 500) {
+                            meas_accum_L[meas_accum_count++] = ls_sample;
                         }
-
-                        /* Store RAW phasors (NO delay compensation) */
-                        float rapp_raw = ls_vsweet * I_re / I_amp_sq;
-                        float ls_raw_v = ls_vsweet * I_im / (ls_omega * I_amp_sq);
-                        float i_amp = sqrtf(I_amp_sq);
-
-                        if (id_result.state == MOTOR_ID_STATE_MEASURE_LS_F1) {
-                            rapp_raw_f1 = rapp_raw;
-                            ls_raw_f1 = ls_raw_v;
-                            iamp_f1 = i_amp;
-                            id_result.dbg_rapp_raw_f1 = rapp_raw;
-                            id_result.dbg_ls_raw_f1 = ls_raw_v;
-                            id_result.dbg_iamp_f1 = i_amp;
-
-                            /* Advance to MEASURE_LS_F2 */
-                            ls_update_freq_params(id_result.dbg_f2_hz);
-                            ls_vprobe = ID_LS_PROBE_V_INIT;
-                            ls_vsweet = ID_LS_PROBE_V_INIT;
-                            ls_sub = 0; /* Settle again before f2 */
-                            ls_reset_lockin();
-                            reset_timer();
-                            id_result.state = MOTOR_ID_STATE_MEASURE_LS_F2;
-
-                        } else { /* MEASURE_LS_F2 */
-                            rapp_raw_f2 = rapp_raw;
-                            ls_raw_f2 = ls_raw_v;
-                            iamp_f2 = i_amp;
-                            id_result.dbg_rapp_raw_f2 = rapp_raw;
-                            id_result.dbg_ls_raw_f2 = ls_raw_v;
-                            id_result.dbg_iamp_f2 = i_amp;
-
-                            /* Enter EXTRACT */
-                            ext_idx = 0;
-                            ext_best_N = 0.0f;
-                            ext_best_res = 1e9f;
-                            ext_res_at_0 = fabsf(ls_raw_f1 - ls_raw_f2);
-                            FOC_EnableDrivers(0);
-                            id_result.state = MOTOR_ID_STATE_EXTRACT;
-                        }
-                    }
-                } break;
-            } /* switch ls_sub */
-        } break;
-
-        /* ================================================================== */
-        /* EXTRACT: Scan N ∈ [0, 5] to minimise |Ls_c(f1,N) − Ls_c(f2,N)|  */
-        /*          Spread across multiple ISR calls (ID_EXTRACT_PER_ISR pts) */
-        /* ================================================================== */
-        case MOTOR_ID_STATE_EXTRACT: {
-            *vd = 0.0f;
-            *vq = 0.0f;
-
-            int end = ext_idx + ID_EXTRACT_PER_ISR;
-            if (end > 100) end = 100;
-
-            for (; ext_idx < end; ext_idx++) {
-                float N = ID_EXTRACT_N_MIN + ext_idx * ID_EXTRACT_N_STEP;
-                float phi1 = omega_f1 * N * CONTROL_PERIOD_F;
-                float phi2 = omega_f2 * N * CONTROL_PERIOD_F;
-
-                float cos1, sin1, cos2, sin2;
-                cordic_sincos(phi1 / PI, &cos1, &sin1);
-                cordic_sincos(phi2 / PI, &cos2, &sin2);
-
-                /* Ls_c(f, N) = Ls_raw·cos(φ) − (Rapp_raw/ω)·sin(φ) */
-                float Ls_c1 = ls_raw_f1 * cos1 - (rapp_raw_f1 / omega_f1) * sin1;
-                float Ls_c2 = ls_raw_f2 * cos2 - (rapp_raw_f2 / omega_f2) * sin2;
-
-                if (Ls_c1 > 0.0f && Ls_c2 > 0.0f) {
-                    float residual = fabsf(Ls_c1 - Ls_c2);
-                    if (residual < ext_best_res) {
-                        ext_best_res = residual;
-                        ext_best_N = N;
                     }
                 }
             }
 
-            if (ext_idx >= 100) {
-                /* Scan complete — compute final results */
-
-                /* Convergence check: minimum must be significantly better than N=0 residual.
-                 * If ext_res_at_0 ≈ 0, both frequencies already agree (very high L/R motor):
-                 * raw Ls already accurate, skip compensation. */
-                float phi1_opt = omega_f1 * ext_best_N * CONTROL_PERIOD_F;
-                float phi2_opt = omega_f2 * ext_best_N * CONTROL_PERIOD_F;
-
-                float cos1, sin1, cos2, sin2;
-                cordic_sincos(phi1_opt / PI, &cos1, &sin1);
-                cordic_sincos(phi2_opt / PI, &cos2, &sin2);
-
-                float Ls_c1 = ls_raw_f1 * cos1 - (rapp_raw_f1 / omega_f1) * sin1;
-                float Ls_c2 = ls_raw_f2 * cos2 - (rapp_raw_f2 / omega_f2) * sin2;
-
-                float Ls_final;
-                float N_used;
-
-                /* Converged if the minimum is at least 40% better than the N=0 residual */
-                int converged = (ext_res_at_0 > 1e-9f) && (ext_best_res < 0.60f * ext_res_at_0);
-
-                if (converged) {
-                    Ls_final = (Ls_c1 + Ls_c2) * 0.5f;
-                    N_used = ext_best_N;
-                } else {
-                    /* Flat residual → high L/R motor, delay error negligible.
-                     * Use raw Ls at f1 with fixed 0.5-sample compensation. */
-                    N_used = 0.5f;
-                    float phi_fb = omega_f1 * N_used * CONTROL_PERIOD_F;
-                    float cof, sif;
-                    cordic_sincos(phi_fb / PI, &cof, &sif);
-                    Ls_final = ls_raw_f1 * cof - (rapp_raw_f1 / omega_f1) * sif;
-
-                    /* Recompute c1/c2 for debug fields */
-                    phi1_opt = phi_fb;
-                    phi2_opt = omega_f2 * N_used * CONTROL_PERIOD_F;
-                    cordic_sincos(phi1_opt / PI, &cos1, &sin1);
-                    cordic_sincos(phi2_opt / PI, &cos2, &sin2);
-                    Ls_c1 = ls_raw_f1 * cos1 - (rapp_raw_f1 / omega_f1) * sin1;
-                    Ls_c2 = ls_raw_f2 * cos2 - (rapp_raw_f2 / omega_f2) * sin2;
+            uint32_t target_cycles = (uint32_t)N_DFT * ((sat_freq <= 500.0f) ? 12 : 25);
+            if (meas_cycles >= target_cycles) {
+                if (meas_accum_count >= 2) {
+                    float l_est_level = quick_median(meas_accum_L, meas_accum_count);
+                    sat_lut_i[sat_lut_count] = id_filt;
+                    sat_lut_l[sat_lut_count] = l_est_level;
+                    sat_lut_count++;
                 }
 
-                if (Ls_final < 1e-7f) Ls_final = 1e-7f; /* Clamp lower bound */
-
-                id_result.measured_ls = Ls_final;
-                id_result.identified_delay_samples = N_used;
-                id_result.dbg_ls_comp_f1 = Ls_c1;
-                id_result.dbg_ls_comp_f2 = Ls_c2;
-
-                /* Dead-time estimation from compensated Rapp at f1:
-                 *   Rapp1_comp = Rs + (4/π) * Vdead / Iamp1
-                 *   → Vdead = (π/4) * (Rapp1_comp - Rs) * Iamp1 */
-                float rapp1_comp = rapp_raw_f1 * cos1 + omega_f1 * ls_raw_f1 * sin1;
-                float rs = id_result.measured_rs;
-
-                if (rapp1_comp > rs && rs > 1e-4f && iamp_f1 > 0.1f) {
-                    float v_err = (PI / 4.0f) * (rapp1_comp - rs) * iamp_f1;
-                    float td_ns = (v_err / rs_vbus_avg) * (1e9f / (float)PWM_FREQUENCY);
-                    id_result.identified_v_err = v_err;
-                    id_result.identified_deadtime_ns = td_ns;
+                sat_level_idx++;
+                if (sat_level_idx < 6) {
+                    sat_sub = 0;
+                    sat_settle_cnt = 0;
+                    id_timer_ms = 0;
                 } else {
-                    id_result.identified_v_err = 0.0f;
-                    id_result.identified_deadtime_ns = 0.0f;
-                }
+                    /* Full Saturation Curve Collected! Exact Rational Inversion Fit: 1/L = A + B *
+                     * I^2 */
+                    if (sat_lut_count >= 3) {
+                        float sum_x = 0.0f, sum_y = 0.0f;
+                        float x[6], y[6];
+                        for (uint8_t i = 0; i < sat_lut_count; i++) {
+                            x[i] = sat_lut_i[i] * sat_lut_i[i];
+                            y[i] = 1.0f / sat_lut_l[i];
+                            sum_x += x[i];
+                            sum_y += y[i];
+                        }
+                        float mean_x = sum_x / (float)sat_lut_count;
+                        float mean_y = sum_y / (float)sat_lut_count;
 
-                id_result.state = MOTOR_ID_STATE_COMPLETE;
+                        float num = 0.0f, den = 0.0f;
+                        for (uint8_t i = 0; i < sat_lut_count; i++) {
+                            float dx = x[i] - mean_x;
+                            num += dx * (y[i] - mean_y);
+                            den += dx * dx;
+                        }
+
+                        float B = (den > 1e-12f) ? (num / den) : 0.0f;
+                        float A = mean_y - B * mean_x;
+
+                        id_result.measured_ls = (A > 0.0f) ? (1.0f / A) : sat_lut_l[0];
+                        id_result.sat_alpha = (A > 0.0f && B > 0.0f) ? (B / A) : 0.0f;
+                        id_result.sat_isat = (A > 0.0f && B > 0.0f) ? sqrtf(A / B) : 0.0f;
+
+                        id_result.state = MOTOR_ID_STATE_COMPLETE;
+                    } else {
+                        id_result.error_code = 3;
+                        id_result.state = MOTOR_ID_STATE_ERROR;
+                    }
+                }
             }
-        } break;
+        }
+    }
 
-    } /* switch id_result.state */
+    *vd = vd_out;
 }

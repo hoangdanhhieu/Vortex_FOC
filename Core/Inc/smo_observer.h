@@ -29,15 +29,13 @@ typedef struct {
 
     /* Estimated rotor position and speed */
     float theta_est; /**< Electrical angle [-1, 1) representing [-pi, pi) */
-    float omega_est; /**< Electrical speed [rad/s] */
+    float omega_est; /**< Electrical speed [rad/s] (raw PLL output) */
+    float omega_out; /**< Electrical speed [rad/s] (filtered output for control loops) */
 
     /* Observer gains */
     float k_slide;   /**< Sliding mode gain */
     float k_sigmoid; /**< Sigmoid bandwidth parameter */
 
-    /* Low-pass filter coefficient */
-    float lpf_coeff; /**< LPF coefficient for BEMF filtering */
-    float tau;       /**< Filter time constant for phase compensation */
     /* PLL for angle tracking */
     float pll_kp;       /**< PLL proportional gain */
     float pll_ki;       /**< PLL integral gain */
@@ -56,21 +54,31 @@ typedef struct {
     float As;                     /**< Sine 6th harmonic coefficient */
     float gamma_6th;              /**< Adaptive learning rate */
     float max_comp_norm;          /**< Maximum compensation angle (normalized) */
-    float err_dc;                 /**< Low-pass filter accumulator to extract DC error offset */
     uint8_t enable_harmonic_comp; /**< Flag to enable/disable 6th harmonic compensator */
 
     /* Motor parameters (cached) */
-    float Rs;     /**< Phase resistance */
-    float Ls;     /**< Phase inductance */
-    float Ls_inv; /**< 1/Ls for faster computation */
-    float psi;    /**< Flux linkage */
-    float poles;  /**< Number of pole pairs */
+    float Rs;        /**< Phase resistance */
+    float Ls;        /**< Phase inductance (nominal L0) */
+    float Ls_inv;    /**< 1/Ls for faster computation */
+    float sat_alpha; /**< Magnetic saturation coefficient [1/A^2] */
+    float psi;       /**< Flux linkage */
+    float poles;     /**< Number of pole pairs */
+    float min_omega; /**< Minimum omega for STF decay (from motor_min_spd) [rad/s] */
     /* Sample time */
     float dt; /**< Control loop period */
 
-    /* Diagnostics */
+    /* Diagnostics & Time constants */
     float current_err_sq; /**< Squared current estimation error magnitude [A^2] */
-    float tau_current;    /**< Cached current observer time constant [s] */
+    float tau_current;    /**< Dynamic current observer time constant [s] */
+
+    /* Precomputed Implicit Backward Euler coefficients */
+    float Req;        /**< Dynamic sliding equivalent resistance [Ohm] */
+    float dt_over_Ls; /**< Precomputed dt * Ls_inv */
+    float denom_inv;  /**< Precomputed 1.0 / (1.0 + Rs * dt_over_Ls) */
+
+    /* Dynamic load current magnitude & saturation */
+    float I_mag;   /**< Measured phase current magnitude [A] */
+    float l_ratio; /**< Real-time L(I)/L0 saturation ratio (shared with current loop) */
 } SMO_Observer_t;
 
 /**
@@ -84,6 +92,13 @@ void SMO_Init(SMO_Observer_t* smo);
  * @param smo Pointer to SMO structure
  */
 void SMO_Reset(SMO_Observer_t* smo);
+
+/**
+ * @brief Seed SMO observer speed states at handoff (open-loop to closed-loop)
+ * @param smo Pointer to SMO structure
+ * @param omega_init Initial electrical speed in rad/s
+ */
+void SMO_ResetStates(SMO_Observer_t* smo, float omega_init);
 
 /**
  * @brief Update SMO observer with new voltage and current measurements
@@ -126,10 +141,14 @@ float SMO_GetSpeedRPM(SMO_Observer_t* smo);
  * @param smo Pointer to SMO structure
  * @param Rs Phase resistance [Ohm]
  * @param Ls Phase inductance [H]
+ * @param sat_alpha Magnetic saturation coefficient [1/A^2]
  * @param flux_linkage Flux linkage [Wb]
  * @param poles Number of pole pairs
+ * @param max_speed_rpm Maximum motor speed in RPM
+ * @param min_speed_rpm Minimum motor speed in RPM
  */
-void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float flux_linkage, float poles);
+void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha, float flux_linkage,
+                        float poles, float max_speed_rpm, float min_speed_rpm);
 
 /**
  * @brief Feed external BEMF directly into PLL (bypass current observer)

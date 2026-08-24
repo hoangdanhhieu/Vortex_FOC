@@ -11,6 +11,7 @@
 #include "bist_profiler.h"
 #include "flash_config.h"
 #include "pi_controller.h"
+#include "ladrc_controller.h"
 #include "smo_observer.h"
 
 /*===========================================================================*/
@@ -32,7 +33,8 @@ typedef enum {
 
 typedef enum {
     FOC_MODE_SPEED = 0, /**< Speed control mode */
-    FOC_MODE_TORQUE     /**< Torque (current) control mode */
+    FOC_MODE_TORQUE,    /**< Torque (current) control mode */
+    FOC_MODE_VOLTAGE    /**< Voltage control mode */
 } FOC_ControlMode_t;
 
 typedef enum {
@@ -57,6 +59,7 @@ typedef struct {
         FOC_ControlMode_t control_mode;
         FOC_Fault_t fault;
         float reverse; /**< 1.0 = FWD, -1.0 = REV */
+        uint8_t in_transition; /**< 1 during open-loop to closed-loop handoff */
         uint32_t run_counter;
     } status;
 
@@ -64,7 +67,7 @@ typedef struct {
     struct {
         PI_Controller_t id;
         PI_Controller_t iq;
-        PI_Controller_t speed;
+        LADRC_Controller_t speed;
         SMO_Observer_t smo;
         BIST_State_t bist;
     } ctrl;
@@ -73,9 +76,11 @@ typedef struct {
     struct {
         float Ia, Ib, Ic;
         float Ialpha, Ibeta;
+        float Ialpha_flt, Ibeta_flt;
         float Vphase_a, Vphase_b, Vphase_c;
         float Id, Iq;
         float Vd, Vq;
+        float Iq_ref_cmd;
         float Valpha, Vbeta;
         float theta_elec;
         float omega_elec;
@@ -94,6 +99,8 @@ typedef struct {
         float Iq_ref_target;
         float Id_ref;
         float Id_ref_target;
+        float Vq_ref;
+        float Vq_ref_target;
     } cmd;
 
     /*--- Startup State ---*/
@@ -116,6 +123,16 @@ typedef struct {
         int32_t offset_vphase_c;
         uint16_t cal_samples;
     } adc_cal;
+
+    /*--- Board Noise Profile & Signal Integrity ---*/
+    struct {
+        float noise_rms;        /**< Current measurement RMS noise floor [A] */
+        float noise_pk_pk;      /**< Current measurement Peak-to-Peak noise [A] */
+        float is_flat_thr;      /**< Auto-adapted settling threshold for Motor ID [A] */
+        float i_inj_min;        /**< Minimum AC injection current for SNR > 20dB [A] */
+        float bemf_noise_sq;    /**< BEMF magnitude noise floor threshold [V^2] */
+        uint8_t health_status;  /**< Hardware health: 0=EXCELLENT, 1=GOOD, 2=NOISY, 3=FAULT */
+    } noise_profile;
 
     /*--- Constraints & Performance ---*/
     float max_duty;
@@ -161,12 +178,10 @@ void FOC_Stop(void);
 
 /**
  * @brief Main FOC control loop (call from ADC ISR)
- * @param adc_ia Raw ADC value for phase A current
- * @param adc_ib Raw ADC value for phase B current
- * @param adc_ic Raw ADC value for phase C current
- * @param adc_vbus Raw ADC value for DC bus voltage
+ * @param adc1_data Raw ADC1 injected rank 1 value (phase depends on channel config)
+ * @param adc2_data Raw ADC2 injected rank 1 value (phase depends on channel config)
  */
-void FOC_HighFrequencyTask(uint16_t adc_ia, uint16_t adc_ib, uint16_t adc_ic, uint16_t adc_vbus);
+void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data);
 
 /**
  * @brief Set speed reference
@@ -179,6 +194,12 @@ void FOC_SetSpeedRef(float speed_rpm);
  * @param torque_percent Torque as percentage of max current (0 to 100)
  */
 void FOC_SetTorqueRef(float torque_percent);
+
+/**
+ * @brief Set voltage reference (Vq)
+ * @param voltage_percent Voltage as percentage of Vbus / sqrt(3) (0 to 100)
+ */
+void FOC_SetVoltageRef(float voltage_percent);
 
 /**
  * @brief Set control mode

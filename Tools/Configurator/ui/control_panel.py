@@ -78,8 +78,20 @@ class ControlPanel(QGroupBox):
         self.btn_set_trq = QPushButton("Set Torque")
         self.btn_set_trq.clicked.connect(self._on_set_torque)
         trq_layout.addWidget(self.btn_set_trq)
-        
         layout.addWidget(trq_group)
+
+        # Voltage
+        volt_group = QGroupBox("Voltage (%)")
+        volt_layout = QVBoxLayout(volt_group)
+        self.volt_spin = WheelDoubleSpinBox()
+        self.volt_spin.setRange(0.0, 100.0)
+        self.volt_spin.setDecimals(1)
+        self.volt_spin.setSingleStep(1.0)
+        volt_layout.addWidget(self.volt_spin)
+        self.btn_set_volt = QPushButton("Set Voltage")
+        self.btn_set_volt.clicked.connect(self._on_set_voltage)
+        volt_layout.addWidget(self.btn_set_volt)
+        layout.addWidget(volt_group)
 
         # Status display
         status_group = QGroupBox("Status")
@@ -129,6 +141,10 @@ class ControlPanel(QGroupBox):
     def _on_set_torque(self):
         val = float(self.trq_spin.value())
         self._serial.send(protocol.build_torque(val))
+
+    def _on_set_voltage(self):
+        val = float(self.volt_spin.value())
+        self._serial.send(protocol.build_voltage(val))
 
     def _on_clear(self):
         self._serial.send(protocol.build_simple(protocol.CmdType.CLEAR))

@@ -41,6 +41,12 @@
 /** Continuous phase current [A] */
 #define MOTOR_CONT_CURRENT 15.0f
 
+/** Saturation current [A] (current where Ls drops to 50%) */
+#define MOTOR_ISAT 25.0f
+
+/** Saturation coefficient alpha [1/A^2] = 1 / (Isat^2) */
+#define MOTOR_ALPHA (1.0f / (MOTOR_ISAT * MOTOR_ISAT))
+
 /** Maximum speed [RPM] */
 #define MOTOR_MAX_SPEED_RPM 30000.0f
 
@@ -61,5 +67,18 @@
 
 /** Electrical time constant [s] = Ls / Rs */
 #define MOTOR_ELEC_TIME_CONST (MOTOR_LS / MOTOR_RS)
+
+/** Rotor + Propeller moment of inertia [kg*m^2] */
+#define MOTOR_INERTIA 1.5e-6f
+
+/** Default LADRC Controller Bandwidth [rad/s] */
+#define LADRC_OMEGA_C_DEFAULT 35.0f
+
+/** Default LADRC Observer Bandwidth [rad/s] */
+#define LADRC_OMEGA_O_DEFAULT 122.0f
+
+/** Default LADRC Control Gain b0 = 1.5 * p^2 * psi / J */
+#define LADRC_B0_DEFAULT \
+    (1.5f * (float)(MOTOR_POLE_PAIRS * MOTOR_POLE_PAIRS) * MOTOR_FLUX_LINKAGE / MOTOR_INERTIA)
 
 #endif /* MOTOR_PARAMS_H */

@@ -19,7 +19,7 @@
 #define COMM_MAX_PAYLOAD 255
 
 /** Streaming decimation: 48kHz / 2 = 24kHz plot rate */
-#define PLOT_DECIMATION 2
+#define PLOT_DECIMATION 1
 
 /*===========================================================================*/
 /* Command Types (PC → MCU)                                                  */
@@ -41,6 +41,7 @@
 #define CMD_IDENT 0x0E     /**< Trigger motor parameter identification */
 #define CMD_CLEAR 0x0F     /**< Clear faults */
 #define CMD_BIST 0x10      /**< Built-In Self Test Profiler settings */
+#define CMD_VOLTAGE 0x11   /**< Set voltage ref: pct(4B float) */
 
 /*===========================================================================*/
 /* Response Types (MCU → PC)                                                 */
@@ -50,7 +51,9 @@
 #define RSP_VALUE 0x82     /**< Value: id(1B) + value(4B float) */
 #define RSP_STATUS 0x83    /**< Status: state(1B)+fault(1B)+dir(1B)+pad+rpm(4B)+vbus(4B) */
 #define RSP_PARAM_ALL 0x84 /**< All params: count(1B) + [id(1B)+val(4B)]×N */
-#define RSP_PLOT 0x90      /**< Stream: Vd,Vq,Id,Iq,Iq_ref,theta,Ia,Ib,Ic,duty_a,duty_b,duty_c (12x2B) */
+#define RSP_PLOT                                                                     \
+    0x90 /**< Stream: Vd,Vq,Id,Iq,Iq_ref,theta,Ia,Ib,Ic,duty_a,duty_b,duty_c (12x2B) \
+          */
 
 /*===========================================================================*/
 /* Parameter IDs                                                             */
@@ -72,7 +75,10 @@ enum {
     PID_IB,
     PID_ID_RS_MEAS,
     PID_ID_LS_MEAS,
+    PID_ID_ISAT_MEAS,
+    PID_ID_ALPHA_MEAS,
     PID_ID_DT_MEAS,
+    PID_ID_FREQ_MEAS,
     PID_COUNT
 };
 
@@ -97,7 +103,13 @@ void Comm_PushByte(uint8_t byte);
 void Comm_Update(void);
 
 /**
- * @brief Send plot streaming packet from snapshot data
+ * @brief Push a 7-channel plot sample (Ia, Ib, Ic, Vd, Vq, theta, Iq_ref) into ring buffer from 48 kHz ISR
+ */
+void Comm_PushPlotSample7(float Ia, float Ib, float Ic,
+                          float Vd, float Vq, float theta, float Iq_ref);
+
+/**
+ * @brief Send plot streaming packet from ring buffer (Called from main loop)
  */
 void Comm_SendPlotPacket(void);
 

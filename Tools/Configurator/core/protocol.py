@@ -4,6 +4,7 @@ Mirrors the MCU comm_protocol.h packet format.
 """
 
 import struct
+import math
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -27,6 +28,7 @@ class CmdType(IntEnum):
     IDENT = 0x0E
     CLEAR = 0x0F
     BIST = 0x10
+    VOLTAGE = 0x11
 
 
 class RspType(IntEnum):
@@ -40,31 +42,32 @@ class RspType(IntEnum):
 class ParamId(IntEnum):
     # Current PI
     KP_ID = 0; KI_ID = 1; KP_IQ = 2; KI_IQ = 3; BW_CUR = 4
-    # Speed PI
-    KP_SPD = 5; KI_SPD = 6; BW_SPD = 7
+    # Speed Controller (LADRC)
+    LADRC_WC = 5; LADRC_WO = 6; LADRC_B0 = 7; V_RAMP = 8
     # Startup
-    I_STRT = 8; I_ALGN = 9; ACCEL = 10; HANDOFF = 11
+    I_STRT = 9; I_ALGN = 10; ACCEL = 11; HANDOFF = 12
     # Ramp Rates
-    RAMP_ACC = 12; RAMP_DEC = 13; I_RAMP = 14
+    RAMP_ACC = 13; RAMP_DEC = 14; I_RAMP = 15
     # Motor
-    M_RS = 15; M_LS = 16; M_KV = 17; M_FLUX = 18; M_POLES = 19
-    M_MAX_SPD = 20; M_MIN_SPD = 21; M_MAX_I = 22
+    M_RS = 16; M_LS = 17; M_KV = 18; M_FLUX = 19; M_POLES = 20
+    M_J = 21; M_MAX_SPD = 22; M_MIN_SPD = 23; M_MAX_I = 24; M_ISAT = 25; M_ALPHA = 26
     # SMO
-    COMP_DELAY = 23
+    COMP_DELAY = 27
     # ADC
-    ADC_MARG = 24; DQ_FILT_A = 25
+    ADC_MARG = 28
     # Safety
-    OC_THR = 26; OV_THR = 27; UV_THR = 28
-    STALL_SPD = 29; STALL_I = 30; STALL_MS = 31
+    OC_THR = 29; OV_THR = 30; UV_THR = 31
+    STALL_SPD = 32; STALL_I = 33; STALL_MS = 34
     
     # Internal
-    DIRECTION = 32; OC_COUNT = 33; STALL_EN = 34
+    DIRECTION = 35; OC_COUNT = 36; STALL_EN = 37
     
     # Live Params
-    SPD_REF = 35; TRQ_REF = 36; VBUS = 37; RPM = 38
-    ID_MEAS = 39; IQ_MEAS = 40; IA = 41; IB = 42
-    ID_RS_MEAS = 43; ID_LS_MEAS = 44
-    PID_COUNT = 45
+    SPD_REF = 38; TRQ_REF = 39; VBUS = 40; RPM = 41
+    ID_MEAS = 42; IQ_MEAS = 43; IA = 44; IB = 45
+    ID_RS_MEAS = 46; ID_LS_MEAS = 47; ID_ISAT_MEAS = 48
+    ID_ALPHA_MEAS = 49; ID_DT_MEAS = 50; ID_FREQ_MEAS = 51
+    PID_COUNT = 52
 
 
 
@@ -106,6 +109,10 @@ def build_speed(rpm: float) -> bytes:
 
 def build_torque(pct: float) -> bytes:
     return build_packet(CmdType.TORQUE, struct.pack('<f', pct))
+
+
+def build_voltage(pct: float) -> bytes:
+    return build_packet(CmdType.VOLTAGE, struct.pack('<f', pct))
 
 
 def build_dir(reverse: bool) -> bytes:
@@ -216,24 +223,28 @@ def parse_param_all(payload: bytes) -> dict[int, float]:
 
 
 def parse_plot(payload: bytes) -> list[tuple[float, ...]]:
-    """Parse PLOT data batch: returns list of (Vd, Vq, Id, Iq, Iq_ref, theta, Ia, Ib, Ic, duty_a, duty_b, duty_c)"""
+    """Parse PLOT data batch: decodes 7 channels and reconstructs Id, Iq via Clarke/Park."""
     samples = []
-    sample_size = 24  # 12 variables * 2 bytes (int16_t)
+    sample_size = 14  # 7 variables * 2 bytes (int16_t): Ia, Ib, Ic, Vd, Vq, theta, Iq_ref
     for offset in range(0, len(payload), sample_size):
         if offset + sample_size <= len(payload):
-            raw = struct.unpack('<12h', payload[offset:offset+sample_size])
-            samples.append((
-                raw[0] / 1000.0,
-                raw[1] / 1000.0,
-                raw[2] / 1000.0,
-                raw[3] / 1000.0,
-                raw[4] / 1000.0,
-                raw[5] / 10000.0,
-                raw[6] / 1000.0,
-                raw[7] / 1000.0,
-                raw[8] / 1000.0,
-                raw[9] / 10000.0,
-                raw[10] / 10000.0,
-                raw[11] / 10000.0
-            ))
+            raw = struct.unpack('<7h', payload[offset:offset+sample_size])
+            ia = raw[0] / 1000.0
+            ib = raw[1] / 1000.0
+            ic = raw[2] / 1000.0
+            vd = raw[3] / 1000.0
+            vq = raw[4] / 1000.0
+            theta = raw[5] / 10000.0
+            iq_ref = raw[6] / 1000.0
+
+            # Reconstruct Id, Iq via Clarke + Park transform
+            th_rad = theta * math.pi
+            sin_th = math.sin(th_rad)
+            cos_th = math.cos(th_rad)
+            i_alpha = ia
+            i_beta = 0.5773502691896257 * (ib - ic)
+            id_meas = i_alpha * cos_th + i_beta * sin_th
+            iq_meas = -i_alpha * sin_th + i_beta * cos_th
+
+            samples.append((vd, vq, id_meas, iq_meas, iq_ref, theta, ia, ib, ic, 0.0, 0.0, 0.0))
     return samples

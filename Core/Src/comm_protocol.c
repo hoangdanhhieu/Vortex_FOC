@@ -43,9 +43,15 @@ static uint8_t rx_idx;
 static uint8_t tx_buf[COMM_MAX_PAYLOAD + 4]
     __attribute__((aligned(4))); /* header + type + len + payload + crc */
 
-#define PLOT_BATCH_SIZE 8
-static int16_t plot_batch_buf[PLOT_BATCH_SIZE * 12] __attribute__((aligned(4)));
-static uint8_t plot_batch_idx = 0;
+#define PLOT_CHANNELS 7
+#define PLOT_BATCH_SIZE 16
+static int16_t plot_batch_buf[PLOT_BATCH_SIZE * PLOT_CHANNELS] __attribute__((aligned(4)));
+
+#define PLOT_RING_SIZE 256
+#define PLOT_RING_MASK (PLOT_RING_SIZE - 1)
+static int16_t plot_ring_buf[PLOT_RING_SIZE * PLOT_CHANNELS] __attribute__((aligned(4)));
+static volatile uint16_t plot_ring_head = 0;
+static volatile uint16_t plot_ring_tail = 0;
 
 #define RX_RING_SIZE 512
 static uint8_t rx_ring_buf[RX_RING_SIZE] __attribute__((aligned(4)));
@@ -78,18 +84,18 @@ static uint8_t compute_crc(const uint8_t* data, uint16_t len) {
  * @param payload Payload data
  * @param len    Payload length
  */
-static void send_packet(uint8_t type, const uint8_t* payload, uint8_t len) {
+static uint8_t send_packet(uint8_t type, const uint8_t* payload, uint8_t len) {
     /* Safety: Never exceed protocol length limit or buffer size */
-    if (len > COMM_MAX_PAYLOAD) return;
+    if (len > COMM_MAX_PAYLOAD) return 1;
 
     /* Drop plot packets immediately if USB is busy to prevent blocking the main loop.
      * For control packets (ACK, GET response, etc.), wait with a short timeout (~1ms). */
     if (type == RSP_PLOT) {
-        if (CDC_IsTxBusy()) return;
+        if (CDC_IsTxBusy()) return 1;
     } else {
         uint32_t wait_timeout = 10000;
         while (CDC_IsTxBusy()) {
-            if (--wait_timeout == 0) return;
+            if (--wait_timeout == 0) return 1;
         }
     }
 
@@ -102,8 +108,8 @@ static void send_packet(uint8_t type, const uint8_t* payload, uint8_t len) {
     /* CRC over type + len + payload */
     tx_buf[3 + len] = compute_crc(&tx_buf[1], 2 + len);
 
-    /* Start transmission (should return USBD_OK immediately since we waited) */
-    CDC_Transmit_FS(tx_buf, 4 + len);
+    /* Start transmission */
+    return CDC_Transmit_FS(tx_buf, 4 + len);
 }
 
 static float get_param_value(uint8_t pid) {
@@ -139,10 +145,25 @@ static float get_param_value(uint8_t pid) {
             MotorID_GetResults(&res);
             return res.measured_ls;
         }
+        case PID_ID_ISAT_MEAS: {
+            MotorID_Result_t res;
+            MotorID_GetResults(&res);
+            return res.sat_isat;
+        }
+        case PID_ID_ALPHA_MEAS: {
+            MotorID_Result_t res;
+            MotorID_GetResults(&res);
+            return res.sat_alpha;
+        }
         case PID_ID_DT_MEAS: {
             MotorID_Result_t res;
             MotorID_GetResults(&res);
             return res.identified_deadtime_ns;
+        }
+        case PID_ID_FREQ_MEAS: {
+            MotorID_Result_t res;
+            MotorID_GetResults(&res);
+            return res.selected_freq_hz;
         }
         default:
             return 0.0f;
@@ -181,7 +202,10 @@ static uint8_t is_pid_defined(uint8_t pid) {
 #include "param_table.def"
         case PID_ID_RS_MEAS:
         case PID_ID_LS_MEAS:
+        case PID_ID_ISAT_MEAS:
+        case PID_ID_ALPHA_MEAS:
         case PID_ID_DT_MEAS:
+        case PID_ID_FREQ_MEAS:
             return 1;
         default:
             return 0;
@@ -310,6 +334,19 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             memcpy(&pct, payload, 4);
             FOC_SetControlMode(FOC_MODE_TORQUE);
             FOC_SetTorqueRef(pct);
+            send_ack(type, 0);
+            break;
+        }
+
+        case CMD_VOLTAGE: {
+            if (len < 4) {
+                send_ack(type, 1);
+                break;
+            }
+            float pct;
+            memcpy(&pct, payload, 4);
+            FOC_SetControlMode(FOC_MODE_VOLTAGE);
+            FOC_SetVoltageRef(pct);
             send_ack(type, 0);
             break;
         }
@@ -489,34 +526,59 @@ static void comm_process_byte(uint8_t byte) {
     }
 }
 
+void Comm_PushPlotSample7(float Ia, float Ib, float Ic,
+                          float Vd, float Vq, float theta, float Iq_ref) {
+    if (!g_foc.plot.enabled) return;
+
+    uint16_t head = plot_ring_head;
+    uint16_t next_head = (head + 1) & PLOT_RING_MASK;
+    if (next_head == plot_ring_tail) {
+        /* Buffer full: drop oldest sample to keep stream real-time */
+        plot_ring_tail = (plot_ring_tail + 1) & PLOT_RING_MASK;
+    }
+
+    uint16_t offset = head * PLOT_CHANNELS;
+    plot_ring_buf[offset + 0] = (int16_t)(Ia * 1000.0f);
+    plot_ring_buf[offset + 1] = (int16_t)(Ib * 1000.0f);
+    plot_ring_buf[offset + 2] = (int16_t)(Ic * 1000.0f);
+    plot_ring_buf[offset + 3] = (int16_t)(Vd * 1000.0f);
+    plot_ring_buf[offset + 4] = (int16_t)(Vq * 1000.0f);
+    plot_ring_buf[offset + 5] = (int16_t)(theta * 10000.0f);
+    plot_ring_buf[offset + 6] = (int16_t)(Iq_ref * 1000.0f);
+
+    plot_ring_head = next_head;
+}
+
 void Comm_SendPlotPacket(void) {
     if (!g_foc.plot.enabled) {
-        plot_batch_idx = 0;
+        plot_ring_head = 0;
+        plot_ring_tail = 0;
         return;
     }
 
-    /* Safety boundary check to prevent out-of-bounds array write */
-    if (plot_batch_idx >= PLOT_BATCH_SIZE) {
-        plot_batch_idx = 0;
+    /* Check if USB is busy first before popping from ring buffer */
+    if (CDC_IsTxBusy()) return;
+
+    uint16_t head = plot_ring_head;
+    uint16_t tail = plot_ring_tail;
+    uint16_t count = (head >= tail) ? (head - tail) : (PLOT_RING_SIZE + head - tail);
+
+    if (count < PLOT_BATCH_SIZE) {
+        return; /* Not enough samples for a full packet */
     }
 
-    uint16_t offset = plot_batch_idx * 12;
-    plot_batch_buf[offset + 0] = (int16_t)(g_foc.plot.Vd * 1000.0f);
-    plot_batch_buf[offset + 1] = (int16_t)(g_foc.plot.Vq * 1000.0f);
-    plot_batch_buf[offset + 2] = (int16_t)(g_foc.plot.Id * 1000.0f);
-    plot_batch_buf[offset + 3] = (int16_t)(g_foc.plot.Iq * 1000.0f);
-    plot_batch_buf[offset + 4] = (int16_t)(g_foc.plot.Iq_ref * 1000.0f);
-    plot_batch_buf[offset + 5] = (int16_t)(g_foc.plot.theta_elec * 10000.0f);
-    plot_batch_buf[offset + 6] = (int16_t)(g_foc.plot.Ia * 1000.0f);
-    plot_batch_buf[offset + 7] = (int16_t)(g_foc.plot.Ib * 1000.0f);
-    plot_batch_buf[offset + 8] = (int16_t)(g_foc.plot.Ic * 1000.0f);
-    plot_batch_buf[offset + 9] = (int16_t)(g_foc.plot.duty_a * 10000.0f);
-    plot_batch_buf[offset + 10] = (int16_t)(g_foc.plot.duty_b * 10000.0f);
-    plot_batch_buf[offset + 11] = (int16_t)(g_foc.plot.duty_c * 10000.0f);
+    /* Copy PLOT_BATCH_SIZE samples into packet buffer */
+    uint16_t next_tail = tail;
+    for (uint8_t i = 0; i < PLOT_BATCH_SIZE; i++) {
+        uint16_t src_offset = next_tail * PLOT_CHANNELS;
+        uint16_t dst_offset = i * PLOT_CHANNELS;
+        for (uint8_t ch = 0; ch < PLOT_CHANNELS; ch++) {
+            plot_batch_buf[dst_offset + ch] = plot_ring_buf[src_offset + ch];
+        }
+        next_tail = (next_tail + 1) & PLOT_RING_MASK;
+    }
 
-    plot_batch_idx++;
-    if (plot_batch_idx >= PLOT_BATCH_SIZE) {
-        send_packet(RSP_PLOT, (uint8_t*)plot_batch_buf, PLOT_BATCH_SIZE * 12 * 2);
-        plot_batch_idx = 0;
+    if (send_packet(RSP_PLOT, (uint8_t*)plot_batch_buf, PLOT_BATCH_SIZE * PLOT_CHANNELS * 2) == USBD_OK) {
+        plot_ring_tail = next_tail;
     }
 }

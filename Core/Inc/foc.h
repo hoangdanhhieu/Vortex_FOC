@@ -57,7 +57,7 @@ CCMRAM_FUNC static inline void inverse_park_transform(float Vd, float Vq, float 
  * @brief SVPWM calculation - converts Valpha,Vbeta to duty cycles
  *        Includes internal dead-time compensation based on phase currents.
  */
-void svpwm_calculate(void);
+void svpwm_calculate(float theta);
 
 /**
  * @brief Set PWM duty cycles to TIM1
@@ -78,32 +78,6 @@ CCMRAM_FUNC static inline void foc_set_pwm_duty(float duty_a, float duty_b, floa
 /*===========================================================================*/
 /* ADC Conversion Functions                                                  */
 /*===========================================================================*/
-
-/**
- * @brief Reconstruction of phase currents from ADC readings
- *        Selects the best 2 phases based on duty cycle and calculates the 3rd.
- */
-CCMRAM_FUNC static inline void foc_reconstruct_currents(void) {
-    float max_duty = g_foc.data.duty_a;
-    int max_index = 0; /* 0=A, 1=B, 2=C */
-
-    if (g_foc.data.duty_b > max_duty) {
-        max_duty = g_foc.data.duty_b;
-        max_index = 1;
-    }
-    if (g_foc.data.duty_c > max_duty) {
-        max_duty = g_foc.data.duty_c;
-        max_index = 2;
-    }
-
-    if (max_index == 0) { /* A has highest duty -> Drop A */
-        g_foc.data.Ia = -(g_foc.data.Ib + g_foc.data.Ic);
-    } else if (max_index == 1) { /* B has highest duty -> Drop B */
-        g_foc.data.Ib = -(g_foc.data.Ia + g_foc.data.Ic);
-    } else { /* C has highest duty -> Drop C */
-        g_foc.data.Ic = -(g_foc.data.Ia + g_foc.data.Ib);
-    }
-}
 
 /**
  * @brief Convert ADC reading to Vbus voltage

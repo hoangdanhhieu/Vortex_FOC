@@ -40,6 +40,7 @@ Core/Src/main.c \
 Core/Src/stm32g4xx_it.c \
 Core/Src/foc.c \
 Core/Src/pi_controller.c \
+Core/Src/ladrc_controller.c \
 Core/Src/smo_observer.c \
 Core/Src/foc_state_machine.c \
 Core/Src/motor_id.c \
