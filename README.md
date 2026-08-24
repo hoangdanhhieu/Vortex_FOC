@@ -10,7 +10,7 @@ High-performance Sensorless Field Oriented Control (FOC) for BLDC/PMSM motors, o
 - **Sensorless FOC**: Sliding Mode Observer (SMO) + PLL for position/speed estimation.
 - **Optimized Performance**: ~10µs control loop @ 48kHz (48% CPU load @ 170MHz) using CORDIC and CCMRAM.
 - **Motor ID**: Automatic measurement of Phase Resistance ($R_s$) and Inductance ($L_s$).
-- **Integrated BIST**: High-frequency command profiler (8kHz) for PID tuning.
+- **Tuning**: High-frequency command profiler (8kHz) for PID tuning.
 - **Communication**: High-bandwidth USB CDC protocol for real-time telemetry (1kHz).
 
 ## 🧱 Hardware
