@@ -98,6 +98,13 @@ class ParamEditor(QWidget):
         self._fade_effect.setOpacity(1.0 if enabled else 0.4)
         if not enabled:
             self.setToolTip("Connect to MCU to edit parameters.")
+            
+            # Clear measuring state on disconnect so the button isn't stuck
+            self._is_measuring = False
+            self._has_started_measuring = False
+            if hasattr(self, 'btn_measure'):
+                self.btn_measure.setEnabled(True)
+                self.btn_measure.setText("Start Identification (RL Measure)")
         else:
             self.setToolTip("")
 
@@ -150,11 +157,11 @@ class ParamEditor(QWidget):
             group_layout = QVBoxLayout()
 
             btn_row = QHBoxLayout()
-            self.btn_compute_flux = QPushButton("Compute Flux Linkage")
-            self.btn_compute_flux.clicked.connect(self._compute_flux)
-            self.btn_compute_flux.setFixedHeight(30)
-            self.btn_compute_flux.setToolTip("Calculates Flux from KV and Pole Pairs.")
-            btn_row.addWidget(self.btn_compute_flux)
+            self.btn_measure_flux = QPushButton("Measure Flux Linkage")
+            self.btn_measure_flux.clicked.connect(self._measure_flux)
+            self.btn_measure_flux.setFixedHeight(30)
+            self.btn_measure_flux.setToolTip("Start Offline Flux ID (Spin & Coast)")
+            btn_row.addWidget(self.btn_measure_flux)
             group_layout.addLayout(btn_row)
 
             self.btn_measure = QPushButton("Start Identification (RL Measure)")
@@ -207,31 +214,19 @@ class ParamEditor(QWidget):
         scroll.setWidget(content_widget)
         return scroll
 
-    def _compute_flux(self):
-        try:
-            import math
-            kv_spin = self._spinboxes.get(protocol.ParamId.M_KV)
-            poles_spin = self._spinboxes.get(protocol.ParamId.M_POLES)
-            flux_spin = self._spinboxes.get(protocol.ParamId.M_FLUX)
-
-            if kv_spin is None or poles_spin is None or flux_spin is None:
-                raise ValueError("KV, Poles, or Flux fields are not available.")
-
-            kv = kv_spin.value()
-            poles = poles_spin.value()
-
-            if kv <= 0 or poles <= 0:
-                QMessageBox.warning(self, "Invalid Parameters", "KV and Poles must be greater than 0.")
-                return
-
-            # Flux Linkage (Wb) = 60 / (sqrt(3) * 2 * PI * KV * PolePairs)
-            flux = 60.0 / (1.73205081 * 2.0 * math.pi * kv * poles)
-
-            flux_spin.setValue(flux)
-            self._serial.send(protocol.build_set(protocol.ParamId.M_FLUX, flux))
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to compute Flux Linkage:\n{e}")
+    def _measure_flux(self):
+        self._measured_flux = None
+        self._measured_kv = None
+        self._is_measuring = True
+        self._is_measuring_flux = True
+        self._has_started_measuring = False
+        
+        self._serial.send(protocol.build_simple(protocol.CmdType.IDENT_FLUX))
+        if hasattr(self, 'btn_measure_flux'):
+            self.btn_measure_flux.setEnabled(False)
+            self.btn_measure_flux.setText("Measuring Flux...")
+        if hasattr(self, 'btn_measure'):
+            self.btn_measure.setEnabled(False)
 
     def _auto_compute_pi(self):
         try:
@@ -331,12 +326,27 @@ class ParamEditor(QWidget):
         self._measured_isat = None
         self._measured_alpha = None
         self._is_measuring = True
+        self._is_measuring_flux = False
+        self._has_started_measuring = False
         
         self._serial.send(protocol.build_simple(protocol.CmdType.IDENT))
         # Disable button to prevent spamming while measuring
         if hasattr(self, 'btn_measure'):
             self.btn_measure.setEnabled(False)
             self.btn_measure.setText("Measuring...")
+            QTimer.singleShot(15000, self._reset_measure_state) # Fallback timeout
+        if hasattr(self, 'btn_measure_flux'):
+            self.btn_measure_flux.setEnabled(False)
+            
+    def _reset_measure_state(self):
+        self._is_measuring = False
+        self._has_started_measuring = False
+        if hasattr(self, 'btn_measure'):
+            self.btn_measure.setEnabled(True)
+            self.btn_measure.setText("Start Identification (RL Measure)")
+        if hasattr(self, 'btn_measure_flux'):
+            self.btn_measure_flux.setEnabled(True)
+            self.btn_measure_flux.setText("Measure Flux Linkage")
         
     def _check_measure_status(self):
         # We need to check if the state is back to IDLE
@@ -433,19 +443,21 @@ class ParamEditor(QWidget):
     def _on_value_received(self, pid: int, val: float):
         if pid == protocol.ParamId.ID_RS_MEAS:
             self._measured_rs = val
-            self._check_apply_identification()
             return
         if pid == protocol.ParamId.ID_LS_MEAS:
             self._measured_ls = val
-            self._check_apply_identification()
             return
         if pid == protocol.ParamId.ID_ISAT_MEAS:
             self._measured_isat = val
-            self._check_apply_identification()
             return
         if pid == protocol.ParamId.ID_ALPHA_MEAS:
             self._measured_alpha = val
-            self._check_apply_identification()
+            return
+        if pid == protocol.ParamId.ID_FLUX_MEAS:
+            self._measured_flux = val
+            return
+        if pid == protocol.ParamId.ID_KV_MEAS:
+            self._measured_kv = val
             return
 
         spin = self._spinboxes.get(pid)
@@ -459,52 +471,105 @@ class ParamEditor(QWidget):
             return
             
         state = status.get('state', 0)
-        # 7 is FOC_STATE_SELF_COMMISSION, 0 is IDLE
-        if state == 0:
+        
+        # State 9 is FOC_STATE_SELF_COMMISSION (IDENT), 1 is FOC_STATE_CALIBRATION
+        # State 5 is FOC_STATE_STARTUP, 10 is FOC_STATE_COAST_FLUX_ID
+        if state == 9 or state == 1 or state == 5 or state == 10:
+            self._has_started_measuring = True
+            
+        if state == 0 and getattr(self, '_has_started_measuring', False):
             # Done measuring
             self._is_measuring = False
+            self._has_started_measuring = False
             if hasattr(self, 'btn_measure'):
                 self.btn_measure.setEnabled(True)
                 self.btn_measure.setText("Start Identification (RL Measure)")
+            if hasattr(self, 'btn_measure_flux'):
+                self.btn_measure_flux.setEnabled(True)
+                self.btn_measure_flux.setText("Measure Flux Linkage")
             
-            # Fetch all 4 measurement results
-            self._serial.send(protocol.build_get(protocol.ParamId.ID_RS_MEAS))
-            self._serial.send(protocol.build_get(protocol.ParamId.ID_LS_MEAS))
-            self._serial.send(protocol.build_get(protocol.ParamId.ID_ISAT_MEAS))
-            self._serial.send(protocol.build_get(protocol.ParamId.ID_ALPHA_MEAS))
+            if getattr(self, '_is_measuring_flux', False):
+                self._serial.send(protocol.build_get(protocol.ParamId.ID_FLUX_MEAS))
+                QTimer.singleShot(50, lambda: self._serial.send(protocol.build_get(protocol.ParamId.ID_KV_MEAS)))
+                QTimer.singleShot(150, self._check_apply_identification)
+            else:
+                self._serial.send(protocol.build_get(protocol.ParamId.ID_RS_MEAS))
+                QTimer.singleShot(50, lambda: self._serial.send(protocol.build_get(protocol.ParamId.ID_LS_MEAS)))
+                QTimer.singleShot(100, lambda: self._serial.send(protocol.build_get(protocol.ParamId.ID_ISAT_MEAS)))
+                QTimer.singleShot(150, lambda: self._serial.send(protocol.build_get(protocol.ParamId.ID_ALPHA_MEAS)))
+                QTimer.singleShot(250, self._check_apply_identification) # Force check in case a packet is dropped
 
     def _check_apply_identification(self):
-        if (self._measured_rs is not None and self._measured_ls is not None and 
-            self._measured_isat is not None and self._measured_alpha is not None):
-            
-            msg = (f"Motor Identification Complete!\n\n"
-                   f"Measured Parameters:\n"
-                   f"• Phase Resistance (Rs): {self._measured_rs:.5f} Ω\n"
-                   f"• Phase Inductance (Ls): {self._measured_ls:.6f} H ({self._measured_ls*1e6:.1f} µH)\n"
-                   f"• Saturation Current (Isat): {self._measured_isat:.2f} A\n"
-                   f"• Saturation Alpha: {self._measured_alpha:.6f} 1/A²\n\n"
-                   f"Do you want to fill these values into the configuration fields?\n"
-                   f"(Values will only be applied to hardware when you click 'Write All' or 'Save to Flash')")
-            
-            reply = QMessageBox.question(self, "Identification Results", msg,
-                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            
-            if reply == QMessageBox.Yes:
-                # Update UI spinboxes only (as requested by user workflow)
-                updates = [
-                    (protocol.ParamId.M_RS, self._measured_rs),
-                    (protocol.ParamId.M_LS, self._measured_ls),
-                    (protocol.ParamId.M_ISAT, self._measured_isat),
-                    (protocol.ParamId.M_ALPHA, self._measured_alpha)
-                ]
-                for pid, val in updates:
-                    spin = self._spinboxes.get(pid)
-                    if spin:
-                        spin.setValue(val)
+        if getattr(self, '_is_measuring_flux', False):
+            if self._measured_flux is not None and self._measured_kv is not None:
+                msg = (f"Offline Flux Identification Complete!\n\n"
+                       f"Measured Parameters:\n"
+                       f"• Permanent Magnet Flux: {self._measured_flux:.6f} Wb\n"
+                       f"• Estimated Motor KV: {self._measured_kv:.2f} RPM/V\n\n"
+                       f"Do you want to apply this Flux linkage to the configuration?\n"
+                       f"(Values will only be applied to hardware when you click 'Write All' or 'Save to Flash')")
                 
-                QMessageBox.information(self, "Values Updated", 
-                                      "Configuration fields have been filled with measured values.\n"
-                                      "Click 'Write All' or 'Save to Flash' to apply them to the motor controller.")
+                reply = QMessageBox.question(self, "Flux Identification Results", msg,
+                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                
+                if reply == QMessageBox.Yes:
+                    updates = [
+                        (protocol.ParamId.M_FLUX, self._measured_flux),
+                        (protocol.ParamId.M_KV, self._measured_kv)
+                    ]
+                    for pid, val in updates:
+                        spin = self._spinboxes.get(pid)
+                        if spin:
+                            spin.setValue(val)
+                    
+                    QMessageBox.information(self, "Values Updated", 
+                                          "Flux and KV fields have been filled with the measured values.\n"
+                                          "Click 'Write All' or 'Save to Flash' to apply them to the motor controller.")
+                
+                # Reset
+                self._measured_flux = None
+                self._measured_kv = None
+                
+        else:
+            if self._measured_rs is not None:
+                rs = self._measured_rs or 0.0
+                ls = self._measured_ls or 0.0
+                isat = self._measured_isat or 0.0
+                alpha = self._measured_alpha or 0.0
+                
+                msg = (f"Motor Identification Complete!\n\n"
+                       f"Measured Parameters:\n"
+                       f"• Phase Resistance (Rs): {rs:.5f} Ω\n"
+                       f"• Phase Inductance (Ls): {ls:.6f} H ({ls*1e6:.1f} µH)\n"
+                       f"• Saturation Current (Isat): {isat:.2f} A\n"
+                       f"• Saturation Alpha: {alpha:.6f} 1/A²\n\n"
+                       f"Do you want to fill these values into the configuration fields?\n"
+                       f"(Values will only be applied to hardware when you click 'Write All' or 'Save to Flash')")
+                
+                reply = QMessageBox.question(self, "Identification Results", msg,
+                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                
+                if reply == QMessageBox.Yes:
+                    updates = [
+                        (protocol.ParamId.M_RS, rs),
+                        (protocol.ParamId.M_LS, ls),
+                        (protocol.ParamId.M_ISAT, isat),
+                        (protocol.ParamId.M_ALPHA, alpha)
+                    ]
+                    for pid, val in updates:
+                        spin = self._spinboxes.get(pid)
+                        if spin:
+                            spin.setValue(val)
+                    
+                    QMessageBox.information(self, "Values Updated", 
+                                          "Configuration fields have been filled with measured values.\n"
+                                          "Click 'Write All' or 'Save to Flash' to apply them to the motor controller.")
+                
+                # Reset
+                self._measured_rs = None
+                self._measured_ls = None
+                self._measured_isat = None
+                self._measured_alpha = None
             
             # Clear results
             self._measured_rs = None

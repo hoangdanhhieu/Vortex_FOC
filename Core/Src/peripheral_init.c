@@ -237,7 +237,7 @@ void MX_ADC1_Init(void) {
 
     /** Configure Analog WatchDog 1
      */
-    LL_ADC_SetAnalogWDMonitChannels(ADC1, LL_ADC_AWD1, LL_ADC_AWD_CH_VOPAMP1_INJ);
+    LL_ADC_SetAnalogWDMonitChannels(ADC1, LL_ADC_AWD1, LL_ADC_AWD_ALL_CHANNELS_INJ);
     LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD1, 4095, 0);
     LL_ADC_SetAWDFilteringConfiguration(ADC1, LL_ADC_AWD1, LL_ADC_AWD_FILTERING_3SAMPLES);
     LL_ADC_EnableIT_AWD1(ADC1);
@@ -259,12 +259,12 @@ void MX_ADC1_Init(void) {
 
     /** Configure Regular Channel Rank 1 (Phase A Voltage: PB12 = ADC1_IN11) */
     LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_11);
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_11, LL_ADC_SAMPLINGTIME_6CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_11, LL_ADC_SAMPLINGTIME_24CYCLES_5);
     LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_11, LL_ADC_SINGLE_ENDED);
 
     /** Configure Regular Channel Rank 2 (Phase C Voltage: PA0 = ADC1_IN1) */
     LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_2, LL_ADC_CHANNEL_1);
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_1, LL_ADC_SAMPLINGTIME_6CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_1, LL_ADC_SAMPLINGTIME_24CYCLES_5);
     LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_1, LL_ADC_SINGLE_ENDED);
 }
 
@@ -323,8 +323,8 @@ void MX_ADC2_Init(void) {
     LL_ADC_Init(ADC2, &ADC_InitStruct);
     ADC_REG_InitStruct.SequencerLength = LL_ADC_REG_SEQ_SCAN_DISABLE;
     ADC_REG_InitStruct.SequencerDiscont = LL_ADC_REG_SEQ_DISCONT_DISABLE;
-    ADC_REG_InitStruct.ContinuousMode = LL_ADC_REG_CONV_CONTINUOUS;
-    ADC_REG_InitStruct.DMATransfer = LL_ADC_REG_DMA_TRANSFER_UNLIMITED;
+    ADC_REG_InitStruct.ContinuousMode = LL_ADC_REG_CONV_SINGLE;
+    ADC_REG_InitStruct.DMATransfer = LL_ADC_REG_DMA_TRANSFER_NONE;
     ADC_REG_InitStruct.Overrun = LL_ADC_REG_OVR_DATA_PRESERVED;
     LL_ADC_REG_Init(ADC2, &ADC_REG_InitStruct);
     LL_ADC_SetGainCompensation(ADC2, 0);
@@ -372,7 +372,7 @@ void MX_ADC2_Init(void) {
     /** Configure Regular Channel
      */
     LL_ADC_REG_SetSequencerRanks(ADC2, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_5);
-    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_5, LL_ADC_SAMPLINGTIME_6CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_5, LL_ADC_SAMPLINGTIME_24CYCLES_5);
     LL_ADC_SetChannelSingleDiff(ADC2, LL_ADC_CHANNEL_5, LL_ADC_SINGLE_ENDED);
 }
 
@@ -405,7 +405,7 @@ void MX_OPAMP1_Init(void) {
     LL_OPAMP_Init(OPAMP1, &OPAMP_InitStruct);
     LL_OPAMP_SetInputsMuxMode(OPAMP1, LL_OPAMP_INPUT_MUX_DISABLE);
     LL_OPAMP_SetInternalOutput(OPAMP1, LL_OPAMP_INTERNAL_OUPUT_ENABLED);
-    LL_OPAMP_SetPGAGain(OPAMP1, LL_OPAMP_PGA_GAIN_8_OR_MINUS_7);
+    LL_OPAMP_SetPGAGain(OPAMP1, LL_OPAMP_PGA_GAIN_16_OR_MINUS_15);
     LL_OPAMP_SetTrimmingMode(OPAMP1, LL_OPAMP_TRIMMING_FACTORY);
 }
 
@@ -439,7 +439,7 @@ void MX_OPAMP2_Init(void) {
     LL_OPAMP_Init(OPAMP2, &OPAMP_InitStruct);
     LL_OPAMP_SetInputsMuxMode(OPAMP2, LL_OPAMP_INPUT_MUX_DISABLE);
     LL_OPAMP_SetInternalOutput(OPAMP2, LL_OPAMP_INTERNAL_OUPUT_ENABLED);
-    LL_OPAMP_SetPGAGain(OPAMP2, LL_OPAMP_PGA_GAIN_8_OR_MINUS_7);
+    LL_OPAMP_SetPGAGain(OPAMP2, LL_OPAMP_PGA_GAIN_16_OR_MINUS_15);
     LL_OPAMP_SetTrimmingMode(OPAMP2, LL_OPAMP_TRIMMING_FACTORY);
 }
 
@@ -473,7 +473,7 @@ void MX_OPAMP3_Init(void) {
     LL_OPAMP_Init(OPAMP3, &OPAMP_InitStruct);
     LL_OPAMP_SetInputsMuxMode(OPAMP3, LL_OPAMP_INPUT_MUX_DISABLE);
     LL_OPAMP_SetInternalOutput(OPAMP3, LL_OPAMP_INTERNAL_OUPUT_ENABLED);
-    LL_OPAMP_SetPGAGain(OPAMP3, LL_OPAMP_PGA_GAIN_8_OR_MINUS_7);
+    LL_OPAMP_SetPGAGain(OPAMP3, LL_OPAMP_PGA_GAIN_16_OR_MINUS_15);
     LL_OPAMP_SetTrimmingMode(OPAMP3, LL_OPAMP_TRIMMING_FACTORY);
 }
 
@@ -494,7 +494,7 @@ void MX_TIM1_Init(void) {
     TIM_InitStruct.CounterMode = LL_TIM_COUNTERMODE_CENTER_UP;
     TIM_InitStruct.Autoreload = TIM1_ARR;
     TIM_InitStruct.ClockDivision = LL_TIM_CLOCKDIVISION_DIV1;
-    TIM_InitStruct.RepetitionCounter = 0;
+    TIM_InitStruct.RepetitionCounter = 1;
     LL_TIM_Init(TIM1, &TIM_InitStruct);
     LL_TIM_EnableARRPreload(TIM1);
     LL_TIM_SetClockSource(TIM1, LL_TIM_CLOCKSOURCE_INTERNAL);
@@ -1056,6 +1056,25 @@ uint16_t ADC_ReadVbus_SingleShot(void) {
     LL_ADC_ClearFlag_OVR(ADC1);
 
     return result;
+}
+
+/**
+ * @brief  Read Potentiometer via software-triggered ADC2 regular single conversion on PC4
+ * (ADC2_IN5).
+ * @return Raw 12-bit ADC value.
+ */
+uint16_t ADC_ReadPot_SingleShot(void) {
+    LL_ADC_REG_StartConversion(ADC2);
+    uint32_t timeout = 10000;
+    while (!LL_ADC_IsActiveFlag_EOC(ADC2) && --timeout);
+
+    uint16_t val = 0;
+    if (timeout > 0) {
+        val = LL_ADC_REG_ReadConversionData12(ADC2);
+    }
+    LL_ADC_ClearFlag_EOC(ADC2);
+    LL_ADC_ClearFlag_OVR(ADC2);
+    return val;
 }
 
 /**

@@ -14,6 +14,7 @@
 #include "bist_profiler.h"
 #include "flash_config.h"
 #include "foc_state_machine.h"
+#include "foc_startup.h"
 #include "motor_id.h"
 #include "usbd_cdc_if.h"
 
@@ -164,6 +165,16 @@ static float get_param_value(uint8_t pid) {
             MotorID_Result_t res;
             MotorID_GetResults(&res);
             return res.selected_freq_hz;
+        }
+        case PID_ID_FLUX_MEAS: {
+            MotorID_Result_t res;
+            MotorID_GetResults(&res);
+            return res.measured_flux;
+        }
+        case PID_ID_KV_MEAS: {
+            MotorID_Result_t res;
+            MotorID_GetResults(&res);
+            return res.measured_kv;
         }
         default:
             return 0.0f;
@@ -418,6 +429,15 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 break;
             }
             FOC_StartSelfCommission();
+            send_ack(type, 0);
+            break;
+
+        case CMD_IDENT_FLUX:
+            if (FOC_GetState() != FOC_STATE_IDLE) {
+                send_ack(type, 1);
+                break;
+            }
+            MotorID_MeasureFluxOffline();
             send_ack(type, 0);
             break;
 

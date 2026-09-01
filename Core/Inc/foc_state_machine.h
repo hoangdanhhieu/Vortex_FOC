@@ -10,8 +10,8 @@
 
 #include "bist_profiler.h"
 #include "flash_config.h"
-#include "pi_controller.h"
 #include "ladrc_controller.h"
+#include "pi_controller.h"
 #include "smo_observer.h"
 
 /*===========================================================================*/
@@ -28,7 +28,8 @@ typedef enum {
     FOC_STATE_RUN,            /**< Closed-loop FOC running */
     FOC_STATE_STOP,           /**< Controlled stop */
     FOC_STATE_FAULT,          /**< Fault condition */
-    FOC_STATE_SELF_COMMISSION /**< Motor parameter identification */
+    FOC_STATE_SELF_COMMISSION,/**< Motor parameter identification */
+    FOC_STATE_COAST_FLUX_ID   /**< Freewheeling BEMF measurement */
 } FOC_State_t;
 
 typedef enum {
@@ -55,101 +56,118 @@ typedef enum {
 typedef struct {
     /*--- Main State ---*/
     struct {
-        FOC_State_t state;
-        FOC_ControlMode_t control_mode;
-        FOC_Fault_t fault;
-        float reverse; /**< 1.0 = FWD, -1.0 = REV */
-        uint8_t in_transition; /**< 1 during open-loop to closed-loop handoff */
-        uint32_t run_counter;
+        FOC_State_t state;              /**< Current state machine state */
+        FOC_ControlMode_t control_mode; /**< Control mode: Speed, Torque (Current), or Voltage */
+        FOC_Fault_t fault;              /**< Active system fault code */
+        float reverse; /**< Motor rotation direction [dimensionless: 1.0 = FWD, -1.0 = REV] */
+        uint8_t
+            in_transition; /**< Open-loop to closed-loop handoff flag [0 = Normal, 1 = Blending] */
+        uint32_t run_counter; /**< Control loop execution tick counter [ISR cycles @ 48kHz] */
     } status;
 
     /*--- Controllers ---*/
     struct {
-        PI_Controller_t id;
-        PI_Controller_t iq;
-        LADRC_Controller_t speed;
-        SMO_Observer_t smo;
-        BIST_State_t bist;
+        PI_Controller_t id;       /**< Direct axis (d-axis) current PI controller [A -> V] */
+        PI_Controller_t iq;       /**< Quadrature axis (q-axis) current PI controller [A -> V] */
+        LADRC_Controller_t speed; /**< Speed loop Linear ADRC controller [RPM -> A] */
+        SMO_Observer_t smo; /**< Sensorless Sliding Mode Observer for angle/speed estimation */
+        BIST_State_t bist;  /**< Built-In Self-Test and automated parameter profiler */
     } ctrl;
 
     /*--- Live Data / Signals ---*/
     struct {
-        float Ia, Ib, Ic;
-        float Ialpha, Ibeta;
-        float Ialpha_flt, Ibeta_flt;
-        float Vphase_a, Vphase_b, Vphase_c;
-        float Id, Iq;
-        float Vd, Vq;
-        float Iq_ref_cmd;
-        float Valpha, Vbeta;
-        float theta_elec;
-        float omega_elec;
-        float speed_rpm;
-        float Vbus;
-        float Vbus_inv;
-        float duty_a, duty_b, duty_c;
-        float i_scale, v_scale;
+        float Ia, Ib, Ic;    /**< 3-phase raw measured currents [A] */
+        float Ialpha, Ibeta; /**< Clarke stationary frame currents (alpha, beta) [A] */
+        float Ialpha_flt,
+            Ibeta_flt; /**< STF (Self-Tuning Filter) cleaned currents (alpha, beta) [A] */
+        float Vphase_a, Vphase_b, Vphase_c; /**< 3-phase terminal voltages [V] */
+        float Id, Iq;        /**< Park rotating frame currents (d-axis, q-axis) [A] */
+        float Vd, Vq;        /**< Park rotating frame control voltages (d-axis, q-axis) [V] */
+        float Iq_ref_cmd;    /**< Slew-rate limited active Iq current command [A] */
+        float Valpha, Vbeta; /**< Inverse Park stationary frame output voltages [V] */
+        float theta_park; /**< Electrical rotor position angle for Park transform (no hardware delay compensation) */
+        float theta_elec; /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0, where 1.0 =
+                             +pi rad] */
+        float omega_elec; /**< Electrical angular velocity [rad/s] */
+        float speed_rpm;  /**< Mechanical rotational speed [RPM] */
+        float Vbus;       /**< DC bus supply voltage [V] */
+        float Vbus_inv;   /**< Inverse of DC bus voltage (1.0 / Vbus) [1/V] */
+        float duty_a, duty_b,
+            duty_c;    /**< Inverter phase PWM duty cycles [dimensionless: 0.0 to 1.0] */
+        float i_scale; /**< ADC raw count to phase current conversion factor [A/count] */
+        float v_scale; /**< ADC raw count to phase voltage conversion factor [V/count] */
     } data;
 
     /*--- References / Commands ---*/
     struct {
-        float speed_ref;
-        float speed_ref_target;
-        float Iq_ref;
-        float Iq_ref_target;
-        float Id_ref;
-        float Id_ref_target;
-        float Vq_ref;
-        float Vq_ref_target;
+        float speed_ref;        /**< Ramp-filtered mechanical speed target [RPM] */
+        float speed_ref_target; /**< Commanded mechanical speed target from user/host [RPM] */
+        float Iq_ref;           /**< Ramp-filtered quadrature current target [A] */
+        float Iq_ref_target;    /**< Commanded quadrature current target from user/host [A] */
+        float Id_ref;           /**< Direct axis current reference (0A or field weakening) [A] */
+        float Id_ref_target;    /**< Commanded direct axis current target [A] */
+        float Vq_ref; /**< Ramp-filtered normalized voltage command [normalized: -1.0 to 1.0] */
+        float Vq_ref_target; /**< Commanded normalized voltage target [normalized: -1.0 to 1.0] */
     } cmd;
 
     /*--- Startup State ---*/
     struct {
-        float theta;
-        float omega;
-        uint32_t counter;
+        float theta;      /**< Open-loop electrical angle ramp [normalized: -1.0 to 1.0] */
+        float omega;      /**< Open-loop electrical angular velocity [rad/s] */
+        uint32_t counter; /**< Startup stage step/timer counter [ISR samples] */
     } startup;
 
     /*--- Configuration (Directly from Flash) ---*/
-    FlashConfig_t cfg;
+    FlashConfig_t cfg; /**< Persistent motor and control parameters loaded from Flash */
 
     /*--- ADC Calibration & Offsets ---*/
     struct {
-        int32_t offset_a;
-        int32_t offset_b;
-        int32_t offset_c;
-        int32_t offset_vphase_a;
-        int32_t offset_vphase_b;
-        int32_t offset_vphase_c;
-        uint16_t cal_samples;
+        int32_t offset_a; /**< Phase A current ADC zero-crossing offset [ADC counts: 0 to 4095] */
+        int32_t offset_b; /**< Phase B current ADC zero-crossing offset [ADC counts: 0 to 4095] */
+        int32_t offset_c; /**< Phase C current ADC zero-crossing offset [ADC counts: 0 to 4095] */
+        int32_t offset_vphase_a; /**< Phase A voltage ADC zero-crossing offset [ADC counts: 0 to
+                                    4095] */
+        int32_t offset_vphase_b; /**< Phase B voltage ADC zero-crossing offset [ADC counts: 0 to
+                                    4095] */
+        int32_t offset_vphase_c; /**< Phase C voltage ADC zero-crossing offset [ADC counts: 0 to
+                                    4095] */
+        uint16_t cal_samples;    /**< Calibration sample accumulation count [samples] */
     } adc_cal;
 
     /*--- Board Noise Profile & Signal Integrity ---*/
     struct {
-        float noise_rms;        /**< Current measurement RMS noise floor [A] */
-        float noise_pk_pk;      /**< Current measurement Peak-to-Peak noise [A] */
-        float is_flat_thr;      /**< Auto-adapted settling threshold for Motor ID [A] */
-        float i_inj_min;        /**< Minimum AC injection current for SNR > 20dB [A] */
-        float bemf_noise_sq;    /**< BEMF magnitude noise floor threshold [V^2] */
-        uint8_t health_status;  /**< Hardware health: 0=EXCELLENT, 1=GOOD, 2=NOISY, 3=FAULT */
+        float noise_rms;       /**< Current measurement RMS noise floor [A] */
+        float noise_pk_pk;     /**< Current measurement Peak-to-Peak noise [A] */
+        float is_flat_thr;     /**< Auto-adapted settling threshold for Motor ID [A] */
+        float i_inj_min;       /**< Minimum AC injection current for SNR > 20dB [A] */
+        float bemf_noise_sq;   /**< BEMF magnitude noise floor threshold [V^2] */
+        uint8_t health_status; /**< Hardware health: 0=EXCELLENT, 1=GOOD, 2=NOISY, 3=FAULT */
     } noise_profile;
 
     /*--- Constraints & Performance ---*/
-    float max_duty;
-    uint32_t isr_time_cycles;
+    float max_duty; /**< Maximum allowed PWM duty cycle clamp [dimensionless: 0.0 to 1.0] */
+    uint32_t
+        isr_time_cycles; /**< 48kHz ADC ISR execution execution time [CPU clock cycles @ 170MHz] */
 
     /*--- Plotting (Telemetry Snapshot) ---*/
     struct {
-        volatile uint8_t enabled;
-        volatile uint8_t ready;
-        float Vd, Vq;
-        float Id, Iq;
-        float Iq_ref, theta_elec;
-        float Ia, Ib, Ic;
-        float duty_a, duty_b, duty_c;
+        volatile uint8_t
+            enabled; /**< High-speed streaming plot enable flag [0=Disabled, 1=Enabled] */
+        volatile uint8_t ready; /**< Telemetry packet ready flag [0=Busy, 1=Ready] */
+        float Vd, Vq;           /**< Telemetry snapshot: d/q voltages [V] */
+        float Id, Iq;           /**< Telemetry snapshot: d/q currents [A] */
+        float Iq_ref;           /**< Telemetry snapshot: active Iq target [A] */
+        float theta_elec; /**< Telemetry snapshot: electrical angle [normalized: -1.0 to 1.0] */
+        float Ia, Ib, Ic; /**< Telemetry snapshot: 3-phase filtered currents [A] */
+        float duty_a, duty_b, duty_c; /**< Telemetry snapshot: phase duty cycles [0.0 to 1.0] */
     } plot;
 
 } FOC_Control_t;
+
+#include "foc_calibration.h"
+#include "foc_flying_start.h"
+#include "foc_slow_task.h"
+#include "foc_startup.h"
 
 /*===========================================================================*/
 /* Global FOC Instance                                                       */
@@ -160,6 +178,11 @@ extern FOC_Control_t g_foc;
 /*===========================================================================*/
 /* Public Functions                                                          */
 /*===========================================================================*/
+
+/**
+ * @brief Check if FOC system is initialized
+ */
+uint8_t FOC_IsInitialized(void);
 
 /**
  * @brief Initialize FOC control structure
@@ -255,16 +278,9 @@ void FOC_SetDirection(int8_t dir);
  */
 int8_t FOC_GetDirection(void);
 
-void FOC_SlowTask(void);
-
 /**
- * @brief Configure ADC Hardware Watchdogs based on FOC protection parameters.
- */
-void FOC_ConfigureAWD(void);
-
-#endif /* FOC_STATE_MACHINE_H */
-
-/**
- * @brief Play a tune
+ * @brief Play a tune on motor phases
  */
 void playTune(void);
+
+#endif /* FOC_STATE_MACHINE_H */

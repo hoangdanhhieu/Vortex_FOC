@@ -42,6 +42,7 @@
 #define CMD_CLEAR 0x0F     /**< Clear faults */
 #define CMD_BIST 0x10      /**< Built-In Self Test Profiler settings */
 #define CMD_VOLTAGE 0x11   /**< Set voltage ref: pct(4B float) */
+#define CMD_IDENT_FLUX 0x12/**< Trigger offline flux identification */
 
 /*===========================================================================*/
 /* Response Types (MCU → PC)                                                 */
@@ -79,6 +80,8 @@ enum {
     PID_ID_ALPHA_MEAS,
     PID_ID_DT_MEAS,
     PID_ID_FREQ_MEAS,
+    PID_ID_FLUX_MEAS,
+    PID_ID_KV_MEAS,
     PID_COUNT
 };
 
@@ -103,10 +106,11 @@ void Comm_PushByte(uint8_t byte);
 void Comm_Update(void);
 
 /**
- * @brief Push a 7-channel plot sample (Ia, Ib, Ic, Vd, Vq, theta, Iq_ref) into ring buffer from 48 kHz ISR
+ * @brief Push a 7-channel plot sample (Ia, Ib, Ic, Vd, Vq, theta, Iq_ref) into ring buffer from 48
+ * kHz ISR
  */
-void Comm_PushPlotSample7(float Ia, float Ib, float Ic,
-                          float Vd, float Vq, float theta, float Iq_ref);
+void Comm_PushPlotSample7(float Ia, float Ib, float Ic, float Vd, float Vq, float theta,
+                          float Iq_ref);
 
 /**
  * @brief Send plot streaming packet from ring buffer (Called from main loop)

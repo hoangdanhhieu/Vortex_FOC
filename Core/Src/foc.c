@@ -124,3 +124,77 @@ CCMRAM_FUNC void svpwm_calculate(float theta) {
     g_foc.data.Valpha = (2.0f * da - db - dc) * ONE_THIRD * g_foc.data.Vbus;
     g_foc.data.Vbeta = (db - dc) * SQRT3_INV * g_foc.data.Vbus;
 }
+
+/**
+ * @brief Apply centralized deadtime compensation to duty cycles.
+ */
+CCMRAM_FUNC void foc_apply_deadtime_compensation(float* out_a, float* out_b, float* out_c) {
+    float dt_comp = DEAD_TIME_DUTY;
+    if (dt_comp <= 0.0f) {
+        return;
+    }
+
+    /* Disable deadtime compensation in open-loop and calibration states where
+     * current feedback is either irrelevant or intentionally overridden */
+    if (g_foc.status.state == FOC_STATE_SELF_COMMISSION ||
+        g_foc.status.state == FOC_STATE_CALIBRATION || g_foc.status.state == FOC_STATE_ALIGN) {
+        return;
+    }
+
+    /* Use COMMANDED currents instead of measured currents to determine polarity.
+     * Measured current near 0A is dominated by noise. If noise triggers deadtime
+     * compensation, it injects a huge voltage step, causing a real current spike,
+     * which the PI controller violently fights -> creating a massive limit cycle
+     * (the "whining" noise). Using reference current breaks this feedback loop. */
+    float sin_th, cos_th;
+    cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
+
+    float Id_ref = g_foc.cmd.Id_ref;
+    float Iq_ref = g_foc.data.Iq_ref_cmd;
+
+    float I_alpha_ref = Id_ref * cos_th - Iq_ref * sin_th;
+    float I_beta_ref = Id_ref * sin_th + Iq_ref * cos_th;
+
+    float sign_a, sign_b, sign_c;
+    inverse_clarke_transform(I_alpha_ref, I_beta_ref, &sign_a, &sign_b, &sign_c);
+
+    float i_th = g_foc.cfg.motor_max_curr * 0.02f; /* 2% of max current for smooth interpolation */
+    if (i_th < 0.050f) {
+        i_th = 0.050f;
+    }
+
+    if (sign_a > i_th)
+        *out_a += dt_comp;
+    else if (sign_a < -i_th)
+        *out_a -= dt_comp;
+    else
+        *out_a += dt_comp * (sign_a / i_th);
+
+    if (sign_b > i_th)
+        *out_b += dt_comp;
+    else if (sign_b < -i_th)
+        *out_b -= dt_comp;
+    else
+        *out_b += dt_comp * (sign_b / i_th);
+
+    if (sign_c > i_th)
+        *out_c += dt_comp;
+    else if (sign_c < -i_th)
+        *out_c -= dt_comp;
+    else
+        *out_c += dt_comp * (sign_c / i_th);
+
+    float max_duty = g_foc.max_duty;
+    if (*out_a < 0.0f)
+        *out_a = 0.0f;
+    else if (*out_a > max_duty)
+        *out_a = max_duty;
+    if (*out_b < 0.0f)
+        *out_b = 0.0f;
+    else if (*out_b > max_duty)
+        *out_b = max_duty;
+    if (*out_c < 0.0f)
+        *out_c = 0.0f;
+    else if (*out_c > max_duty)
+        *out_c = max_duty;
+}

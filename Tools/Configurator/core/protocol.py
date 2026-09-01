@@ -29,6 +29,7 @@ class CmdType(IntEnum):
     CLEAR = 0x0F
     BIST = 0x10
     VOLTAGE = 0x11
+    IDENT_FLUX = 0x12
 
 
 class RspType(IntEnum):
@@ -67,7 +68,8 @@ class ParamId(IntEnum):
     ID_MEAS = 42; IQ_MEAS = 43; IA = 44; IB = 45
     ID_RS_MEAS = 46; ID_LS_MEAS = 47; ID_ISAT_MEAS = 48
     ID_ALPHA_MEAS = 49; ID_DT_MEAS = 50; ID_FREQ_MEAS = 51
-    PID_COUNT = 52
+    ID_FLUX_MEAS = 52; ID_KV_MEAS = 53
+    PID_COUNT = 54
 
 
 

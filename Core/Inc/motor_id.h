@@ -38,6 +38,8 @@ typedef struct {
     float measured_vdead; /* Identified dead-time voltage   [V]     */
     float identified_deadtime_ns; /* Identified dead-time   [ns]    */
     float selected_freq_hz; /* Selected AC injection freq   [Hz]    */
+    float measured_flux;    /* Identified permanent magnet flux [Wb]*/
+    float measured_kv;      /* Calculated Motor KV              [RPM/V]*/
     
     MotorID_State_t state;
     uint32_t error_code;  /* 0 = OK, 1=Rs invalid, 2=Ls invalid, 3=Fit error, 7=No delta */
@@ -45,10 +47,6 @@ typedef struct {
 
 extern MotorID_Result_t id_result;
 
-/*===========================================================================*/
-/* Configuration                                                             */
-/*===========================================================================*/
-#define CURRENT_FILTER_COEFF 0.01f
 
 /*===========================================================================*/
 /* Public Functions                                                          */
@@ -57,6 +55,21 @@ extern MotorID_Result_t id_result;
 void MotorID_Init(void);
 void MotorID_Start(void);
 void MotorID_Stop(void);
+
+/**
+ * @brief Initiate Offline Flux Measurement (Spin & Coast)
+ */
+void MotorID_MeasureFluxOffline(void);
+
+/**
+ * @brief Check if currently doing offline flux measurement
+ */
+uint8_t MotorID_IsFluxMeasuring(void);
+
+/**
+ * @brief State handler for Freewheeling Flux Measurement
+ */
+void FOC_StateCoastFluxID(void);
 
 /**
  * @brief Run one step of the identification state machine.

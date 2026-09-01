@@ -8,6 +8,7 @@
 #ifndef LADRC_CONTROLLER_H
 #define LADRC_CONTROLLER_H
 
+#include <math.h>
 #include "foc_config.h"
 
 /*===========================================================================*/
@@ -31,6 +32,7 @@ typedef struct {
     /* Internal states */
     float z1;       /**< Estimated electrical speed [rad/s] */
     float z2;       /**< Estimated total disturbance [rad/s^2] */
+    float z2_max;   /**< Anti-windup limit for disturbance estimation */
     float u_prev;   /**< Previous saturated control command [A] (for feedback anti-windup) */
 } LADRC_Controller_t;
 
@@ -67,6 +69,13 @@ void LADRC_Reset(LADRC_Controller_t* ctrl);
 void LADRC_SetGains(LADRC_Controller_t* ctrl, float omega_c, float omega_o, float b0);
 
 /**
+ * @brief Update LADRC sample time and recompute observer gains
+ * @param ctrl Pointer to LADRC controller structure
+ * @param dt Sample time in seconds
+ */
+void LADRC_SetDt(LADRC_Controller_t* ctrl, float dt);
+
+/**
  * @brief Update LADRC output saturation limits
  * @param ctrl Pointer to LADRC controller structure
  * @param out_min Saturated minimum output limit
@@ -83,6 +92,15 @@ void LADRC_SetLimits(LADRC_Controller_t* ctrl, float out_min, float out_max);
 void LADRC_SeedState(LADRC_Controller_t* ctrl, float omega_init, float u_init);
 
 /**
+ * @brief Notify LADRC of actual applied actuator output (for external rate-limiters / anti-windup)
+ * @param ctrl Pointer to LADRC controller structure
+ * @param u_actual Actual output command applied to plant [A]
+ */
+CCMRAM_FUNC static inline void LADRC_SetActualOutput(LADRC_Controller_t* ctrl, float u_actual) {
+    ctrl->u_prev = u_actual;
+}
+
+/**
  * @brief Execute one step of the LADRC speed controller (typically at 1 kHz)
  * @param ctrl Pointer to LADRC controller structure
  * @param omega_ref Electrical speed target [rad/s]
@@ -90,6 +108,12 @@ void LADRC_SeedState(LADRC_Controller_t* ctrl, float omega_init, float u_init);
  * @return Saturated Iq_ref current command [A]
  */
 CCMRAM_FUNC static inline float LADRC_Update(LADRC_Controller_t* ctrl, float omega_ref, float omega_fb) {
+    /* Fault-tolerant protection against NaN/Inf inputs or corrupted states */
+    if (isnan(omega_ref) || isnan(omega_fb) || isnan(ctrl->z1) || isnan(ctrl->z2)) {
+        LADRC_Reset(ctrl);
+        return 0.0f;
+    }
+
     /* 1. Update Linear Extended State Observer (LESO) via Implicit Backward Euler */
     float num = ctrl->z1 +
                 ctrl->dt * ctrl->z2 +
@@ -98,6 +122,8 @@ CCMRAM_FUNC static inline float LADRC_Update(LADRC_Controller_t* ctrl, float ome
     float z1_new = num * ctrl->D_inv;
 
     ctrl->z2 = ctrl->z2 - ctrl->beta2 * ctrl->dt * (z1_new - omega_fb);
+    /* Anti-windup: Clamp z2 to prevent catastrophic overshoot if b0 is severely mismatched */
+    ctrl->z2 = clampf(ctrl->z2, -ctrl->z2_max, ctrl->z2_max);
     ctrl->z1 = z1_new;
 
     /* 2. Proportional Error Tracking Control Law */

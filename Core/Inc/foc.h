@@ -32,6 +32,16 @@ CCMRAM_FUNC static inline void clarke_transform(float Ia, float Ib, float Ic, fl
 }
 
 /**
+ * @brief Inverse Clarke transform: Ialpha,Ibeta -> Ia,Ib,Ic
+ */
+CCMRAM_FUNC static inline void inverse_clarke_transform(float alpha, float beta, float* Ia,
+                                                        float* Ib, float* Ic) {
+    *Ia = alpha;
+    *Ib = -0.5f * alpha + 0.8660254f * beta;
+    *Ic = -(*Ia + *Ib);
+}
+
+/**
  * @brief Park transform: Ialpha,Ibeta -> Id,Iq
  */
 CCMRAM_FUNC static inline void park_transform(float Ialpha, float Ibeta, float cos_th, float sin_th,
@@ -47,6 +57,13 @@ CCMRAM_FUNC static inline void inverse_park_transform(float Vd, float Vq, float 
                                                       float sin_th, float* Valpha, float* Vbeta) {
     *Valpha = Vd * cos_th - Vq * sin_th;
     *Vbeta = Vd * sin_th + Vq * cos_th;
+}
+
+/**
+ * @brief Normalize angle to [-1, 1) range (corresponds to [-pi, pi))
+ */
+CCMRAM_FUNC static inline float normalize_angle_norm(float angle) {
+    return angle - 2.0f * floorf((angle + 1.0f) * 0.5f);
 }
 
 /*===========================================================================*/
@@ -109,5 +126,10 @@ CCMRAM_FUNC static inline float foc_adc_to_vphase_absolute(uint16_t adc_value) {
     float v_adc = (float)adc_value * (ADC_Vref / (float)ADC_RESOLUTION);
     return v_adc * PHASE_VOLTAGE_GAIN - ADC_Vref * PHASE_VOLTAGE_OFFSET_FACTOR;
 }
+
+/**
+ * @brief Apply centralized deadtime compensation to duty cycles.
+ */
+void foc_apply_deadtime_compensation(float* out_a, float* out_b, float* out_c);
 
 #endif /* FOC_H */

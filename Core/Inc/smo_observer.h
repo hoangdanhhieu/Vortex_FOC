@@ -69,10 +69,8 @@ typedef struct {
 
     /* Diagnostics & Time constants */
     float current_err_sq; /**< Squared current estimation error magnitude [A^2] */
-    float tau_current;    /**< Dynamic current observer time constant [s] */
 
     /* Precomputed Implicit Backward Euler coefficients */
-    float Req;        /**< Dynamic sliding equivalent resistance [Ohm] */
     float dt_over_Ls; /**< Precomputed dt * Ls_inv */
     float denom_inv;  /**< Precomputed 1.0 / (1.0 + Rs * dt_over_Ls) */
 
@@ -116,11 +114,18 @@ void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, float Ialpha, fl
 void SMO_SlowTask(SMO_Observer_t* smo);
 
 /**
- * @brief Get estimated electrical angle
+ * @brief Get estimated electrical angle for Park transform (no hardware delay compensation)
  * @param smo Pointer to SMO structure
  * @return Electrical angle in [-1, 1) representing [-pi, pi)
  */
-float SMO_GetAngle(SMO_Observer_t* smo);
+float SMO_GetParkAngle(SMO_Observer_t* smo);
+
+/**
+ * @brief Get estimated electrical angle for PWM generation (compensated for hardware delay)
+ * @param smo Pointer to SMO structure
+ * @return Electrical angle in [-1, 1) representing [-pi, pi)
+ */
+float SMO_GetPWMAngle(SMO_Observer_t* smo);
 
 /**
  * @brief Get estimated electrical speed

@@ -134,13 +134,13 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 
 /** Cutoff frequency for the Current Self-Tuning Filter [Hz] */
-#define CURRENT_STF_FC 500.0f
+#define CURRENT_STF_FC 1500.0f
 
 /** Shunt resistance [Ohm] */
 #define SHUNT_RESISTANCE 0.005f
 
 /** OPAMP gain */
-#define OPAMP_GAIN 7.0f
+#define OPAMP_GAIN 15.0f
 
 /** ADC resolution (12-bit) */
 #define ADC_RESOLUTION 4096
@@ -211,7 +211,8 @@ extern volatile float ADC_Vref;
 
 /** Speed PI output limits [A] (Iq reference) */
 #define PI_SPEED_OUT_MAX MOTOR_CONT_CURRENT
-#define PI_SPEED_OUT_MIN (-PI_SPEED_OUT_MAX)
+/* Limit regenerative braking to -1.0A to prevent Overvoltage trips on power supplies */
+#define PI_SPEED_OUT_MIN (-1.0f) 
 
 /** Speed PI integral limits [A] - smaller than output to reduce overshoot */
 #define PI_SPEED_INT_MAX (PI_SPEED_OUT_MAX * 0.5f) /* 50% of output max */
@@ -321,4 +322,50 @@ extern volatile float ADC_Vref;
 #define BEEP_PERIOD_TICKS (2 * CONTROL_FREQUENCY)
 #define BEEP_DURATION_TICKS (CONTROL_FREQUENCY / 16)
 #define BEEP_STEP_FREQ 4500.0f * CONTROL_PERIOD
-#endif /* FOC_CONFIG_H */
+
+/*===========================================================================*/
+/* Motor ID Configuration — Dual-LPF & Smart Auto-Resolution                */
+/*===========================================================================*/
+
+/** Fast filter delay target in seconds (~1.04 ms for instant ramp cut-off) */
+#define ID_FAST_TAU_TARGET_S 0.00104f
+
+/** Clamping bounds for slow filter alpha at 48 kHz (tau = 10.4 ms to 69.4 ms) */
+#define ID_ALPHA_SLOW_MIN 0.0003f
+#define ID_ALPHA_SLOW_MAX 0.0020f
+
+/** Maximum expected electrical time constant*/
+#define ID_MAX_MOTOR_TAU_S 0.550f
+
+/** Minimum expected motor resistance [Ohm] */
+#define ID_MIN_MOTOR_RS 0.0035f
+
+/** 4-sigma post-filter flat envelope multiplier (99.994% noise rejection) */
+#define ID_FLAT_SIGMA_MULT 4.0f
+
+/** Minimum noise floor clamp [A] */
+#define ID_NOISE_FLOOR_MIN 0.005f
+
+/** Smart Auto-Resolution & SNR stopping criteria */
+#define ID_MIN_ADC_COUNTS 150.0f   /**< Minimum ADC LSB counts for Delta_I */
+#define ID_MIN_NOISE_SNR 20.0f     /**< Minimum Delta_I / noise_rms ratio */
+#define ID_MIN_DELTA_VOLTAGE 0.15f /**< Minimum Delta_V [V] to overcome PWM jitter */
+#define ID_MAX_DELTA_I_CALC_CAP \
+    15.0f /**< Max step size cap used during analytical derivation [A] */
+
+/** Voltage ramp rate limits [V/s] */
+#define ID_RAMP_OVERSHOOT_PCT 0.05f /**< Allowed current overshoot past ramp stop (5%) */
+#define ID_V_RAMP_MIN 15.0f         /**< Minimum ramp rate [V/s] */
+#define ID_V_RAMP_MAX 40.0f         /**< Maximum ramp rate [V/s] */
+
+/** Settle integration and timing */
+#define ID_SETTLE_SAMPLES 360U     /**< 360-sample averaging window (7.5 ms @ 48 kHz) */
+#define ID_SETTLE_HOLD_TIME_MS 15U /**< Minimum settle hold delay before averaging [ms] */
+#define ID_ALIGN_DURATION_MS 150U  /**< D-axis alignment duration at I1 [ms] */
+
+/*===========================================================================*/
+#define POT_STOP_THRESHOLD 400  /**< Under 10% (30 degrees) to force stop/idle */
+#define POT_START_THRESHOLD 600 /**< Over 15% (44 degrees) to trigger motor start */
+#define POT_ADC_MAX 4095        /**< Maximum ADC value */
+#define POT_LPF_ALPHA 0.95f     /**< Potentiometer LPF coefficient (~8 Hz cutoff at 1 kHz) */
+#endif                          /* FOC_CONFIG_H */

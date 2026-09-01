@@ -68,8 +68,8 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->pll_int_max = SMO_PLL_INT_MAX;
 
     /* Initialize Dynamic PLL parameters */
-    smo->pll_cutoff_min = 5.0f; /* 5 Hz minimum bandwidth for smooth standstill recovery */
-    smo->pll_alpha = 0.5f;      /* Speed-to-bandwidth scaling factor */
+    smo->pll_cutoff_min = 10.0f;
+    smo->pll_alpha = 0.5f; /* Speed-to-bandwidth scaling factor */
     smo->omega_est_filt = 0.0f;
     smo->omega_stf = 0.0f;
 
@@ -91,8 +91,6 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->dt = CONTROL_PERIOD;
 
     /* Pre-calculated current observer time constant and coefficients */
-    smo->Req = smo->k_slide / smo->k_sigmoid;
-    smo->tau_current = MOTOR_LS / (MOTOR_RS + smo->Req);
     smo->dt_over_Ls = smo->dt * smo->Ls_inv;
     smo->denom_inv = 1.0f / (1.0f + smo->Rs * smo->dt_over_Ls);
     smo->I_mag = 0.0f;
@@ -131,10 +129,15 @@ CCMRAM_FUNC void SMO_ResetStates(SMO_Observer_t* smo, float omega_init) {
 CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
     float theta_bemf = cordic_atan2(-smo->Ealpha_flt, smo->Ebeta_flt);
 
-    /* Internal Observer Phase Delay Compensation (tau_current + 0.5-sample discrete Euler lag).
-     * Note: 1.5*dt PWM hardware delay is compensated externally in SMO_GetAngle to prevent
-     * algebraic loop. */
-    float tau_total = smo->tau_current + 0.5f * smo->dt;
+    /* Internal Observer Phase Delay Compensation (Total = 1.0 dt):
+     * - 0.5 dt from Backward Euler integration (midpoint lag).
+     * - 0.5 dt from Voltage Mismatch: The ADC samples exactly at the Peak (t=0).
+     *   The actual voltage applied to the motor between two samples is V[N-2] for
+     *   the first 0.5 dt, and V[N-1] for the second 0.5 dt. However, the observer
+     *   uses V[N-1] for the entire 1.0 dt. This "pulls" the voltage forward in time,
+     *   causing a 0.5 dt lag in the resulting BEMF estimate.
+     */
+    float tau_total = 1.0f * smo->dt;
     float phase_lag = cordic_atan2(smo->omega_est * tau_total, 1.0f);
 
     float theta_comp = normalize_angle(theta_bemf + phase_lag);
@@ -217,8 +220,9 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     smo->Ebeta = sigmoid(Ibeta_err, smo->k_sigmoid) * smo->k_slide;
 
     /* 2. Compute saturation ratio for external PI gain scheduling (do NOT modify SMO internals) */
-    float sat_scale = 1.0f + smo->sat_alpha * I_sq;
-    smo->l_ratio = 1.0f / sat_scale;
+    float alpha = (smo->sat_alpha > 0.0f && !isnan(smo->sat_alpha)) ? smo->sat_alpha : 0.0f;
+    float sat_scale = 1.0f + alpha * I_sq;
+    smo->l_ratio = clampf(1.0f / sat_scale, 0.20f, 1.0f);
 
     /* Backward Euler Current Integration (using nominal L0 — observer gains are tuned for this) */
     smo->Ialpha_est = (smo->Ialpha_est + (Valpha - smo->Ealpha) * smo->dt_over_Ls) * smo->denom_inv;
@@ -247,9 +251,20 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     SMO_PLL_Track(smo);
 }
 
-CCMRAM_FUNC float SMO_GetAngle(SMO_Observer_t* smo) {
-    /* Advance angle by 1.5 PWM cycles to compensate for ADC sampling and PWM shadow register delay */
-    float theta_advance = (smo->omega_est / PI) * (1.5f * smo->dt);
+CCMRAM_FUNC float SMO_GetParkAngle(SMO_Observer_t* smo) {
+    return smo->theta_est;
+}
+
+CCMRAM_FUNC float SMO_GetPWMAngle(SMO_Observer_t* smo) {
+    /* PWM Hardware Delay Compensation (Total = 1.0 dt):
+     * - t = 0: ADC samples current at the Peak. Observer calculates theta_est for t=0.
+     * - t = 0.5 dt: Update Event occurs at the Valley. New CCR is loaded.
+     * - t = 0.5 dt to 1.5 dt: New voltage is applied to the motor.
+     * - t = 1.0 dt: The exact center (average) of the new voltage application.
+     * Since the voltage calculated now takes effect symmetrically around t = 1.0 dt,
+     * we must advance the PWM angle by exactly 1.0 dt to align it perfectly.
+     */
+    float theta_advance = (smo->omega_est / PI) * (1.0f * smo->dt);
     return normalize_angle(smo->theta_est + theta_advance);
 }
 
@@ -261,13 +276,13 @@ CCMRAM_FUNC float SMO_GetSpeedRPM(SMO_Observer_t* smo) {
     return (smo->omega_out / smo->poles) * (60.0f / TWO_PI);
 }
 
-void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha, float flux_linkage, float poles,
-                        float max_speed_rpm, float min_speed_rpm) {
+void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha,
+                        float flux_linkage, float poles, float max_speed_rpm, float min_speed_rpm) {
     smo->Rs = Rs;
     smo->Ls = Ls;
     smo->psi = flux_linkage;
     smo->Ls_inv = 1.0f / Ls;
-    smo->sat_alpha = sat_alpha;
+    smo->sat_alpha = (sat_alpha >= 0.0f && !isnan(sat_alpha)) ? sat_alpha : 0.0f;
     smo->poles = poles;
 
     /* Dynamically calculate PLL integral limits (max electrical speed rad/s) */
@@ -280,7 +295,6 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha
 
     /* Update Euler coefficients */
     smo->dt_over_Ls = smo->dt * smo->Ls_inv;
-    smo->tau_current = smo->Ls / (smo->Rs + smo->Req);
     smo->denom_inv = 1.0f / (1.0f + smo->Rs * smo->dt_over_Ls);
 }
 
@@ -349,19 +363,14 @@ void SMO_SlowTask(SMO_Observer_t* smo) {
         new_k_sigmoid = k_sig_min;
     }
 
-    float new_Req = new_k_slide / new_k_sigmoid;
-    float new_tau_current = smo->Ls / (smo->Rs + new_Req);
     float new_denom_inv = 1.0f / (1.0f + smo->Rs * smo->dt_over_Ls);
 
-    /* Atomic commit of observer parameters to prevent race condition with 48kHz ISR */
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
     smo->pll_kp = new_pll_kp;
     smo->pll_ki = new_pll_ki;
     smo->k_slide = new_k_slide;
     smo->k_sigmoid = new_k_sigmoid;
-    smo->Req = new_Req;
-    smo->tau_current = new_tau_current;
     smo->denom_inv = new_denom_inv;
     if (!primask) {
         __enable_irq();
