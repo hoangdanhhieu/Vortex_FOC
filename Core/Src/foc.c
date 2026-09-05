@@ -141,60 +141,67 @@ CCMRAM_FUNC void foc_apply_deadtime_compensation(float* out_a, float* out_b, flo
         return;
     }
 
-    /* Use COMMANDED currents instead of measured currents to determine polarity.
-     * Measured current near 0A is dominated by noise. If noise triggers deadtime
-     * compensation, it injects a huge voltage step, causing a real current spike,
-     * which the PI controller violently fights -> creating a massive limit cycle
-     * (the "whining" noise). Using reference current breaks this feedback loop. */
-    float sin_th, cos_th;
-    cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
+    /* 1. Calculate Modulation Index Fade-out Factor 
+     * As the maximum duty approaches max_duty, symmetrically reduce dt_comp 
+     * to prevent hard clamping and distortion of the 3rd harmonic injection. */
+    float current_max_duty = *out_a;
+    if (*out_b > current_max_duty) current_max_duty = *out_b;
+    if (*out_c > current_max_duty) current_max_duty = *out_c;
 
-    float Id_ref = g_foc.cmd.Id_ref;
-    float Iq_ref = g_foc.data.Iq_ref_cmd;
-
-    float I_alpha_ref = Id_ref * cos_th - Iq_ref * sin_th;
-    float I_beta_ref = Id_ref * sin_th + Iq_ref * cos_th;
-
-    float sign_a, sign_b, sign_c;
-    inverse_clarke_transform(I_alpha_ref, I_beta_ref, &sign_a, &sign_b, &sign_c);
-
-    float i_th = g_foc.cfg.motor_max_curr * 0.02f; /* 2% of max current for smooth interpolation */
-    if (i_th < 0.050f) {
-        i_th = 0.050f;
+    float max_limit = g_foc.max_duty;
+    float fade_start = max_limit * 0.90f; /* Start fading out at 90% of max duty */
+    
+    if (current_max_duty > fade_start) {
+        float fade_factor = (max_limit - current_max_duty) / (max_limit - fade_start);
+        if (fade_factor < 0.0f) fade_factor = 0.0f;
+        dt_comp *= fade_factor;
+    }
+    
+    if (dt_comp <= 0.0001f) {
+        return; /* Fully faded out or negligible */
     }
 
-    if (sign_a > i_th)
-        *out_a += dt_comp;
-    else if (sign_a < -i_th)
-        *out_a -= dt_comp;
-    else
-        *out_a += dt_comp * (sign_a / i_th);
+    /* 2. Use STF Filtered Currents to derive clean phase currents 
+     * Eliminates CORDIC calls and phase lag associated with reference currents */
+    float Ia, Ib, Ic;
+    inverse_clarke_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, &Ia, &Ib, &Ic);
 
-    if (sign_b > i_th)
-        *out_b += dt_comp;
-    else if (sign_b < -i_th)
-        *out_b -= dt_comp;
-    else
-        *out_b += dt_comp * (sign_b / i_th);
+    /* 3. Determine Deadtime Smoothing Threshold (i_th)
+     * Heuristic constraint based on Hardware Noise, PWM Current Ripple, and a 3% fallback.
+     */
+    float i_th_noise = g_foc.noise_profile.noise_pk_pk * 1.5f; 
+    float i_th_ripple = g_foc.data.Vbus / (4.0f * (float)PWM_FREQUENCY * g_foc.cfg.motor_ls);
+    float i_th_min = g_foc.cfg.motor_max_curr * 0.03f;
 
-    if (sign_c > i_th)
-        *out_c += dt_comp;
-    else if (sign_c < -i_th)
-        *out_c -= dt_comp;
-    else
-        *out_c += dt_comp * (sign_c / i_th);
+    float i_th = i_th_noise;
+    if (i_th_ripple > i_th) i_th = i_th_ripple;
+    if (i_th_min > i_th) i_th = i_th_min;
 
-    float max_duty = g_foc.max_duty;
-    if (*out_a < 0.0f)
-        *out_a = 0.0f;
-    else if (*out_a > max_duty)
-        *out_a = max_duty;
-    if (*out_b < 0.0f)
-        *out_b = 0.0f;
-    else if (*out_b > max_duty)
-        *out_b = max_duty;
-    if (*out_c < 0.0f)
-        *out_c = 0.0f;
-    else if (*out_c > max_duty)
-        *out_c = max_duty;
+    if (i_th < 0.050f) i_th = 0.050f; /* Absolute minimum sanity limit */
+    float inv_i_th = 1.0f / i_th;
+
+    /* 4. Apply Cubic Smoothstep Interpolation
+     * f(x) = 1.5x - 0.5x^3 ensures mathematically continuous derivative */
+    float x_a = Ia * inv_i_th;
+    if (x_a > 1.0f) *out_a += dt_comp;
+    else if (x_a < -1.0f) *out_a -= dt_comp;
+    else *out_a += dt_comp * (1.5f * x_a - 0.5f * x_a * x_a * x_a);
+
+    float x_b = Ib * inv_i_th;
+    if (x_b > 1.0f) *out_b += dt_comp;
+    else if (x_b < -1.0f) *out_b -= dt_comp;
+    else *out_b += dt_comp * (1.5f * x_b - 0.5f * x_b * x_b * x_b);
+
+    float x_c = Ic * inv_i_th;
+    if (x_c > 1.0f) *out_c += dt_comp;
+    else if (x_c < -1.0f) *out_c -= dt_comp;
+    else *out_c += dt_comp * (1.5f * x_c - 0.5f * x_c * x_c * x_c);
+
+    /* 5. Final Safety Clamp */
+    if (*out_a < 0.0f) *out_a = 0.0f;
+    else if (*out_a > max_limit) *out_a = max_limit;
+    if (*out_b < 0.0f) *out_b = 0.0f;
+    else if (*out_b > max_limit) *out_b = max_limit;
+    if (*out_c < 0.0f) *out_c = 0.0f;
+    else if (*out_c > max_limit) *out_c = max_limit;
 }

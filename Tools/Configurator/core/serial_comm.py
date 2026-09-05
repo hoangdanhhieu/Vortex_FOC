@@ -9,7 +9,7 @@ from PySide6.QtCore import QThread, Signal, QMutex, QMutexLocker
 
 from core.protocol import (
     PacketParser, Packet, RspType,
-    parse_ack, parse_value, parse_status, parse_param_all, parse_plot,
+    parse_ack, parse_value, parse_status, parse_param_all, parse_sample_data,
 )
 
 
@@ -24,7 +24,7 @@ class SerialThread(QThread):
     value_received = Signal(int, float)     # param_id, value
     status_received = Signal(object)        # status dict
     params_received = Signal(object)        # {pid: value}
-    plot_received = Signal(object)          # (Vd, Vq, Id, Iq, theta, rpm)
+    sample_data_received = Signal(object)   # (offset, size, raw_data_list)
     raw_tx = Signal(bytes)                  # for console
     raw_rx = Signal(bytes)                  # for console
 
@@ -94,15 +94,13 @@ class SerialThread(QThread):
                     packets = self._parser.feed(data)
                     accumulated_plots = []
                     for pkt in packets:
-                        self._dispatch(pkt, accumulated_plots)
-                    if accumulated_plots:
-                        self.plot_received.emit(accumulated_plots)
+                        self._dispatch(pkt)
             except Exception as e:
                 if self._running:
                     self.error.emit(str(e))
                 break
 
-    def _dispatch(self, pkt: Packet, accumulated_plots: list):
+    def _dispatch(self, pkt: Packet):
         try:
             if pkt.ptype == RspType.ACK:
                 cmd, ok = parse_ack(pkt.payload)
@@ -116,9 +114,9 @@ class SerialThread(QThread):
             elif pkt.ptype == RspType.PARAM_ALL:
                 params = parse_param_all(pkt.payload)
                 self.params_received.emit(params)
-            elif pkt.ptype == RspType.PLOT:
-                vals = parse_plot(pkt.payload)
-                accumulated_plots.extend(vals)
+            elif pkt.ptype == RspType.SAMPLE_DATA:
+                offset, size, raw_data = parse_sample_data(pkt.payload)
+                self.sample_data_received.emit((offset, size, raw_data))
         except Exception:
             pass
 

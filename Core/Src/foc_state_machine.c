@@ -86,6 +86,8 @@ void FOC_Init(void) {
     g_foc.data.theta_elec = 0.0f;
     g_foc.data.omega_elec = 0.0f;
     g_foc.data.speed_rpm = 0.0f;
+    g_foc.data.e_real_flt = 0.0f;
+    g_foc.data.e_expect_flt = 0.0f;
     g_foc.status.in_transition = 0;
 
     g_foc.startup.theta = 0.0f;
@@ -183,11 +185,13 @@ void FOC_Start(void) {
         PI_SetIntLimits(&g_foc.ctrl.id, -v_limit, v_limit);
         PI_SetLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
         PI_SetIntLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
+        g_foc.data.e_real_flt = 0.0f;
+        g_foc.data.e_expect_flt = 0.0f;
     }
 }
 
 void FOC_Stop(void) {
-    if (g_foc.status.state == FOC_STATE_STARTUP || 1) {
+    if (g_foc.status.state == FOC_STATE_STARTUP || 1) {  // STOP
         s_stopping = 0;
     } else if (g_foc.status.state == FOC_STATE_RUN) {
         s_saved_speed_target = g_foc.cmd.speed_ref_target;
@@ -207,7 +211,6 @@ void FOC_Stop(void) {
 CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     if (!foc_initialized) return;
     if (g_foc.status.state != FOC_STATE_RUN) {
-        FOC_ResetClosedLoopCounter();
         g_foc.ctrl.smo.enable_harmonic_comp = 0;
     }
 
@@ -290,13 +293,8 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
             FOC_StateFault();
         }
 
-        /* Plot streaming: snapshot current data every N-th ISR cycle */
-        static uint16_t plot_div = 0;
-        if (g_foc.plot.enabled && ++plot_div >= PLOT_DECIMATION) {
-            plot_div = 0;
-            Comm_PushPlotSample7(g_foc.data.Ia, g_foc.data.Ib, g_foc.data.Ic, g_foc.data.Vd,
-                                 g_foc.data.Vq, g_foc.data.theta_elec, g_foc.cmd.Iq_ref);
-        }
+        /* Telemetry snapshot sampling */
+        Comm_ProcessSampling();
 
         foc_set_pwm_duty(0.5f, 0.5f, 0.5f);
         g_foc.status.run_counter++;
@@ -364,23 +362,8 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
             break;
     }
 
-    /* Plot streaming: snapshot current data every N-th ISR cycle */
-    {
-        static uint16_t plot_div = 0;
-        if (g_foc.plot.enabled && ++plot_div >= PLOT_DECIMATION) {
-            plot_div = 0;
-            float ia_plot, ib_plot, ic_plot;
-            inverse_clarke_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, &ia_plot,
-                                     &ib_plot, &ic_plot);
-            if (g_foc.status.reverse < 0.0f) {
-                float t = ib_plot;
-                ib_plot = ic_plot;
-                ic_plot = t;
-            }
-            Comm_PushPlotSample7(ia_plot, ib_plot, ic_plot, g_foc.data.Vd, g_foc.data.Vq,
-                                 g_foc.data.theta_elec, g_foc.cmd.Iq_ref);
-        }
-    }
+    /* Telemetry snapshot sampling */
+    Comm_ProcessSampling();
 
     float out_a = g_foc.data.duty_a;
     float out_b = g_foc.data.duty_b;
@@ -499,7 +482,24 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     float smo_omega = SMO_GetSpeed(&g_foc.ctrl.smo);
     float smo_speed_rpm = SMO_GetSpeedRPM(&g_foc.ctrl.smo);
 
-    FOC_Transition_Update(smo_theta_park, smo_theta_pwm, smo_omega, smo_speed_rpm);
+    float ed = g_foc.data.Vd - g_foc.ctrl.smo.Rs * g_foc.data.Id +
+               smo_omega * g_foc.ctrl.smo.Ls * g_foc.data.Iq;
+    float eq = g_foc.data.Vq - g_foc.ctrl.smo.Rs * g_foc.data.Iq -
+               smo_omega * g_foc.ctrl.smo.Ls * g_foc.data.Id;
+    float e_real = sqrtf(ed * ed + eq * eq);
+    float e_expect = g_foc.cfg.motor_flux * fabsf(smo_omega);
+    const float e_lpf_alpha = 100.0f * CONTROL_PERIOD;
+    g_foc.data.e_real_flt += e_lpf_alpha * (e_real - g_foc.data.e_real_flt);
+    g_foc.data.e_expect_flt += e_lpf_alpha * (e_expect - g_foc.data.e_expect_flt);
+
+    if (FOC_IsInTransition()) {
+        FOC_Transition_Update(smo_theta_park, smo_theta_pwm, smo_omega, smo_speed_rpm);
+    } else {
+        g_foc.data.theta_park = smo_theta_park;
+        g_foc.data.theta_elec = smo_theta_pwm;
+        g_foc.data.omega_elec = smo_omega;
+        g_foc.data.speed_rpm = smo_speed_rpm;
+    }
 
     float sin_th, cos_th;
     cordic_sincos(g_foc.data.theta_park, &cos_th, &sin_th);
@@ -511,7 +511,9 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
         BIST_Update(&g_foc.ctrl.bist, (float*)&g_foc.cmd.Iq_ref);
     }
 
-    g_foc.cmd.Id_ref = 0.0f;
+    if (!g_foc.status.in_transition) {
+        g_foc.cmd.Id_ref = 0.0f;
+    }
     float target_iq = saturatef(g_foc.cmd.Iq_ref, g_foc.cfg.motor_max_curr);
     float max_diq = 1000.0f * CONTROL_PERIOD;
     g_foc.data.Iq_ref_cmd += clampf(target_iq - g_foc.data.Iq_ref_cmd, -max_diq, max_diq);
@@ -521,7 +523,7 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     g_foc.ctrl.id.Kp = g_foc.cfg.kp_id * l_ratio;
     g_foc.ctrl.iq.Kp = g_foc.cfg.kp_iq * l_ratio;
 
-    float ff_gain = 0.5f;
+    float ff_gain = 0.9f;
     float omega_Ls = ff_gain * g_foc.data.omega_elec * (g_foc.cfg.motor_ls * l_ratio);
     float E_bemf = ff_gain * g_foc.data.omega_elec * g_foc.cfg.motor_flux;
     float max_v = SQRT3_INV * 2.0f * (MAX_DUTY_HIGH - 0.5f) * g_foc.data.Vbus;
@@ -541,8 +543,22 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     } else {
         float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
         float Iq_error = g_foc.data.Iq_ref_cmd - g_foc.data.Iq;
+
+        /* 1. Calculate unconstrained Vd and apply limits */
         g_foc.data.Vd = PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq;
-        g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + omega_Ls * g_foc.data.Id + E_bemf;
+
+        /* 2. Calculate available Vq margin based on SVPWM circle and Vd */
+        float vd_clamped = saturatef(g_foc.data.Vd, max_v);
+        float vq_max_sq = max_v * max_v - vd_clamped * vd_clamped;
+        float vq_max_avail = (vq_max_sq > 0.0f) ? sqrtf(vq_max_sq) : 0.0f;
+
+        /* 3. Dynamic PI Limits for Iq (accounting for feedforward terms) */
+        float ff_q = omega_Ls * g_foc.data.Id + E_bemf;
+        g_foc.ctrl.iq.out_max = vq_max_avail - ff_q;
+        g_foc.ctrl.iq.out_min = -vq_max_avail - ff_q;
+
+        /* 4. Update Iq PI controller with dynamic limits */
+        g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + ff_q;
     }
 
     float theta_adv = g_foc.data.theta_elec;

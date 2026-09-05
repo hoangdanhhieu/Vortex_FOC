@@ -30,14 +30,16 @@ class CmdType(IntEnum):
     BIST = 0x10
     VOLTAGE = 0x11
     IDENT_FLUX = 0x12
-
+    IDENT_INERTIA = 0x13
+    SAMPLE_START = 0x14
+    SAMPLE_READ = 0x15
 
 class RspType(IntEnum):
     ACK = 0x81
     VALUE = 0x82
     STATUS = 0x83
     PARAM_ALL = 0x84
-    PLOT = 0x90
+    SAMPLE_DATA = 0x91
 
 
 class ParamId(IntEnum):
@@ -65,11 +67,15 @@ class ParamId(IntEnum):
     
     # Live Params
     SPD_REF = 38; TRQ_REF = 39; VBUS = 40; RPM = 41
-    ID_MEAS = 42; IQ_MEAS = 43; IA = 44; IB = 45
-    ID_RS_MEAS = 46; ID_LS_MEAS = 47; ID_ISAT_MEAS = 48
-    ID_ALPHA_MEAS = 49; ID_DT_MEAS = 50; ID_FREQ_MEAS = 51
-    ID_FLUX_MEAS = 52; ID_KV_MEAS = 53
-    PID_COUNT = 54
+    ID_MEAS = 42; IQ_MEAS = 43; IA = 44; IB = 45; IC = 46
+    DUTY_A = 47; DUTY_B = 48; DUTY_C = 49; VD = 50; VQ = 51
+    ID_RS_MEAS = 52; ID_LS_MEAS = 53; ID_ISAT_MEAS = 54
+    ID_ALPHA_MEAS = 55; ID_DT_MEAS = 56; ID_FREQ_MEAS = 57
+    ID_FLUX_MEAS = 58; ID_KV_MEAS = 59
+    ID_INERTIA_MEAS = 60; ID_B0_MEAS = 61
+    USER_PLOT1 = 62; USER_PLOT2 = 63; USER_PLOT3 = 64
+    THETA_ELEC = 65
+    PID_COUNT = 66
 
 
 
@@ -121,8 +127,17 @@ def build_dir(reverse: bool) -> bytes:
     return build_packet(CmdType.DIR, bytes([1 if reverse else 0]))
 
 
-def build_plot(enable: bool) -> bytes:
-    return build_packet(CmdType.PLOT, bytes([1 if enable else 0]))
+def build_sample_start(channels: list[int], decimation: int) -> bytes:
+    """channels: list of up to 4 ParamIDs"""
+    num_ch = len(channels)
+    payload = bytearray([num_ch, decimation])
+    for ch in channels:
+        payload.append(ch)
+    return build_packet(CmdType.SAMPLE_START, bytes(payload))
+
+def build_sample_read(offset: int, size: int) -> bytes:
+    payload = struct.pack('<HH', offset, size)
+    return build_packet(CmdType.SAMPLE_READ, payload)
 
 def build_bist(mode: int, amp: float, offset: float, freq: float) -> bytes:
     """Build BIST profile command: mode (1), amp (4), offset (4), freq (4)"""
@@ -224,29 +239,19 @@ def parse_param_all(payload: bytes) -> dict[int, float]:
     return params
 
 
-def parse_plot(payload: bytes) -> list[tuple[float, ...]]:
-    """Parse PLOT data batch: decodes 7 channels and reconstructs Id, Iq via Clarke/Park."""
-    samples = []
-    sample_size = 14  # 7 variables * 2 bytes (int16_t): Ia, Ib, Ic, Vd, Vq, theta, Iq_ref
-    for offset in range(0, len(payload), sample_size):
-        if offset + sample_size <= len(payload):
-            raw = struct.unpack('<7h', payload[offset:offset+sample_size])
-            ia = raw[0] / 1000.0
-            ib = raw[1] / 1000.0
-            ic = raw[2] / 1000.0
-            vd = raw[3] / 1000.0
-            vq = raw[4] / 1000.0
-            theta = raw[5] / 10000.0
-            iq_ref = raw[6] / 1000.0
-
-            # Reconstruct Id, Iq via Clarke + Park transform
-            th_rad = theta * math.pi
-            sin_th = math.sin(th_rad)
-            cos_th = math.cos(th_rad)
-            i_alpha = ia
-            i_beta = 0.5773502691896257 * (ib - ic)
-            id_meas = i_alpha * cos_th + i_beta * sin_th
-            iq_meas = -i_alpha * sin_th + i_beta * cos_th
-
-            samples.append((vd, vq, id_meas, iq_meas, iq_ref, theta, ia, ib, ic, 0.0, 0.0, 0.0))
-    return samples
+def parse_sample_data(payload: bytes) -> tuple[int, int, list[int]]:
+    """Parse SAMPLE_DATA: returns (offset, size, raw_data_list)"""
+    if len(payload) < 4:
+        return 0, 0, []
+    offset, size = struct.unpack('<HH', payload[0:4])
+    
+    expected_len = 4 + size * 2
+    if len(payload) < expected_len:
+        # Truncated packet
+        size = (len(payload) - 4) // 2
+        
+    raw_data = []
+    if size > 0:
+        raw_data = list(struct.unpack(f'<{size}h', payload[4:4+size*2]))
+        
+    return offset, size, raw_data

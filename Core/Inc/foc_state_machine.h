@@ -19,17 +19,17 @@
 /*===========================================================================*/
 
 typedef enum {
-    FOC_STATE_IDLE = 0,       /**< Motor stopped, waiting for start command */
-    FOC_STATE_CALIBRATION,    /**< ADC offset calibration */
-    FOC_STATE_DETECT,         /**< BEMF detection (flying start or normal) */
-    FOC_STATE_FLYING_START,   /**< PLL locking on BEMF for flying start */
-    FOC_STATE_ALIGN,          /**< Rotor alignment */
-    FOC_STATE_STARTUP,        /**< Open-loop ramp-up */
-    FOC_STATE_RUN,            /**< Closed-loop FOC running */
-    FOC_STATE_STOP,           /**< Controlled stop */
-    FOC_STATE_FAULT,          /**< Fault condition */
-    FOC_STATE_SELF_COMMISSION,/**< Motor parameter identification */
-    FOC_STATE_COAST_FLUX_ID   /**< Freewheeling BEMF measurement */
+    FOC_STATE_IDLE = 0,        /**< Motor stopped, waiting for start command */
+    FOC_STATE_CALIBRATION,     /**< ADC offset calibration */
+    FOC_STATE_DETECT,          /**< BEMF detection (flying start or normal) */
+    FOC_STATE_FLYING_START,    /**< PLL locking on BEMF for flying start */
+    FOC_STATE_ALIGN,           /**< Rotor alignment */
+    FOC_STATE_STARTUP,         /**< Open-loop ramp-up */
+    FOC_STATE_RUN,             /**< Closed-loop FOC running */
+    FOC_STATE_STOP,            /**< Controlled stop */
+    FOC_STATE_FAULT,           /**< Fault condition */
+    FOC_STATE_SELF_COMMISSION, /**< Motor parameter identification */
+    FOC_STATE_COAST_FLUX_ID    /**< Freewheeling BEMF measurement */
 } FOC_State_t;
 
 typedef enum {
@@ -85,9 +85,10 @@ typedef struct {
         float Vd, Vq;        /**< Park rotating frame control voltages (d-axis, q-axis) [V] */
         float Iq_ref_cmd;    /**< Slew-rate limited active Iq current command [A] */
         float Valpha, Vbeta; /**< Inverse Park stationary frame output voltages [V] */
-        float theta_park; /**< Electrical rotor position angle for Park transform (no hardware delay compensation) */
-        float theta_elec; /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0, where 1.0 =
-                             +pi rad] */
+        float theta_park; /**< Electrical rotor position angle for Park transform (no hardware delay
+                             compensation) */
+        float theta_elec; /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0,
+                             where 1.0 = +pi rad] */
         float omega_elec; /**< Electrical angular velocity [rad/s] */
         float speed_rpm;  /**< Mechanical rotational speed [RPM] */
         float Vbus;       /**< DC bus supply voltage [V] */
@@ -96,6 +97,8 @@ typedef struct {
             duty_c;    /**< Inverter phase PWM duty cycles [dimensionless: 0.0 to 1.0] */
         float i_scale; /**< ADC raw count to phase current conversion factor [A/count] */
         float v_scale; /**< ADC raw count to phase voltage conversion factor [V/count] */
+        float e_real_flt;   /**< Filtered real Back-EMF vector magnitude [V] */
+        float e_expect_flt; /**< Filtered expected Back-EMF vector magnitude [V] */
     } data;
 
     /*--- References / Commands ---*/
@@ -151,15 +154,9 @@ typedef struct {
 
     /*--- Plotting (Telemetry Snapshot) ---*/
     struct {
-        volatile uint8_t
-            enabled; /**< High-speed streaming plot enable flag [0=Disabled, 1=Enabled] */
-        volatile uint8_t ready; /**< Telemetry packet ready flag [0=Busy, 1=Ready] */
-        float Vd, Vq;           /**< Telemetry snapshot: d/q voltages [V] */
-        float Id, Iq;           /**< Telemetry snapshot: d/q currents [A] */
-        float Iq_ref;           /**< Telemetry snapshot: active Iq target [A] */
-        float theta_elec; /**< Telemetry snapshot: electrical angle [normalized: -1.0 to 1.0] */
-        float Ia, Ib, Ic; /**< Telemetry snapshot: 3-phase filtered currents [A] */
-        float duty_a, duty_b, duty_c; /**< Telemetry snapshot: phase duty cycles [0.0 to 1.0] */
+        float user_plot1; /**< Custom debug variable 1 to route to GUI */
+        float user_plot2; /**< Custom debug variable 2 to route to GUI */
+        float user_plot3; /**< Custom debug variable 3 to route to GUI */
     } plot;
 
 } FOC_Control_t;

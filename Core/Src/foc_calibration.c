@@ -181,7 +181,7 @@ void FOC_StateCalibration(void) {
         if (pk_pk_c > noise_pk_pk) noise_pk_pk = pk_pk_c;
 
         g_foc.noise_profile.noise_rms = noise_rms;
-        g_foc.noise_profile.noise_pk_pk = 6.0f * noise_rms;
+        g_foc.noise_profile.noise_pk_pk = noise_pk_pk;
         g_foc.noise_profile.is_flat_thr =
             clampf(0.5f * g_foc.noise_profile.noise_pk_pk, 0.003f, 0.500f);
         g_foc.noise_profile.i_inj_min = clampf(3.0f * noise_rms, 0.020f, 1.0f);
@@ -224,10 +224,10 @@ void FOC_StateCalibration(void) {
         } else {
             FOC_SetPhaseVoltageDMA(0);
             FOC_EnableDrivers(1);
-            
+
             /* Re-initialize MotorID now that noise_rms has been properly calibrated */
             MotorID_Start();
-            
+
             g_foc.status.state = FOC_STATE_SELF_COMMISSION;
         }
     }

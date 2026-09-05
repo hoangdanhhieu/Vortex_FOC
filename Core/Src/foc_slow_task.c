@@ -12,10 +12,12 @@
 #include "math.h"
 #include "peripheral_init.h"
 #include "foc_input.h"
+#include "motor_id.h"
 
 /* Safety check state */
-static uint32_t stall_counter = 0;      /* Stall timer (ticks) */
-static uint32_t ground_fault_count = 0; /* Ground fault deglitch counter */
+static uint32_t stall_counter = 0;       /* Stall timer (ticks) */
+static uint32_t ground_fault_count = 0;  /* Ground fault deglitch counter */
+static uint32_t current_sat_counter = 0; /* Sustained current saturation overload timer */
 
 extern volatile float ADC_Vref;
 
@@ -54,6 +56,7 @@ void FOC_SlowTask(void) {
     }
 
     if (g_foc.status.state == FOC_STATE_RUN) {
+        /* 1. Ground fault protection */
         if (g_foc.data.duty_a < 0.85f && g_foc.data.duty_b < 0.85f && g_foc.data.duty_c < 0.85f &&
             g_foc.data.duty_a > 0.15f && g_foc.data.duty_b > 0.15f && g_foc.data.duty_c > 0.15f) {
             float current_sum = g_foc.data.Ia + g_foc.data.Ib + g_foc.data.Ic;
@@ -65,6 +68,7 @@ void FOC_SlowTask(void) {
                     FOC_EnableDrivers(0);
                     g_foc.status.fault = FOC_FAULT_GROUND;
                     g_foc.status.state = FOC_STATE_FAULT;
+                    return;
                 }
             } else {
                 if (ground_fault_count > 0) ground_fault_count--;
@@ -73,16 +77,40 @@ void FOC_SlowTask(void) {
             if (ground_fault_count > 0) ground_fault_count--;
         }
 
-        if (g_foc.cfg.fault_stall_enable) {
-            float threshold_c = g_foc.cfg.fault_stall_current;
-            float threshold_c_sq = threshold_c * threshold_c;
+        /* 2. Observer Integrity & Overspeed Protection (Layer 2) */
+        if (fabsf(g_foc.data.speed_rpm) > g_foc.cfg.motor_max_spd * 1.25f ||
+            isnan(g_foc.data.omega_elec) || isinf(g_foc.data.omega_elec)) {
+            FOC_EnableDrivers(0);
+            g_foc.status.fault = FOC_FAULT_OBSERVER_FAIL;
+            g_foc.status.state = FOC_STATE_FAULT;
+            return;
+        }
 
-            if (g_foc.ctrl.smo.current_err_sq > threshold_c_sq) {
+        /* 3. Hybrid Closed-Loop Stall Protection (Layer 1) */
+        if (g_foc.cfg.fault_stall_enable) {
+            float iq_abs = fabsf(g_foc.data.Iq);
+            float stall_i_thr = g_foc.cfg.fault_stall_current;
+            if (stall_i_thr < 0.5f || stall_i_thr > g_foc.cfg.motor_max_curr) {
+                stall_i_thr = 0.70f * g_foc.cfg.motor_max_curr;
+            }
+
+            /* Condition A: Significant current effort (motor trying hard to produce torque) */
+            uint8_t is_high_current = (iq_abs >= stall_i_thr) || (iq_abs >= 0.70f * g_foc.cfg.motor_max_curr);
+
+            /* Condition B1: BEMF collapsed despite expected speed (catches observer hallucination) */
+            uint8_t is_bemf_collapsed = (g_foc.data.e_expect_flt > 0.5f) &&
+                                        (g_foc.data.e_real_flt < 0.35f * g_foc.data.e_expect_flt);
+
+            /* Condition B2: Measured speed collapsed below minimum sensorless operational threshold (catches observer collapse) */
+            uint8_t is_speed_collapsed = (fabsf(g_foc.data.speed_rpm) < g_foc.cfg.fault_stall_speed);
+
+            if (is_high_current && (is_bemf_collapsed || is_speed_collapsed)) {
                 stall_counter++;
                 if (stall_counter >= g_foc.cfg.fault_stall_time_ms) {
                     FOC_EnableDrivers(0);
                     g_foc.status.fault = FOC_FAULT_STALL;
                     g_foc.status.state = FOC_STATE_FAULT;
+                    return;
                 }
             } else {
                 if (stall_counter > 0) stall_counter--;
@@ -90,12 +118,28 @@ void FOC_SlowTask(void) {
         } else {
             stall_counter = 0;
         }
+
+        /* 4. Continuous Current Saturation / Thermal Overload Protection (Layer 3) */
+        if (fabsf(g_foc.data.Iq) >= 0.90f * g_foc.cfg.motor_max_curr) {
+            current_sat_counter++;
+            if (current_sat_counter >= 3000) { /* 3.0 seconds at >90% max current */
+                FOC_EnableDrivers(0);
+                g_foc.status.fault = FOC_FAULT_STALL;
+                g_foc.status.state = FOC_STATE_FAULT;
+                return;
+            }
+        } else {
+            if (current_sat_counter > 0) current_sat_counter--;
+        }
     } else {
         ground_fault_count = 0;
         stall_counter = 0;
+        current_sat_counter = 0;
     }
 
     if (g_foc.status.state == FOC_STATE_RUN) {
+        MotorID_InertiaSlowTask(); /* Offline inertia measurement hook */
+        
         if (g_foc.status.control_mode == FOC_MODE_SPEED) {
             float accel_rate =
                 g_foc.cfg.speed_ramp_accel * RPM_TO_RAD * g_foc.cfg.motor_poles * 0.001f;

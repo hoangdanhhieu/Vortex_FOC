@@ -212,7 +212,7 @@ extern volatile float ADC_Vref;
 /** Speed PI output limits [A] (Iq reference) */
 #define PI_SPEED_OUT_MAX MOTOR_CONT_CURRENT
 /* Limit regenerative braking to -1.0A to prevent Overvoltage trips on power supplies */
-#define PI_SPEED_OUT_MIN (-1.0f) 
+#define PI_SPEED_OUT_MIN (-1.0f)
 
 /** Speed PI integral limits [A] - smaller than output to reduce overshoot */
 #define PI_SPEED_INT_MAX (PI_SPEED_OUT_MAX * 0.5f) /* 50% of output max */
@@ -257,6 +257,11 @@ extern volatile float ADC_Vref;
 /** Open-loop startup current [A] */
 #define STARTUP_CURRENT 0.5f
 
+/** Minimum continuous lock duration required before closed-loop handoff [ms] */
+#define HANDOFF_LOCK_DURATION_MS 500.0f
+#define HANDOFF_LOCK_SAMPLES \
+    ((uint32_t)(HANDOFF_LOCK_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY))
+
 /** Open-loop startup voltage [V] */
 #define STARTUP_VOLTAGE_MIN 0.5f
 #define STARTUP_VOLTAGE_MAX 1.0f
@@ -272,6 +277,15 @@ extern volatile float ADC_Vref;
 
 /** Startup timeout [ms] - set to 0 to disable */
 #define STARTUP_TIMEOUT_MS 0
+
+/** Startup Stall / Desynchronization Detection */
+#define STARTUP_STALL_SPEED_RATIO                                                                \
+    0.50f                              /* Start evaluating stall when omega >= 70% handoff_omega \
+                                        */
+#define STARTUP_STALL_BEMF_RATIO 0.60f /* Consider stalled when e_real < 40% of e_expect */
+#define STARTUP_STALL_TIMEOUT_MS 50.0f /* Continuous stall hold time before tripping [ms] */
+#define STARTUP_STALL_SAMPLES \
+    ((uint32_t)(STARTUP_STALL_TIMEOUT_MS * 0.001f * (float)CONTROL_FREQUENCY))
 /*===========================================================================*/
 /* Safety / Fault Protection                                                 */
 /*===========================================================================*/

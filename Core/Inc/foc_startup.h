@@ -7,6 +7,7 @@
 #define FOC_STARTUP_H
 
 #include <stdint.h>
+
 #include "foc_config.h"
 
 /**
@@ -18,11 +19,6 @@ void FOC_Startup_Reset(void);
  * @brief Force transition to complete immediately (used by Flying Start)
  */
 void FOC_Startup_ForceComplete(void);
-
-/**
- * @brief Reset closed loop execution counter
- */
-void FOC_ResetClosedLoopCounter(void);
 
 /**
  * @brief State handler for FOC_STATE_ALIGN (aligns rotor to 0 electrical angle)
@@ -45,6 +41,12 @@ uint8_t FOC_IsInTransition(void);
  * @param smo_omega Estimated electrical speed from SMO
  * @param smo_speed_rpm Estimated mechanical RPM from SMO
  */
-CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega, float smo_speed_rpm);
+CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega,
+                                       float smo_speed_rpm);
 
+/**
+ * @brief Calculate recommended sensorless handoff speed based on physical noise floor
+ * @return Recommended handoff speed in RPM
+ */
+float FOC_CalculateRecommendedHandoffRpm(void);
 #endif /* FOC_STARTUP_H */

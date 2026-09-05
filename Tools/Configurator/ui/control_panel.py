@@ -99,8 +99,7 @@ class ControlPanel(QGroupBox):
         self.lbl_state = QLabel("State: —")
         self.lbl_speed = QLabel("Speed: — RPM")
         self.lbl_vbus = QLabel("Vbus: — V")
-        self.lbl_ibus = QLabel("Ibus: — A")
-        for lbl in [self.lbl_state, self.lbl_speed, self.lbl_vbus, self.lbl_ibus]:
+        for lbl in [self.lbl_state, self.lbl_speed, self.lbl_vbus]:
             status_layout.addWidget(lbl)
         layout.addWidget(status_group)
 
@@ -113,12 +112,9 @@ class ControlPanel(QGroupBox):
 
         # Connect status signal
         self._serial.status_received.connect(self._update_status)
-        self._serial.plot_received.connect(self._update_ibus_from_plot)
 
         # Cache variables
         self._last_vbus = 0.0
-        self._ibus_filtered = 0.0
-        self._ibus_alpha = 0.005
 
     def set_enabled_state(self, enabled: bool):
         """Update UI state based on connection status."""
@@ -172,21 +168,6 @@ class ControlPanel(QGroupBox):
         self.dir_combo.blockSignals(True)
         self.dir_combo.setCurrentIndex(dir_val)
         self.dir_combo.blockSignals(False)
-
-    def _update_ibus_from_plot(self, plot_data_list: list):
-        """Calculates Ibus from PLOT data (Vd, Vq, Id, Iq) and caches."""
-        if not plot_data_list:
-            return
-        plot_data = plot_data_list[-1]
-        if len(plot_data) >= 4 and self._last_vbus > 2.0:
-            vd, vq, id_meas, iq_meas = plot_data[:4]
-            # Power conservation for amplitude-invariant transform: P_bus = 1.5 * (Vd*Id + Vq*Iq)
-            ibus_raw = 1.5 * (vd * id_meas + vq * iq_meas) / self._last_vbus
-            
-            # Exponential Moving Average (EMA) filter for stable UI display
-            self._ibus_filtered = (self._ibus_alpha * ibus_raw) + ((1.0 - self._ibus_alpha) * self._ibus_filtered)
-            
-            self.lbl_ibus.setText(f"Ibus: {self._ibus_filtered:.2f} A")
 
     def request_status(self):
         self._serial.send(protocol.build_simple(protocol.CmdType.STATUS))

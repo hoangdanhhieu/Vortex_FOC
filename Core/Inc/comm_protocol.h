@@ -18,8 +18,7 @@
 #define COMM_HEADER 0xAA
 #define COMM_MAX_PAYLOAD 255
 
-/** Streaming decimation: 48kHz / 2 = 24kHz plot rate */
-#define PLOT_DECIMATION 1
+
 
 /*===========================================================================*/
 /* Command Types (PC → MCU)                                                  */
@@ -43,6 +42,9 @@
 #define CMD_BIST 0x10      /**< Built-In Self Test Profiler settings */
 #define CMD_VOLTAGE 0x11   /**< Set voltage ref: pct(4B float) */
 #define CMD_IDENT_FLUX 0x12/**< Trigger offline flux identification */
+#define CMD_IDENT_INERTIA 0x13/**< Trigger offline inertia identification */
+#define CMD_SAMPLE_START 0x14 /**< Start sampling to RAM: channels, decimation */
+#define CMD_SAMPLE_READ  0x15 /**< Read sampled data: offset, size */
 
 /*===========================================================================*/
 /* Response Types (MCU → PC)                                                 */
@@ -55,6 +57,7 @@
 #define RSP_PLOT                                                                     \
     0x90 /**< Stream: Vd,Vq,Id,Iq,Iq_ref,theta,Ia,Ib,Ic,duty_a,duty_b,duty_c (12x2B) \
           */
+#define RSP_SAMPLE_DATA 0x91 /**< Sample chunk: offset(2B), size(2B), data... */
 
 /*===========================================================================*/
 /* Parameter IDs                                                             */
@@ -74,6 +77,12 @@ enum {
     PID_IQ_MEAS,
     PID_IA,
     PID_IB,
+    PID_IC,
+    PID_DUTY_A,
+    PID_DUTY_B,
+    PID_DUTY_C,
+    PID_VD,
+    PID_VQ,
     PID_ID_RS_MEAS,
     PID_ID_LS_MEAS,
     PID_ID_ISAT_MEAS,
@@ -82,6 +91,12 @@ enum {
     PID_ID_FREQ_MEAS,
     PID_ID_FLUX_MEAS,
     PID_ID_KV_MEAS,
+    PID_ID_INERTIA_MEAS,
+    PID_ID_B0_MEAS,
+    PID_USER_PLOT1,
+    PID_USER_PLOT2,
+    PID_USER_PLOT3,
+    PID_THETA_ELEC,
     PID_COUNT
 };
 
@@ -106,16 +121,9 @@ void Comm_PushByte(uint8_t byte);
 void Comm_Update(void);
 
 /**
- * @brief Push a 7-channel plot sample (Ia, Ib, Ic, Vd, Vq, theta, Iq_ref) into ring buffer from 48
- * kHz ISR
+ * @brief Process high-frequency snapshot sampling (Call from 48kHz ISR)
  */
-void Comm_PushPlotSample7(float Ia, float Ib, float Ic, float Vd, float Vq, float theta,
-                          float Iq_ref);
-
-/**
- * @brief Send plot streaming packet from ring buffer (Called from main loop)
- */
-void Comm_SendPlotPacket(void);
+void Comm_ProcessSampling(void);
 
 /**
  * @brief Send status packet

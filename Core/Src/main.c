@@ -29,7 +29,7 @@ volatile uint32_t saved_r3 = 0;
 volatile uint32_t saved_r12 = 0;
 volatile uint32_t saved_psr = 0;
 
-uint8_t adc_isr_flag = 0;
+volatile uint8_t adc_isr_flag = 0;
 volatile float ADC_Vref = 3.3f;
 uint16_t input = 0;
 
@@ -97,8 +97,6 @@ int main(void) {
     /* Main Superloop */
     while (1) {
         Comm_Update();
-
-        Comm_SendPlotPacket();
 
         if (adc_isr_flag == 1) {
             LL_IWDG_ReloadCounter(IWDG);

@@ -22,6 +22,7 @@ typedef enum {
     MOTOR_ID_STATE_MEASURE_RS,          /* 2-point DC Rs measurement (Settle-Ramp)  */
     MOTOR_ID_STATE_FREQ_DETECT,         /* 10 ms probe at 1000 Hz to select freq   */
     MOTOR_ID_STATE_MEASURE_SAT_PROFILE, /* 6-level DC bias + AC injection + ZOH Inv */
+    MOTOR_ID_STATE_MEASURE_INERTIA,     /* Closed-loop speed step integral */
     MOTOR_ID_STATE_COMPLETE,
     MOTOR_ID_STATE_ERROR
 } MotorID_State_t;
@@ -40,6 +41,8 @@ typedef struct {
     float selected_freq_hz; /* Selected AC injection freq   [Hz]    */
     float measured_flux;    /* Identified permanent magnet flux [Wb]*/
     float measured_kv;      /* Calculated Motor KV              [RPM/V]*/
+    float measured_b0;      /* Identified system gain b0        [rad/s^2 / A] */
+    float measured_inertia; /* Identified mechanical inertia J  [kg.m^2] */
     
     MotorID_State_t state;
     uint32_t error_code;  /* 0 = OK, 1=Rs invalid, 2=Ls invalid, 3=Fit error, 7=No delta */
@@ -70,6 +73,16 @@ uint8_t MotorID_IsFluxMeasuring(void);
  * @brief State handler for Freewheeling Flux Measurement
  */
 void FOC_StateCoastFluxID(void);
+
+/**
+ * @brief Initiate Offline Inertia Measurement (Speed Step Integral)
+ */
+void MotorID_MeasureInertiaOffline(void);
+
+/**
+ * @brief 1kHz Slow Task hook for Inertia Measurement
+ */
+void MotorID_InertiaSlowTask(void);
 
 /**
  * @brief Run one step of the identification state machine.

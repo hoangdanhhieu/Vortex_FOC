@@ -13,8 +13,8 @@
 
 #include "bist_profiler.h"
 #include "flash_config.h"
-#include "foc_state_machine.h"
 #include "foc_startup.h"
+#include "foc_state_machine.h"
 #include "motor_id.h"
 #include "usbd_cdc_if.h"
 
@@ -44,15 +44,14 @@ static uint8_t rx_idx;
 static uint8_t tx_buf[COMM_MAX_PAYLOAD + 4]
     __attribute__((aligned(4))); /* header + type + len + payload + crc */
 
-#define PLOT_CHANNELS 7
-#define PLOT_BATCH_SIZE 16
-static int16_t plot_batch_buf[PLOT_BATCH_SIZE * PLOT_CHANNELS] __attribute__((aligned(4)));
-
-#define PLOT_RING_SIZE 256
-#define PLOT_RING_MASK (PLOT_RING_SIZE - 1)
-static int16_t plot_ring_buf[PLOT_RING_SIZE * PLOT_CHANNELS] __attribute__((aligned(4)));
-static volatile uint16_t plot_ring_head = 0;
-static volatile uint16_t plot_ring_tail = 0;
+#define SAMPLE_BUF_SIZE 2048
+static int16_t sampled_data_buf[SAMPLE_BUF_SIZE] __attribute__((aligned(4)));
+static uint8_t sample_channels[4];
+static uint8_t sample_num_channels = 0;
+static uint16_t sample_decimation = 1;
+static volatile uint16_t sample_idx = 0;
+static volatile uint8_t sample_status = 0; /* 0: IDLE, 1: RUNNING, 2: DONE */
+static volatile uint16_t sample_div = 0;
 
 #define RX_RING_SIZE 512
 static uint8_t rx_ring_buf[RX_RING_SIZE] __attribute__((aligned(4)));
@@ -121,9 +120,9 @@ static float get_param_value(uint8_t pid) {
         return (float)cfg->name;
 #include "param_table.def"
         case PID_SPD_REF:
-            return g_foc.cmd.speed_ref_target;
+            return g_foc.cmd.speed_ref;
         case PID_TRQ_REF:
-            return g_foc.cmd.Iq_ref_target;
+            return g_foc.cmd.Iq_ref;
         case PID_VBUS:
             return g_foc.data.Vbus;
         case PID_RPM:
@@ -136,6 +135,18 @@ static float get_param_value(uint8_t pid) {
             return g_foc.data.Ia;
         case PID_IB:
             return g_foc.data.Ib;
+        case PID_IC:
+            return g_foc.data.Ic;
+        case PID_DUTY_A:
+            return g_foc.data.duty_a;
+        case PID_DUTY_B:
+            return g_foc.data.duty_b;
+        case PID_DUTY_C:
+            return g_foc.data.duty_c;
+        case PID_VD:
+            return g_foc.data.Vd;
+        case PID_VQ:
+            return g_foc.data.Vq;
         case PID_ID_RS_MEAS: {
             MotorID_Result_t res;
             MotorID_GetResults(&res);
@@ -176,6 +187,24 @@ static float get_param_value(uint8_t pid) {
             MotorID_GetResults(&res);
             return res.measured_kv;
         }
+        case PID_ID_INERTIA_MEAS: {
+            MotorID_Result_t res;
+            MotorID_GetResults(&res);
+            return res.measured_inertia;
+        }
+        case PID_ID_B0_MEAS: {
+            MotorID_Result_t res;
+            MotorID_GetResults(&res);
+            return res.measured_b0;
+        }
+        case PID_THETA_ELEC:
+            return g_foc.data.theta_elec;
+        case PID_USER_PLOT1:
+            return g_foc.plot.user_plot1;
+        case PID_USER_PLOT2:
+            return g_foc.plot.user_plot2;
+        case PID_USER_PLOT3:
+            return g_foc.plot.user_plot3;
         default:
             return 0.0f;
     }
@@ -217,6 +246,14 @@ static uint8_t is_pid_defined(uint8_t pid) {
         case PID_ID_ALPHA_MEAS:
         case PID_ID_DT_MEAS:
         case PID_ID_FREQ_MEAS:
+        case PID_ID_FLUX_MEAS:
+        case PID_ID_KV_MEAS:
+        case PID_ID_INERTIA_MEAS:
+        case PID_ID_B0_MEAS:
+        case PID_THETA_ELEC:
+        case PID_USER_PLOT1:
+        case PID_USER_PLOT2:
+        case PID_USER_PLOT3:
             return 1;
         default:
             return 0;
@@ -362,13 +399,66 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             break;
         }
 
-        case CMD_PLOT: {
-            if (len < 1) {
+        case CMD_SAMPLE_START: {
+            if (len < 2) {
                 send_ack(type, 1);
                 break;
             }
-            g_foc.plot.enabled = payload[0];
+            sample_num_channels = payload[0];
+            if (sample_num_channels > 4) sample_num_channels = 4;
+            sample_decimation = payload[1];
+            if (sample_decimation == 0) sample_decimation = 1;
+
+            for (uint8_t i = 0; i < sample_num_channels; i++) {
+                if (i + 2 < len) {
+                    sample_channels[i] = payload[2 + i];
+                } else {
+                    sample_channels[i] = 0; /* Default if not provided */
+                }
+            }
+
+            sample_idx = 0;
+            sample_div = 0;
+            sample_status = 1; /* RUNNING */
             send_ack(type, 0);
+            break;
+        }
+
+        case CMD_SAMPLE_READ: {
+            if (len < 4) {
+                send_ack(type, 1);
+                break;
+            }
+            uint16_t offset, size;
+            memcpy(&offset, &payload[0], 2);
+            memcpy(&size, &payload[2], 2);
+
+            if (offset >= SAMPLE_BUF_SIZE || size == 0) {
+                send_ack(type, 1);
+                break;
+            }
+
+            /* Bound check size */
+            if (offset + size > SAMPLE_BUF_SIZE) {
+                size = SAMPLE_BUF_SIZE - offset;
+            }
+
+            /* Max payload for USB FS CDC is ~255.
+             * RSP_SAMPLE_DATA format: offset(2B) + size(2B) + data(size*2B)
+             * Total length = 4 + size*2. Max size = (255 - 4) / 2 = 125
+             */
+            if (size > 125) size = 125;
+
+            uint8_t rsp[255];
+            memcpy(&rsp[0], &offset, 2);
+            memcpy(&rsp[2], &size, 2);
+
+            for (uint16_t i = 0; i < size; i++) {
+                int16_t val = sampled_data_buf[offset + i];
+                memcpy(&rsp[4 + i * 2], &val, 2);
+            }
+
+            send_packet(RSP_SAMPLE_DATA, rsp, 4 + size * 2);
             break;
         }
 
@@ -438,6 +528,15 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 break;
             }
             MotorID_MeasureFluxOffline();
+            send_ack(type, 0);
+            break;
+
+        case CMD_IDENT_INERTIA:
+            if (FOC_GetState() != FOC_STATE_IDLE) {
+                send_ack(type, 1);
+                break;
+            }
+            MotorID_MeasureInertiaOffline();
             send_ack(type, 0);
             break;
 
@@ -546,59 +645,34 @@ static void comm_process_byte(uint8_t byte) {
     }
 }
 
-void Comm_PushPlotSample7(float Ia, float Ib, float Ic,
-                          float Vd, float Vq, float theta, float Iq_ref) {
-    if (!g_foc.plot.enabled) return;
+void Comm_ProcessSampling(void) {
+    if (sample_status != 1) return;
 
-    uint16_t head = plot_ring_head;
-    uint16_t next_head = (head + 1) & PLOT_RING_MASK;
-    if (next_head == plot_ring_tail) {
-        /* Buffer full: drop oldest sample to keep stream real-time */
-        plot_ring_tail = (plot_ring_tail + 1) & PLOT_RING_MASK;
-    }
+    if (++sample_div >= sample_decimation) {
+        sample_div = 0;
 
-    uint16_t offset = head * PLOT_CHANNELS;
-    plot_ring_buf[offset + 0] = (int16_t)(Ia * 1000.0f);
-    plot_ring_buf[offset + 1] = (int16_t)(Ib * 1000.0f);
-    plot_ring_buf[offset + 2] = (int16_t)(Ic * 1000.0f);
-    plot_ring_buf[offset + 3] = (int16_t)(Vd * 1000.0f);
-    plot_ring_buf[offset + 4] = (int16_t)(Vq * 1000.0f);
-    plot_ring_buf[offset + 5] = (int16_t)(theta * 10000.0f);
-    plot_ring_buf[offset + 6] = (int16_t)(Iq_ref * 1000.0f);
-
-    plot_ring_head = next_head;
-}
-
-void Comm_SendPlotPacket(void) {
-    if (!g_foc.plot.enabled) {
-        plot_ring_head = 0;
-        plot_ring_tail = 0;
-        return;
-    }
-
-    /* Check if USB is busy first before popping from ring buffer */
-    if (CDC_IsTxBusy()) return;
-
-    uint16_t head = plot_ring_head;
-    uint16_t tail = plot_ring_tail;
-    uint16_t count = (head >= tail) ? (head - tail) : (PLOT_RING_SIZE + head - tail);
-
-    if (count < PLOT_BATCH_SIZE) {
-        return; /* Not enough samples for a full packet */
-    }
-
-    /* Copy PLOT_BATCH_SIZE samples into packet buffer */
-    uint16_t next_tail = tail;
-    for (uint8_t i = 0; i < PLOT_BATCH_SIZE; i++) {
-        uint16_t src_offset = next_tail * PLOT_CHANNELS;
-        uint16_t dst_offset = i * PLOT_CHANNELS;
-        for (uint8_t ch = 0; ch < PLOT_CHANNELS; ch++) {
-            plot_batch_buf[dst_offset + ch] = plot_ring_buf[src_offset + ch];
+        /* Bound check just in case */
+        if (sample_idx + sample_num_channels > SAMPLE_BUF_SIZE) {
+            sample_status = 2; /* DONE */
+            return;
         }
-        next_tail = (next_tail + 1) & PLOT_RING_MASK;
-    }
 
-    if (send_packet(RSP_PLOT, (uint8_t*)plot_batch_buf, PLOT_BATCH_SIZE * PLOT_CHANNELS * 2) == USBD_OK) {
-        plot_ring_tail = next_tail;
+        for (uint8_t i = 0; i < sample_num_channels; i++) {
+            float val = get_param_value(sample_channels[i]);
+
+            /* Scaling: theta is scaled by 10000, everything else by 1000 */
+            int16_t scaled_val;
+            if (sample_channels[i] == PID_THETA_ELEC) {
+                scaled_val = (int16_t)(val * 10000.0f);
+            } else {
+                scaled_val = (int16_t)(val * 1000.0f);
+            }
+
+            sampled_data_buf[sample_idx++] = scaled_val;
+        }
+
+        if (sample_idx >= SAMPLE_BUF_SIZE) {
+            sample_status = 2; /* DONE */
+        }
     }
 }

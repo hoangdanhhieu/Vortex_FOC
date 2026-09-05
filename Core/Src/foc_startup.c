@@ -11,21 +11,29 @@
 #include "foc_state_machine.h"
 #include "math.h"
 #include "motor_id.h"
-#include "peripheral_init.h"
 
 /* Transition blending state (open-loop → closed-loop) */
 static float s_blend_alpha = 0.0f; /* 0 = open-loop, 1 = closed-loop */
 static uint32_t s_transition_counter = 0;
 static uint32_t s_transition_samples = 0;
 static uint8_t s_in_transition = 0;
-static uint32_t s_closed_loop_counter = 0;
+static uint32_t s_handoff_converge_cnt = 0;
+static uint32_t s_startup_stall_cnt = 0;
+static float s_delta_theta_flt = 0.0f;
+static float s_delta_theta_variance = 1.0f;
+static float s_handoff_id = 0.0f;
 
 void FOC_Startup_Reset(void) {
     s_blend_alpha = 0.0f;
     s_transition_counter = 0;
     s_transition_samples = 0;
     s_in_transition = 0;
-    s_closed_loop_counter = 0;
+    s_handoff_converge_cnt = 0;
+    s_startup_stall_cnt = 0;
+    s_delta_theta_flt = 0.0f;
+    s_delta_theta_variance = 1.0f;
+    g_foc.data.e_real_flt = 0.0f;
+    s_handoff_id = 0.0f;
     g_foc.status.in_transition = 0;
 }
 
@@ -37,45 +45,43 @@ void FOC_Startup_ForceComplete(void) {
     g_foc.status.in_transition = 0;
 }
 
-void FOC_ResetClosedLoopCounter(void) {
-    s_closed_loop_counter = 0;
-}
-
 uint8_t FOC_IsInTransition(void) {
     return s_in_transition;
 }
 
 void FOC_StateAlign(void) {
+    if (g_foc.startup.counter == 0) {
+        float rec_speed = FOC_CalculateRecommendedHandoffRpm();
+        if (g_foc.cfg.startup_handoff_speed < rec_speed) {
+            g_foc.cfg.startup_handoff_speed = rec_speed;
+        }
+    }
     g_foc.startup.counter++;
     if (g_foc.startup.counter == 1) {
-        /* Calculate dynamic startup PI gains based on 4x Handoff Speed and apply them once at start
-         * of Align */
-        float handoff_omega = g_foc.cfg.startup_handoff_speed * RPM_TO_RAD * g_foc.cfg.motor_poles;
-        float bw_startup = 4.0f * handoff_omega;
-        float kp_startup = g_foc.cfg.motor_ls * bw_startup;
-        float ki_startup = g_foc.cfg.motor_rs * bw_startup;
-        PI_SetGains(&g_foc.ctrl.id, kp_startup, ki_startup);
-        PI_SetGains(&g_foc.ctrl.iq, kp_startup, ki_startup);
+        /* Ensure normal PI gains are used for crisp current tracking */
+        PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
+        PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
     }
 
     float align_samples = (float)ALIGN_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY;
     float progress = (float)g_foc.startup.counter / align_samples;
     if (progress > 1.0f) progress = 1.0f;
 
-    /* 1. Ramp alignment current from 0 to align_current over the first 30% of alignment duration */
-    float ramp_duration = 0.3f;
+    /* Ramp alignment current from 0 to align_current using Cosine S-Curve over first 70% duration.
+     * Remaining 30% holds steady to settle any mechanical oscillations. */
+    float ramp_duration = 0.7f;
     if (progress < ramp_duration) {
-        g_foc.cmd.Id_ref = (progress / ramp_duration) * g_foc.cfg.align_current;
+        float ramp_norm = progress / ramp_duration; /* 0.0f to 1.0f maps to 0 to pi */
+        float cos_ramp, sin_ramp;
+        cordic_sincos(ramp_norm, &cos_ramp, &sin_ramp);
+        g_foc.cmd.Id_ref = 0.5f * (1.0f - cos_ramp) * g_foc.cfg.align_current;
     } else {
         g_foc.cmd.Id_ref = g_foc.cfg.align_current;
     }
     g_foc.cmd.Iq_ref = 0.0f;
 
-    /* 2. Smooth angle sweep from -45 degrees (-0.25 normalized) to 0 degrees (0.0 normalized)
-     * to break any 180-degree electrical angle dead spots without mechanical impact. */
-    float start_angle = -0.25f;  // -45 degrees electrical
-    g_foc.data.theta_elec = start_angle * (1.0f - progress);
-
+    /* Fixed alignment angle at 0.0f (no artificial sweeping or snapping) */
+    g_foc.data.theta_elec = 0.0f;
     g_foc.data.omega_elec = 0.0f;
     g_foc.data.speed_rpm = 0.0f;
 
@@ -96,8 +102,7 @@ void FOC_StateAlign(void) {
         g_foc.startup.counter = 0;
         g_foc.startup.theta = 0.0f;
         g_foc.startup.omega = 0.0f;
-        PI_Reset(&g_foc.ctrl.id);
-        PI_Reset(&g_foc.ctrl.iq);
+        /* Do NOT reset PI controllers to preserve steady-state integrator voltage */
         g_foc.ctrl.smo.theta_est = 0.0f;
         g_foc.ctrl.smo.omega_est = 0.0f;
         g_foc.ctrl.smo.omega_out = 0.0f;
@@ -114,8 +119,10 @@ void FOC_StateStartup(void) {
     g_foc.startup.omega += accel_rad * CONTROL_PERIOD;
 
     float handoff_omega = g_foc.cfg.startup_handoff_speed * RPM_TO_RAD * g_foc.cfg.motor_poles;
-    if (g_foc.startup.omega > handoff_omega) {
-        g_foc.startup.omega = handoff_omega;
+    if (!MotorID_IsFluxMeasuring()) {
+        if (g_foc.startup.omega > handoff_omega) {
+            g_foc.startup.omega = handoff_omega;
+        }
     }
 
     g_foc.data.omega_elec = g_foc.startup.omega;
@@ -130,15 +137,23 @@ void FOC_StateStartup(void) {
     park_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, cos_th, sin_th, &g_foc.data.Id,
                    &g_foc.data.Iq);
 
-    g_foc.cmd.Id_ref = 0.0f;
+    /* Universal Vector Steering for Smooth Propeller Startup & Pole-Slip Immunity:
+     * Steer current vector angle gamma_norm smoothly from 0 (all Id) to 1/3 (60 deg: 50% Id, 86.6%
+     * Iq). The 50% Id provides a stiff magnetic restoring spring preventing pole slipping, while
+     * the 86.6% Iq provides plenty of acceleration torque. */
+    float steer_threshold = 0.35f * handoff_omega;
+    float steer_ratio = (steer_threshold > 1.0f) ? (g_foc.startup.omega / steer_threshold) : 1.0f;
+    if (steer_ratio > 1.0f) steer_ratio = 1.0f;
 
-    float startup_ramp_samples = 0.3f * (float)CONTROL_FREQUENCY;
-    if ((float)g_foc.startup.counter < startup_ramp_samples) {
-        float ratio = (float)g_foc.startup.counter / startup_ramp_samples;
-        g_foc.cmd.Iq_ref = ratio * g_foc.cfg.startup_current;
-    } else {
-        g_foc.cmd.Iq_ref = g_foc.cfg.startup_current;
-    }
+    const float gamma_target_norm = 1.0f / 3.0f; /* 60 deg = (pi/3) / pi */
+    float gamma_norm = steer_ratio * gamma_target_norm;
+
+    float cos_gamma, sin_gamma;
+    cordic_sincos(gamma_norm, &cos_gamma, &sin_gamma);
+
+    float i_mag = g_foc.cfg.startup_current;
+    g_foc.cmd.Id_ref = i_mag * cos_gamma;
+    g_foc.cmd.Iq_ref = i_mag * sin_gamma;
 
     float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
     float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
@@ -147,7 +162,7 @@ void FOC_StateStartup(void) {
     float omega_e = g_foc.startup.omega;
     float omega_Ls = omega_e * g_foc.cfg.motor_ls;
     float E_bemf = omega_e * g_foc.cfg.motor_flux;
-    
+
     if (MotorID_IsFluxMeasuring()) {
         omega_Ls = 0.0f;
         E_bemf = 0.0f;
@@ -172,16 +187,63 @@ void FOC_StateStartup(void) {
                g_foc.data.Ibeta);
 
 #if ENABLE_CLOSED_LOOP_HANDOFF
-    if (g_foc.startup.omega >= handoff_omega * 0.9f) {
-        if (MotorID_IsFluxMeasuring()) {
+    if (MotorID_IsFluxMeasuring()) {
+        if (g_foc.startup.omega > handoff_omega) {
             g_foc.status.state = FOC_STATE_COAST_FLUX_ID;
             return;
         }
+        return;
+    }
 
+    float smo_theta = SMO_GetParkAngle(&g_foc.ctrl.smo);
+    float delta_theta = normalize_angle_norm(smo_theta - g_foc.startup.theta);
+
+    const float lpf_alpha = 50.0f * CONTROL_PERIOD;
+
+    float diff_theta = normalize_angle_norm(delta_theta - s_delta_theta_flt);
+    s_delta_theta_flt = normalize_angle_norm(s_delta_theta_flt + lpf_alpha * diff_theta);
+    s_delta_theta_variance += lpf_alpha * (fabsf(diff_theta) - s_delta_theta_variance);
+    float ed = g_foc.data.Vd - g_foc.ctrl.smo.Rs * g_foc.data.Id +
+               g_foc.startup.omega * g_foc.ctrl.smo.Ls * g_foc.data.Iq;
+    float eq = g_foc.data.Vq - g_foc.ctrl.smo.Rs * g_foc.data.Iq -
+               g_foc.startup.omega * g_foc.ctrl.smo.Ls * g_foc.data.Id;
+    float e_real = sqrtf(ed * ed + eq * eq);
+    float e_expect = (g_foc.cfg.motor_flux * g_foc.startup.omega);
+    const float e_lpf_alpha = 100.0f * CONTROL_PERIOD;
+    g_foc.data.e_real_flt += e_lpf_alpha * (e_real - g_foc.data.e_real_flt);
+    g_foc.plot.user_plot1 = g_foc.data.e_real_flt;
+    g_foc.plot.user_plot2 = e_expect;
+
+    if (g_foc.startup.omega >= handoff_omega * 0.9f) {
+        if (s_delta_theta_variance < 0.02f &&
+            (g_foc.data.e_real_flt >= STARTUP_STALL_BEMF_RATIO * e_expect)) {
+            s_handoff_converge_cnt++;
+        } else {
+            if (s_handoff_converge_cnt >= 5) {
+                s_handoff_converge_cnt -= 5;
+            }
+        }
+    }
+
+    if (g_foc.startup.omega >= handoff_omega * STARTUP_STALL_SPEED_RATIO) {
+        if (g_foc.data.e_real_flt < STARTUP_STALL_BEMF_RATIO * e_expect) {
+            s_startup_stall_cnt++;
+            if (s_startup_stall_cnt >= STARTUP_STALL_SAMPLES) {
+                g_foc.status.fault = FOC_FAULT_STARTUP_FAIL;
+                g_foc.status.state = FOC_STATE_FAULT;
+                return;
+            }
+        } else {
+            s_startup_stall_cnt = 0;
+        }
+    } else {
+        s_startup_stall_cnt = 0;
+    }
+
+    if (s_handoff_converge_cnt > HANDOFF_LOCK_SAMPLES) {
         SMO_ResetStates(&g_foc.ctrl.smo, g_foc.startup.omega);
         SMO_SlowTask(&g_foc.ctrl.smo);
 
-        /* Restore original default PI gains from config */
         PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
         PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
 
@@ -206,6 +268,7 @@ void FOC_StateStartup(void) {
             g_foc.cmd.Vq_ref = Vq_norm;
             g_foc.cmd.Vq_ref_target = Vq_norm;
         }
+        s_handoff_id = g_foc.cmd.Id_ref; /* Save Id for seamless transition blending */
         s_blend_alpha = 0.0f;
         s_transition_counter = 0;
         s_transition_samples = (uint32_t)(TRANSITION_BLEND_MS * 0.001f * (float)CONTROL_FREQUENCY);
@@ -213,7 +276,6 @@ void FOC_StateStartup(void) {
         s_in_transition = 1;
         g_foc.status.in_transition = 1;
 
-        g_foc.cmd.Id_ref = 0.0f;
         g_foc.status.state = FOC_STATE_RUN;
     }
 #endif
@@ -227,39 +289,79 @@ void FOC_StateStartup(void) {
 #endif
 }
 
-CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega, float smo_speed_rpm) {
-    if (s_in_transition) {
-        s_transition_counter++;
-        s_blend_alpha = (float)s_transition_counter / (float)s_transition_samples;
-
-        if (s_blend_alpha >= 1.0f) {
-            s_blend_alpha = 1.0f;
-            s_in_transition = 0;
-            g_foc.status.in_transition = 0;
-
-            /* Restore original default PI gains from config */
-            PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
-            PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
-        }
-
-        g_foc.startup.theta += (g_foc.startup.omega * CONTROL_PERIOD) / PI;
-        g_foc.startup.theta = normalize_angle_norm(g_foc.startup.theta);
-        
-        float delta_park = normalize_angle_norm(smo_theta_park - g_foc.startup.theta);
-        g_foc.data.theta_park = normalize_angle_norm(g_foc.startup.theta + s_blend_alpha * delta_park);
-        
-        float delta_pwm = normalize_angle_norm(smo_theta_pwm - g_foc.startup.theta);
-        g_foc.data.theta_elec = normalize_angle_norm(g_foc.startup.theta + s_blend_alpha * delta_pwm);
-        
-        g_foc.data.omega_elec =
-            (1.0f - s_blend_alpha) * g_foc.startup.omega + s_blend_alpha * smo_omega;
-        g_foc.data.speed_rpm = (1.0f - s_blend_alpha) * (g_foc.startup.omega /
-                                                         g_foc.cfg.motor_poles * (60.0f / TWO_PI)) +
-                               s_blend_alpha * smo_speed_rpm;
-    } else {
-        g_foc.data.theta_park = smo_theta_park;
-        g_foc.data.theta_elec = smo_theta_pwm;
-        g_foc.data.omega_elec = smo_omega;
-        g_foc.data.speed_rpm = smo_speed_rpm;
+CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega,
+                                       float smo_speed_rpm) {
+    if (!s_in_transition) {
+        return;
     }
+
+    s_transition_counter++;
+    s_blend_alpha = (float)s_transition_counter / (float)s_transition_samples;
+
+    if (s_blend_alpha >= 1.0f) {
+        s_blend_alpha = 1.0f;
+        s_in_transition = 0;
+        g_foc.status.in_transition = 0;
+
+        /* Restore original default PI gains from config */
+        PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
+        PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
+    }
+
+    /* Smoothly blend Id_ref from handoff value down to 0 */
+    g_foc.cmd.Id_ref = (1.0f - s_blend_alpha) * s_handoff_id;
+
+    g_foc.startup.theta += (g_foc.startup.omega * CONTROL_PERIOD) / PI;
+    g_foc.startup.theta = normalize_angle_norm(g_foc.startup.theta);
+
+    float delta_park = normalize_angle_norm(smo_theta_park - g_foc.startup.theta);
+    g_foc.data.theta_park = normalize_angle_norm(g_foc.startup.theta + s_blend_alpha * delta_park);
+
+    float delta_pwm = normalize_angle_norm(smo_theta_pwm - g_foc.startup.theta);
+    g_foc.data.theta_elec = normalize_angle_norm(g_foc.startup.theta + s_blend_alpha * delta_pwm);
+
+    g_foc.data.omega_elec =
+        (1.0f - s_blend_alpha) * g_foc.startup.omega + s_blend_alpha * smo_omega;
+    g_foc.data.speed_rpm =
+        (1.0f - s_blend_alpha) * (g_foc.startup.omega / g_foc.cfg.motor_poles * (60.0f / TWO_PI)) +
+        s_blend_alpha * smo_speed_rpm;
+}
+
+float FOC_CalculateRecommendedHandoffRpm(void) {
+    float v_deadtime = (DEAD_TIME_NS * 1e-9f) * (float)CONTROL_FREQUENCY * g_foc.data.Vbus;
+    float v_dt_residual = 0.35f * v_deadtime;
+    float v_current_noise = g_foc.noise_profile.noise_rms * g_foc.cfg.motor_rs;
+    float v_hw_floor = 0.050f;
+    float v_noise_floor = v_dt_residual + v_current_noise + v_hw_floor;
+    const float k_snr = 3.5f;
+    float e_bemf_target = k_snr * v_noise_floor;
+    if (e_bemf_target < 0.350f) {
+        e_bemf_target = 0.350f;
+    }
+
+    float rec_handoff_rpm = 0.0f;
+    if (g_foc.cfg.motor_flux > 1e-6f) {
+        /* Direct physics: omega_e = E / psi -> RPM = omega_e * 60 / (2*PI * pole_pairs) */
+        float omega_e_target = e_bemf_target / g_foc.cfg.motor_flux;
+        rec_handoff_rpm = (omega_e_target / (float)g_foc.cfg.motor_poles) * (60.0f / TWO_PI);
+    } else {
+        /* Fallback via KV: RPM = sqrt(3) * KV * E_bemf */
+        rec_handoff_rpm = 1.732f * g_foc.cfg.motor_kv * e_bemf_target;
+    }
+
+    /* 7. Safety constraints:
+     * - Minimum electrical frequency: at least 15 Hz for STF/PLL to track cleanly
+     * - Maximum speed limit: clamp to 20% of max rated speed
+     */
+    float min_elec_rpm = (15.0f * 60.0f) / (float)g_foc.cfg.motor_poles;
+    if (rec_handoff_rpm < min_elec_rpm) {
+        rec_handoff_rpm = min_elec_rpm;
+    }
+
+    float max_handoff_limit = 0.20f * g_foc.cfg.motor_max_spd;
+    if (rec_handoff_rpm > max_handoff_limit) {
+        rec_handoff_rpm = max_handoff_limit;
+    }
+
+    return rec_handoff_rpm;
 }

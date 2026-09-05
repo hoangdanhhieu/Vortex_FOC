@@ -20,6 +20,8 @@ class ParamEditor(QWidget):
         self._spinboxes = {}  # pid -> QDoubleSpinBox
         self._measured_rs = None
         self._measured_ls = None
+        self._measured_inertia = None
+        self._measured_b0 = None
         self._is_measuring = False
 
         # Opacity effect for disconnected state
@@ -105,6 +107,9 @@ class ParamEditor(QWidget):
             if hasattr(self, 'btn_measure'):
                 self.btn_measure.setEnabled(True)
                 self.btn_measure.setText("Start Identification (RL Measure)")
+            if hasattr(self, 'btn_measure_inertia'):
+                self.btn_measure_inertia.setEnabled(True)
+                self.btn_measure_inertia.setText("Measure Inertia (Auto b0)")
         else:
             self.setToolTip("")
 
@@ -194,11 +199,11 @@ class ParamEditor(QWidget):
             group_box = QGroupBox("LADRC Tuning Helper")
             group_layout = QHBoxLayout()
             
-            self.btn_compute_b0 = QPushButton("Compute b0 from J (Inertia)")
-            self.btn_compute_b0.clicked.connect(self._auto_compute_b0)
-            self.btn_compute_b0.setFixedHeight(30)
-            self.btn_compute_b0.setToolTip("Calculates b0 = 1.5 * Poles^2 * Flux / J using current Motor Pole Pairs, Flux, and Inertia J.")
-            group_layout.addWidget(self.btn_compute_b0)
+            self.btn_measure_inertia = QPushButton("Measure Inertia (Auto b0)")
+            self.btn_measure_inertia.clicked.connect(self._measure_inertia)
+            self.btn_measure_inertia.setFixedHeight(30)
+            self.btn_measure_inertia.setToolTip("Start Offline Inertia ID (Speed Step Method)")
+            group_layout.addWidget(self.btn_measure_inertia)
             
             group_box.setLayout(group_layout)
             grid.addWidget(group_box, last_row, 0, 1, 4)
@@ -219,6 +224,7 @@ class ParamEditor(QWidget):
         self._measured_kv = None
         self._is_measuring = True
         self._is_measuring_flux = True
+        self._is_measuring_inertia = False
         self._has_started_measuring = False
         
         self._serial.send(protocol.build_simple(protocol.CmdType.IDENT_FLUX))
@@ -227,6 +233,25 @@ class ParamEditor(QWidget):
             self.btn_measure_flux.setText("Measuring Flux...")
         if hasattr(self, 'btn_measure'):
             self.btn_measure.setEnabled(False)
+        if hasattr(self, 'btn_measure_inertia'):
+            self.btn_measure_inertia.setEnabled(False)
+
+    def _measure_inertia(self):
+        self._measured_inertia = None
+        self._measured_b0 = None
+        self._is_measuring = True
+        self._is_measuring_flux = False
+        self._is_measuring_inertia = True
+        self._has_started_measuring = False
+        
+        self._serial.send(protocol.build_simple(protocol.CmdType.IDENT_INERTIA))
+        if hasattr(self, 'btn_measure_inertia'):
+            self.btn_measure_inertia.setEnabled(False)
+            self.btn_measure_inertia.setText("Measuring Inertia...")
+        if hasattr(self, 'btn_measure'):
+            self.btn_measure.setEnabled(False)
+        if hasattr(self, 'btn_measure_flux'):
+            self.btn_measure_flux.setEnabled(False)
 
     def _auto_compute_pi(self):
         try:
@@ -264,33 +289,6 @@ class ParamEditor(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to compute PI gains: {e}")
 
-    def _auto_compute_b0(self):
-        try:
-            poles_spin = self._spinboxes.get(protocol.ParamId.M_POLES)
-            flux_spin = self._spinboxes.get(protocol.ParamId.M_FLUX)
-            j_spin = self._spinboxes.get(protocol.ParamId.M_J)
-            b0_spin = self._spinboxes.get(protocol.ParamId.LADRC_B0)
-
-            if poles_spin is None or flux_spin is None or j_spin is None or b0_spin is None:
-                raise ValueError("Pole Pairs, Flux, Inertia J, or LADRC b0 fields are not available.")
-
-            poles = poles_spin.value()
-            flux = flux_spin.value()
-            j = j_spin.value()
-
-            if poles <= 0 or flux <= 0 or j <= 0:
-                QMessageBox.warning(self, "Invalid Parameters", "Poles, Flux, and Inertia J must be greater than 0.")
-                return
-
-            # b0 = 1.5 * (poles^2) * flux / J
-            b0 = 1.5 * (poles ** 2) * flux / j
-
-            b0_spin.setValue(b0)
-            self._serial.send(protocol.build_set(protocol.ParamId.LADRC_B0, b0))
-            QMessageBox.information(self, "Success", f"LADRC b0 computed and sent!\nb0: {b0:.2f}")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to compute LADRC b0:\n{e}")
 
     def _compute_alpha(self):
         try:
@@ -327,6 +325,7 @@ class ParamEditor(QWidget):
         self._measured_alpha = None
         self._is_measuring = True
         self._is_measuring_flux = False
+        self._is_measuring_inertia = False
         self._has_started_measuring = False
         
         self._serial.send(protocol.build_simple(protocol.CmdType.IDENT))
@@ -337,6 +336,8 @@ class ParamEditor(QWidget):
             QTimer.singleShot(15000, self._reset_measure_state) # Fallback timeout
         if hasattr(self, 'btn_measure_flux'):
             self.btn_measure_flux.setEnabled(False)
+        if hasattr(self, 'btn_measure_inertia'):
+            self.btn_measure_inertia.setEnabled(False)
             
     def _reset_measure_state(self):
         self._is_measuring = False
@@ -347,6 +348,9 @@ class ParamEditor(QWidget):
         if hasattr(self, 'btn_measure_flux'):
             self.btn_measure_flux.setEnabled(True)
             self.btn_measure_flux.setText("Measure Flux Linkage")
+        if hasattr(self, 'btn_measure_inertia'):
+            self.btn_measure_inertia.setEnabled(True)
+            self.btn_measure_inertia.setText("Measure Inertia (Auto b0)")
         
     def _check_measure_status(self):
         # We need to check if the state is back to IDLE
@@ -459,6 +463,12 @@ class ParamEditor(QWidget):
         if pid == protocol.ParamId.ID_KV_MEAS:
             self._measured_kv = val
             return
+        if pid == protocol.ParamId.ID_INERTIA_MEAS:
+            self._measured_inertia = val
+            return
+        if pid == protocol.ParamId.ID_B0_MEAS:
+            self._measured_b0 = val
+            return
 
         spin = self._spinboxes.get(pid)
         if spin:
@@ -474,7 +484,8 @@ class ParamEditor(QWidget):
         
         # State 9 is FOC_STATE_SELF_COMMISSION (IDENT), 1 is FOC_STATE_CALIBRATION
         # State 5 is FOC_STATE_STARTUP, 10 is FOC_STATE_COAST_FLUX_ID
-        if state == 9 or state == 1 or state == 5 or state == 10:
+        # State 6 is FOC_STATE_RUN (used for Inertia ID)
+        if state in (1, 5, 6, 9, 10):
             self._has_started_measuring = True
             
         if state == 0 and getattr(self, '_has_started_measuring', False):
@@ -487,8 +498,15 @@ class ParamEditor(QWidget):
             if hasattr(self, 'btn_measure_flux'):
                 self.btn_measure_flux.setEnabled(True)
                 self.btn_measure_flux.setText("Measure Flux Linkage")
+            if hasattr(self, 'btn_measure_inertia'):
+                self.btn_measure_inertia.setEnabled(True)
+                self.btn_measure_inertia.setText("Measure Inertia (Auto b0)")
             
-            if getattr(self, '_is_measuring_flux', False):
+            if getattr(self, '_is_measuring_inertia', False):
+                self._serial.send(protocol.build_get(protocol.ParamId.ID_INERTIA_MEAS))
+                QTimer.singleShot(50, lambda: self._serial.send(protocol.build_get(protocol.ParamId.ID_B0_MEAS)))
+                QTimer.singleShot(150, self._check_apply_identification)
+            elif getattr(self, '_is_measuring_flux', False):
                 self._serial.send(protocol.build_get(protocol.ParamId.ID_FLUX_MEAS))
                 QTimer.singleShot(50, lambda: self._serial.send(protocol.build_get(protocol.ParamId.ID_KV_MEAS)))
                 QTimer.singleShot(150, self._check_apply_identification)
@@ -500,7 +518,37 @@ class ParamEditor(QWidget):
                 QTimer.singleShot(250, self._check_apply_identification) # Force check in case a packet is dropped
 
     def _check_apply_identification(self):
-        if getattr(self, '_is_measuring_flux', False):
+        if getattr(self, '_is_measuring_inertia', False):
+            if self._measured_inertia is not None and self._measured_b0 is not None:
+                msg = (f"Inertia Identification Complete!\n\n"
+                       f"Measured Parameters:\n"
+                       f"• Inertia (J): {self._measured_inertia:.8e} kg*m²\n"
+                       f"• Computed b0: {self._measured_b0:.2f}\n\n"
+                       f"Do you want to apply these values to the configuration?\n"
+                       f"(Values will only be applied to hardware when you click 'Write All' or 'Save to Flash')")
+                
+                reply = QMessageBox.question(self, "Inertia ID Results", msg,
+                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                
+                if reply == QMessageBox.Yes:
+                    updates = [
+                        (protocol.ParamId.M_J, self._measured_inertia),
+                        (protocol.ParamId.LADRC_B0, self._measured_b0)
+                    ]
+                    for pid, val in updates:
+                        spin = self._spinboxes.get(pid)
+                        if spin:
+                            spin.setValue(val)
+                    
+                    QMessageBox.information(self, "Values Updated", 
+                                          "J and b0 fields have been filled with the measured values.\n"
+                                          "Click 'Write All' or 'Save to Flash' to apply them.")
+                
+                # Reset
+                self._measured_inertia = None
+                self._measured_b0 = None
+
+        elif getattr(self, '_is_measuring_flux', False):
             if self._measured_flux is not None and self._measured_kv is not None:
                 msg = (f"Offline Flux Identification Complete!\n\n"
                        f"Measured Parameters:\n"

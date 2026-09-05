@@ -17,7 +17,7 @@ extern volatile uint16_t raw_adc_a;
 extern volatile uint16_t raw_adc_b;
 extern volatile uint16_t raw_adc_c;
 extern volatile uint32_t adc_isr_us;
-extern uint8_t adc_isr_flag;
+extern volatile uint8_t adc_isr_flag;
 
 /* Fault debug variables */
 volatile uint32_t fault_pc = 0;
