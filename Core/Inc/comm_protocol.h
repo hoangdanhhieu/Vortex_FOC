@@ -52,7 +52,7 @@
 
 #define RSP_ACK 0x81       /**< ACK: cmd_type(1B) + status(1B) */
 #define RSP_VALUE 0x82     /**< Value: id(1B) + value(4B float) */
-#define RSP_STATUS 0x83    /**< Status: state(1B)+fault(1B)+dir(1B)+pad+rpm(4B)+vbus(4B) */
+#define RSP_STATUS 0x83    /**< Status: state(1B)+fault(1B)+dir(1B)+pad+rpm(4B)+vbus(4B)+ibus(4B) */
 #define RSP_PARAM_ALL 0x84 /**< All params: count(1B) + [id(1B)+val(4B)]×N */
 #define RSP_PLOT                                                                     \
     0x90 /**< Stream: Vd,Vq,Id,Iq,Iq_ref,theta,Ia,Ib,Ic,duty_a,duty_b,duty_c (12x2B) \

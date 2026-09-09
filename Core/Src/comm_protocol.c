@@ -45,7 +45,7 @@ static uint8_t tx_buf[COMM_MAX_PAYLOAD + 4]
     __attribute__((aligned(4))); /* header + type + len + payload + crc */
 
 #define SAMPLE_BUF_SIZE 2048
-static int16_t sampled_data_buf[SAMPLE_BUF_SIZE] __attribute__((aligned(4)));
+static __fp16 sampled_data_buf[SAMPLE_BUF_SIZE] __attribute__((aligned(4)));
 static uint8_t sample_channels[4];
 static uint8_t sample_num_channels = 0;
 static uint16_t sample_decimation = 1;
@@ -453,24 +453,21 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             memcpy(&rsp[0], &offset, 2);
             memcpy(&rsp[2], &size, 2);
 
-            for (uint16_t i = 0; i < size; i++) {
-                int16_t val = sampled_data_buf[offset + i];
-                memcpy(&rsp[4 + i * 2], &val, 2);
-            }
-
+            memcpy(&rsp[4], &sampled_data_buf[offset], size * 2);
             send_packet(RSP_SAMPLE_DATA, rsp, 4 + size * 2);
             break;
         }
 
         case CMD_STATUS: {
-            uint8_t rsp[12];
+            uint8_t rsp[16];
             rsp[0] = (uint8_t)g_foc.status.state;
             rsp[1] = (uint8_t)g_foc.status.fault;
             rsp[2] = (FOC_GetDirection() < 0) ? 1 : 0;
             rsp[3] = 0; /* padding */
             memcpy(&rsp[4], &g_foc.data.speed_rpm, 4);
             memcpy(&rsp[8], &g_foc.data.Vbus, 4);
-            send_packet(RSP_STATUS, rsp, 12);
+            memcpy(&rsp[12], &g_foc.data.Ibus, 4);
+            send_packet(RSP_STATUS, rsp, 16);
             break;
         }
 
@@ -659,16 +656,7 @@ void Comm_ProcessSampling(void) {
 
         for (uint8_t i = 0; i < sample_num_channels; i++) {
             float val = get_param_value(sample_channels[i]);
-
-            /* Scaling: theta is scaled by 10000, everything else by 1000 */
-            int16_t scaled_val;
-            if (sample_channels[i] == PID_THETA_ELEC) {
-                scaled_val = (int16_t)(val * 10000.0f);
-            } else {
-                scaled_val = (int16_t)(val * 1000.0f);
-            }
-
-            sampled_data_buf[sample_idx++] = scaled_val;
+            sampled_data_buf[sample_idx++] = (__fp16)val;
         }
 
         if (sample_idx >= SAMPLE_BUF_SIZE) {

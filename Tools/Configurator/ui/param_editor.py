@@ -4,14 +4,34 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QLabel, QDoubleSpinBox, QPushButton, QGridLayout,
     QGroupBox, QScrollArea, QMessageBox, QGraphicsOpacityEffect,
-    QFileDialog
+    QFileDialog, QComboBox
 )
 from PySide6.QtCore import Qt, QTimer
 
 from core.serial_comm import SerialThread
 from core import protocol
-from core.param_defs import PARAM_DEFS, PARAM_GROUPS, get_params_by_group
+from core.param_defs import PARAM_DEFS, PARAM_GROUPS, get_params_by_group, CHOICE_PARAMS
 from ui.widgets import WheelDoubleSpinBox
+
+class ParamComboBox(QComboBox):
+    """Dropdown parameter selector that behaves like a spinbox for get/set."""
+    def __init__(self, items: list[str], parent=None):
+        super().__init__(parent)
+        self.addItems(items)
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+    def value(self) -> float:
+        return float(self.currentIndex())
+
+    def setValue(self, val: float):
+        idx = int(round(val))
+        if 0 <= idx < self.count():
+            self.setCurrentIndex(idx)
+
+    def setReadOnly(self, ro: bool):
+        self.setEnabled(not ro)
 
 class ParamEditor(QWidget):
     def __init__(self, serial_thread: SerialThread, parent=None):
@@ -126,24 +146,31 @@ class ParamEditor(QWidget):
             lbl.setMinimumWidth(100)
             grid.addWidget(lbl, row, 0)
 
-            spin = WheelDoubleSpinBox()
-            spin.setRange(pmin, pmax)
-            spin.setSingleStep(step)
-            spin.setKeyboardTracking(False)
-            import math
-            if step >= 1:
-                spin.setDecimals(0)
+            if pid in CHOICE_PARAMS:
+                widget = ParamComboBox(CHOICE_PARAMS[pid])
+                widget.setReadOnly(ro)
+                widget.setMinimumWidth(120)
+                self._spinboxes[pid] = widget
+                grid.addWidget(widget, row, 1)
             else:
-                try:
-                    # e.g step=0.000001 -> log10=-6 -> decimals=6
-                    dec = int(math.ceil(-math.log10(step)))
-                    spin.setDecimals(min(9, max(1, dec)))
-                except ValueError:
-                    spin.setDecimals(4)
-            spin.setReadOnly(ro)
-            spin.setMinimumWidth(120)
-            self._spinboxes[pid] = spin
-            grid.addWidget(spin, row, 1)
+                spin = WheelDoubleSpinBox()
+                spin.setRange(pmin, pmax)
+                spin.setSingleStep(step)
+                spin.setKeyboardTracking(False)
+                import math
+                if step >= 1:
+                    spin.setDecimals(0)
+                else:
+                    try:
+                        # e.g step=0.000001 -> log10=-6 -> decimals=6
+                        dec = int(math.ceil(-math.log10(step)))
+                        spin.setDecimals(min(9, max(1, dec)))
+                    except ValueError:
+                        spin.setDecimals(4)
+                spin.setReadOnly(ro)
+                spin.setMinimumWidth(120)
+                self._spinboxes[pid] = spin
+                grid.addWidget(spin, row, 1)
 
             if unit:
                 grid.addWidget(QLabel(unit), row, 2)

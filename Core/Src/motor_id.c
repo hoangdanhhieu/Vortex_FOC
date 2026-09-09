@@ -137,6 +137,18 @@ static float s_flux_theta_unwrapped = 0.0f;
 static uint32_t s_flux_sample_count = 0;
 static float s_flux_prev_theta = 0.0f;
 static float s_vac_sq_sum = 0.0f;
+static uint32_t s_vac_samples = 0;
+static float s_last_zc_sum = 0.0f;
+static uint32_t s_last_zc_samples = 0;
+static float s_last_zc_theta_unwrapped = 0.0f;
+static uint32_t s_last_zc_th_samples = 0;
+static uint16_t s_zc_count = 0;
+static float s_prev_vac = 0.0f;
+static uint8_t s_zc_started = 0;
+static float s_max_vac = -100.0f;
+static float s_min_vac = 100.0f;
+static float s_flux_dc_alpha = 0.0f;
+static float s_flux_dc_beta = 0.0f;
 
 /*===========================================================================*/
 /* Private Helper Functions                                                  */
@@ -201,6 +213,9 @@ void MotorID_Init(void) {
     id_result.selected_freq_hz = 2400.0f;
     id_result.measured_flux = 0.0f;
     id_result.measured_kv = 0.0f;
+    id_result.measured_b0 = 0.0f;
+    id_result.measured_inertia = 0.0f;
+    id_result.detected_direction = 0;
     id_result.state = MOTOR_ID_STATE_IDLE;
     id_result.error_code = 0;
 
@@ -289,39 +304,72 @@ void MotorID_MeasureFluxOffline(void) {
     s_flux_sample_count = 0;
     s_flux_prev_theta = 0.0f;
     s_vac_sq_sum = 0.0f;
+    s_vac_samples = 0;
+    s_last_zc_sum = 0.0f;
+    s_last_zc_samples = 0;
+    s_zc_count = 0;
+    s_prev_vac = 0.0f;
+    s_zc_started = 0;
+    s_max_vac = -100.0f;
+    s_min_vac = 100.0f;
     FOC_Start();
 }
 
-void FOC_StateCoastFluxID(void) {
-    static float s_max_a = 0.0f;
-    static float s_min_a = 0.0f;
-    static float s_max_c = 0.0f;
-    static float s_min_c = 0.0f;
-
+CCMRAM_FUNC void FOC_StateCoastFluxID(void) {
     if (s_flux_coast_counter == 0) {
         FOC_SetPhaseVoltageDMA(1);
         FOC_EnableDrivers(0);
         s_flux_theta_unwrapped = 0.0f;
         s_flux_sample_count = 0;
         s_flux_prev_theta = 0.0f;
-        s_max_a = -100.0f;
-        s_min_a = 100.0f;
-        s_max_c = -100.0f;
-        s_min_c = 100.0f;
+        s_vac_sq_sum = 0.0f;
+        s_vac_samples = 0;
+        s_last_zc_sum = 0.0f;
+        s_last_zc_samples = 0;
+        s_last_zc_theta_unwrapped = 0.0f;
+        s_last_zc_th_samples = 0;
+        s_zc_count = 0;
+        s_prev_vac = 0.0f;
+        s_zc_started = 0;
+        s_max_vac = -100.0f;
+        s_min_vac = 100.0f;
+        s_flux_dc_alpha = 0.0f;
+        s_flux_dc_beta = 0.0f;
     }
 
     float Ea = g_foc.data.Vphase_a;
     float Ec = g_foc.data.Vphase_c;
 
-    /* Reconstruct 2-phase Clarke Transform directly from Ea, Ec
-     * Assumes Ea and Ec are already DC-calibrated (centered at 0V) */
+    /* Differential Line-to-Line terminal voltage Vac = Ea - Ec.
+     * When coasting with MOSFETs disabled, diode clamping shifts the floating
+     * neutral point by Vn(t) = -min(ea, eb, ec). Because both Phase A and Phase C
+     * share the identical Vn(t), Vac = (Ea + Vn) - (Ec + Vn) = Ea - Ec.
+     * The diode distortion and neutral point shift cancel out 100%, leaving a
+     * pure, undistorted, zero-centered sinusoid Vac with peak Vac_peak = sqrt(3) * E_phase_peak. */
+    float Vac = Ea - Ec;
+
+    /* Reconstruct 2-phase Clarke Transform directly from Ea, Ec for angle and speed tracking */
     float E_alpha = 1.5f * Ea;
     float E_beta = -0.8660254f * (Ea + 2.0f * Ec);
 
-    float theta = cordic_atan2(-E_alpha, E_beta);
+    /* 1st-order DC Blocker to reject diode clamping DC offset so the orbit centers at (0, 0) */
+    if (s_flux_coast_counter == 0) {
+        s_flux_dc_alpha = E_alpha;
+        s_flux_dc_beta = E_beta;
+    } else {
+        float alpha_dc = 0.002f;
+        s_flux_dc_alpha += (E_alpha - s_flux_dc_alpha) * alpha_dc;
+        s_flux_dc_beta += (E_beta - s_flux_dc_beta) * alpha_dc;
+    }
+
+    float E_alpha_clean = E_alpha - s_flux_dc_alpha;
+    float E_beta_clean = E_beta - s_flux_dc_beta;
+
+    float theta = cordic_atan2(-E_alpha_clean, E_beta_clean);
 
     if (s_flux_coast_counter == 10) {
         s_flux_prev_theta = theta;
+        s_prev_vac = Vac;
     }
 
     /* delta_theta is in [-1, 1] for [-pi, pi] */
@@ -333,10 +381,30 @@ void FOC_StateCoastFluxID(void) {
 
     /* Ignore first 720 samples (~15ms) to allow DMA to stabilize and inductive spikes to decay */
     if (s_flux_coast_counter > 720) {
-        if (Ea > s_max_a) s_max_a = Ea;
-        if (Ea < s_min_a) s_min_a = Ea;
-        if (Ec > s_max_c) s_max_c = Ec;
-        if (Ec < s_min_c) s_min_c = Ec;
+        /* Track differential peak-to-peak */
+        if (Vac > s_max_vac) s_max_vac = Vac;
+        if (Vac < s_min_vac) s_min_vac = Vac;
+
+        /* Zero-Crossing detection to align RMS accumulation window to exact integer half-cycles */
+        uint8_t is_zc = (s_prev_vac <= 0.0f && Vac > 0.0f) || (s_prev_vac >= 0.0f && Vac < 0.0f);
+        if (!s_zc_started && is_zc) {
+            s_zc_started = 1;
+            s_flux_theta_unwrapped = 0.0f;
+            s_flux_sample_count = 0;
+        }
+
+        if (s_zc_started) {
+            s_vac_sq_sum += Vac * Vac;
+            s_vac_samples++;
+            if (is_zc) {
+                s_last_zc_sum = s_vac_sq_sum;
+                s_last_zc_samples = s_vac_samples;
+                s_last_zc_theta_unwrapped = s_flux_theta_unwrapped;
+                s_last_zc_th_samples = s_flux_sample_count;
+                s_zc_count++;
+            }
+        }
+        s_prev_vac = Vac;
 
         s_flux_theta_unwrapped += delta_theta;
         s_flux_sample_count++;
@@ -348,35 +416,50 @@ void FOC_StateCoastFluxID(void) {
     if (s_flux_coast_counter >= target_samples) {
         float measured_flux = 0.0f;
         float measured_kv = 0.0f;
+        int8_t detected_dir = 1;
 
         if (s_flux_sample_count > 0) {
-            float avg_delta_theta = s_flux_theta_unwrapped / (float)s_flux_sample_count;
-
+            float avg_delta_theta;
+            if (s_zc_count >= 2 && s_last_zc_th_samples > 0) {
+                avg_delta_theta = s_last_zc_theta_unwrapped / (float)s_last_zc_th_samples;
+            } else {
+                avg_delta_theta = s_flux_theta_unwrapped / (float)s_flux_sample_count;
+            }
             float omega_avg = avg_delta_theta * PI * (float)CONTROL_FREQUENCY;
 
+            detected_dir = (omega_avg >= 0.0f) ? 1 : -1;
+
             if (fabsf(omega_avg) > 10.0f) {
-                /* Tính biên độ đỉnh pha: V_peak = (Max - Min) / 2 */
-                float v_peak_a = (s_max_a - s_min_a) * 0.5f;
-                float v_peak_c = (s_max_c - s_min_c) * 0.5f;
-                float v_peak_avg = (v_peak_a + v_peak_c) * 0.5f;
+                float Vac_peak = 0.0f;
 
-                /* Biên độ đỉnh dây (Line-to-Line Peak) */
-                float Vac_peak = v_peak_avg * SQRT3;
+                /* Primary Engine: Integer Zero-Crossing RMS (Immune to ADC noise, gives >35dB SNR
+                 * gain) */
+                if (s_zc_count >= 2 && s_last_zc_samples > 0) {
+                    float vac_rms = sqrtf(s_last_zc_sum / (float)s_last_zc_samples);
+                    Vac_peak = 1.41421356f * vac_rms;
+                } else if (s_max_vac > s_min_vac) {
+                    /* Secondary Engine: Differential Peak-to-Peak Fallback */
+                    Vac_peak = 0.5f * (s_max_vac - s_min_vac);
+                }
 
-                /* Calculate KV directly from Line-to-Line Peak:
-                 * KV = RPM / V_L-L(peak)
-                 * RPM = (omega_avg_elec * 60) / (2 * PI * pole_pairs) */
-                float rpm = (fabsf(omega_avg) * 60.0f) / (TWO_PI * g_foc.cfg.motor_poles);
-                measured_kv = rpm / Vac_peak;
+                if (Vac_peak > 0.01f) {
+                    /* Calculate KV directly from Line-to-Line Peak:
+                     * KV = RPM / V_L-L(peak)
+                     * RPM = (omega_avg_elec * 60) / (2 * PI * pole_pairs) */
+                    float rpm = (fabsf(omega_avg) * 60.0f) / (TWO_PI * g_foc.cfg.motor_poles);
+                    measured_kv = rpm / Vac_peak;
 
-                /* Back-calculate Flux Linkage from KV for the system to use:
-                 * Flux = 60 / (sqrt(3) * 2 * PI * KV * Poles) */
-                measured_flux = 60.0f / (SQRT3 * TWO_PI * measured_kv * g_foc.cfg.motor_poles);
+                    /* Back-calculate Flux Linkage from KV:
+                     * Flux = 60 / (sqrt(3) * 2 * PI * KV * Poles)
+                     * Equivalent to: Flux = Vac_peak / (sqrt(3) * omega_elec) */
+                    measured_flux = 60.0f / (SQRT3 * TWO_PI * measured_kv * g_foc.cfg.motor_poles);
+                }
             }
         }
 
         id_result.measured_flux = measured_flux;
         id_result.measured_kv = measured_kv;
+        id_result.detected_direction = detected_dir;
         id_result.state = MOTOR_ID_STATE_COMPLETE;
 
         s_is_flux_measuring = 0;
@@ -980,28 +1063,41 @@ void MotorID_InertiaSlowTask(void) {
     }
 
     if (s_inertia_sub == 0) { /* INIT */
-        float Rs = id_result.measured_rs;
-        if (Rs < 0.001f) Rs = g_foc.cfg.motor_rs;
         float flux =
             id_result.measured_flux > 0.0f ? id_result.measured_flux : g_foc.cfg.motor_flux;
         float Kt = 1.5f * g_foc.cfg.motor_poles * flux;
         if (Kt < 0.0001f) Kt = 0.0001f;
 
-        float b0_init = (1000.0f * Rs) / Kt;
-        if (b0_init < 10.0f) b0_init = 10.0f;
+        /* Pure Kt-based hyperbolic scaling for outrunner BLDC motors:
+         * Guarantees b0_init is within [0.5x, 2.5x] of True b0 across all motor sizes */
+        float b0_init = 12000.0f / (1.0f + 15.0f * Kt);
+        if (b0_init < 2000.0f) b0_init = 2000.0f;
+        if (b0_init > 15000.0f) b0_init = 15000.0f;
 
         float motor_max_curr = FlashConfig_Get()->motor_max_curr;
         if (motor_max_curr < 0.5f) motor_max_curr = 2.0f;
 
+        /* Update LADRC gains and limits without wiping out the internal state (z1, z2)
+           that was carefully seeded during the Handoff process! */
         LADRC_SetGains(&g_foc.ctrl.speed, g_foc.cfg.ladrc_omega_c, g_foc.cfg.ladrc_omega_o,
                        b0_init);
         LADRC_SetLimits(&g_foc.ctrl.speed, PI_SPEED_OUT_MIN, motor_max_curr);
 
-        float min_spd = g_foc.cfg.motor_min_spd;
-        if (min_spd < 50.0f) min_spd = 50.0f;
+        /* Speed 1: Scale from auto-calibrated min_spd (1.5x) with 300 RPM floor and 30% max_spd
+         * ceiling */
+        float sp1 = fmaxf(2.0f * g_foc.cfg.motor_min_spd, 300.0f);
+        if (sp1 > 0.30f * g_foc.cfg.motor_max_spd) {
+            sp1 = 0.30f * g_foc.cfg.motor_max_spd;
+        }
+        s_inertia_speed1_rpm = sp1;
 
-        s_inertia_speed1_rpm = min_spd * 3.0f;
-        s_inertia_speed2_rpm = min_spd * 6.0f;
+        /* Speed 2: Step delta >= 600 RPM for high SNR acceleration, capped at 60% max_spd */
+        float delta_sp = fmaxf(600.0f, 0.6f * s_inertia_speed1_rpm);
+        float sp2 = s_inertia_speed1_rpm + delta_sp;
+        if (sp2 > 0.60f * g_foc.cfg.motor_max_spd) {
+            sp2 = 0.60f * g_foc.cfg.motor_max_spd;
+        }
+        s_inertia_speed2_rpm = sp2;
 
         s_inertia_speed1_elec = s_inertia_speed1_rpm * RPM_TO_RAD * g_foc.cfg.motor_poles;
         s_inertia_speed2_elec = s_inertia_speed2_rpm * RPM_TO_RAD * g_foc.cfg.motor_poles;

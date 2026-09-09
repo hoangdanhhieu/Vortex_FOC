@@ -48,6 +48,7 @@ Core/Src/foc_flying_start.c \
 Core/Src/foc_startup.c \
 Core/Src/foc_slow_task.c \
 Core/Src/foc_input.c \
+Core/Src/input_pot.c \
 Core/Src/motor_id.c \
 Core/Src/comm_protocol.c \
 Core/Src/flash_config.c \
@@ -167,7 +168,7 @@ C_INCLUDES =  \
 # compile gcc flags
 ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
 
-CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+CFLAGS += $(MCU) -mfp16-format=ieee $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2

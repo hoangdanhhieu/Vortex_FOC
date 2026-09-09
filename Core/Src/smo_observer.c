@@ -9,6 +9,7 @@
 #include "smo_observer.h"
 
 #include "cordic_math.h"
+#include "foc.h"
 #include "foc_config.h"
 #include "foc_state_machine.h"
 #include "math.h"
@@ -146,11 +147,8 @@ CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
 
     /* 6th Harmonic Adaptive Compensation */
     if (smo->enable_harmonic_comp) {
-        /* Correct phase delay calculation: exactly 6 times fundamental phase lag */
-        float phase_lag_6th = 6.0f * phase_lag;
-
-        /* Generate phase-corrected reference angle in [-1, 1) range */
-        float theta_ref = normalize_angle(6.0f * smo->theta_est - phase_lag_6th);
+        /* Generate reference angle directly locked to estimated rotor position [-1, 1) */
+        float theta_ref = normalize_angle(6.0f * smo->theta_est);
 
         float cos_6, sin_6;
         cordic_sincos(theta_ref, &cos_6, &sin_6);
@@ -163,12 +161,18 @@ CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
         smo->Ac += smo->gamma_6th * theta_err_clean * cos_6 * smo->dt;
         smo->As += smo->gamma_6th * theta_err_clean * sin_6 * smo->dt;
 
-        /* Clamp coefficients to +/- 5 degrees in normalized units */
-        smo->Ac = saturatef(smo->Ac, smo->max_comp_norm);
-        smo->As = saturatef(smo->As, smo->max_comp_norm);
+        /* Circular clamp to preserve maximum compensation angle in any direction */
+        float comp_mag_sq = smo->Ac * smo->Ac + smo->As * smo->As;
+        float max_norm_sq = smo->max_comp_norm * smo->max_comp_norm;
+        if (comp_mag_sq > max_norm_sq) {
+            float inv_scale = smo->max_comp_norm / sqrtf(comp_mag_sq);
+            smo->Ac *= inv_scale;
+            smo->As *= inv_scale;
+        }
     } else {
-        smo->Ac = 0.0f;
-        smo->As = 0.0f;
+        /* Soft decay to avoid step disturbance when disabled near min speed */
+        smo->Ac *= 0.995f;
+        smo->As *= 0.995f;
     }
 
     /* Convert normalized error to radians for the PLL PI controller */
@@ -237,15 +241,8 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     float f_elec = fabsf(omega_stf) * (1.0f / TWO_PI);
     float wc = TWO_PI * (f_bw_min + 0.8f * f_elec);
 
-    float a = wc * smo->dt;
-    float b = omega_stf * smo->dt;
-    float D_inv = 1.0f / ((1.0f + a) * (1.0f + a) + b * b);
-
-    float r_alpha = smo->Ealpha_flt + a * smo->Ealpha;
-    float r_beta = smo->Ebeta_flt + a * smo->Ebeta;
-
-    smo->Ealpha_flt = ((1.0f + a) * r_alpha - b * r_beta) * D_inv;
-    smo->Ebeta_flt = (b * r_alpha + (1.0f + a) * r_beta) * D_inv;
+    stf_filter_step(smo->Ealpha, smo->Ebeta, &smo->Ealpha_flt, &smo->Ebeta_flt, wc, omega_stf,
+                    smo->dt);
 
     /* 4. PLL Tracking */
     SMO_PLL_Track(smo);
@@ -298,6 +295,35 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha
     smo->denom_inv = 1.0f / (1.0f + smo->Rs * smo->dt_over_Ls);
 }
 
+CCMRAM_FUNC static inline void SMO_PLL_Track_BEMF(SMO_Observer_t* smo) {
+    float theta_bemf = cordic_atan2(-smo->Ealpha_flt, smo->Ebeta_flt);
+
+    /* In Flying Start, Back-EMF is directly sampled at t = 0 from ADC phase voltages.
+     * Unlike SMO current integration (which has a 1.0 dt observer midpoint lag),
+     * direct BEMF measurement has zero observer lag. Thus phase_lag = 0.0f. */
+    float theta_err = normalize_angle(theta_bemf - smo->theta_est);
+    float theta_err_rad = theta_err * PI;
+
+    /* Soft decay / active tracking based on BEMF magnitude */
+    float bemf_sq = smo->Ealpha_flt * smo->Ealpha_flt + smo->Ebeta_flt * smo->Ebeta_flt;
+    if (bemf_sq >= 1e-4f) {
+        smo->pll_integral += smo->pll_ki * theta_err_rad * smo->dt;
+        smo->pll_integral = clampf(smo->pll_integral, smo->pll_int_min, smo->pll_int_max);
+    } else {
+        smo->pll_integral *= 0.995f;
+    }
+
+    float omega_raw = smo->pll_kp * theta_err_rad + smo->pll_integral;
+    float omega_limit = smo->pll_int_max * 1.5f;
+    if (omega_limit < 1000.0f) omega_limit = 1000.0f;
+    smo->omega_est = saturatef(omega_raw, omega_limit);
+
+    smo->omega_out += (TWO_PI * 300.0f / CONTROL_FREQUENCY) * (smo->omega_est - smo->omega_out);
+
+    smo->theta_est += (smo->omega_est / PI) * smo->dt;
+    smo->theta_est = normalize_angle(smo->theta_est);
+}
+
 CCMRAM_FUNC void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta) {
     /* Self-Tuning Filter (STF) for BEMF using Backward Euler (unconditionally stable) */
     smo->omega_stf += 0.06545f * (smo->omega_est - smo->omega_stf);
@@ -315,7 +341,7 @@ CCMRAM_FUNC void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta) {
 
     smo->Ealpha_flt = ((1.0f + a) * r_alpha - b * r_beta) * D_inv;
     smo->Ebeta_flt = (b * r_alpha + (1.0f + a) * r_beta) * D_inv;
-    SMO_PLL_Track(smo);
+    SMO_PLL_Track_BEMF(smo);
 }
 
 void SMO_SlowTask(SMO_Observer_t* smo) {

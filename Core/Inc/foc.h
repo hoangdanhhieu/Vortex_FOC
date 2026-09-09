@@ -6,20 +6,6 @@
 #include "foc_config.h"
 #include "foc_state_machine.h"
 #include "stm32g4xx_ll_tim.h"
-/* Q31 and Angle Conversion Functions                                        */
-/*===========================================================================*/
-
-int32_t radians_to_q31(float radians);
-int32_t degrees_to_q31(float degrees);
-int32_t float_to_q31(float value);
-float q31_to_float(int32_t q31_value);
-
-/*===========================================================================*/
-/* CORDIC Accelerated Functions                                              */
-/*===========================================================================*/
-
-void cordic_sin_cos(int32_t angle, int32_t* sin, int32_t* cos);
-void cordic_sin_cos_f32(float theta, float* sin_out, float* cos_out);
 
 /*===========================================================================*/
 /* Clarke/Park Transforms                                                    */
@@ -64,6 +50,30 @@ CCMRAM_FUNC static inline void inverse_park_transform(float Vd, float Vq, float 
  */
 CCMRAM_FUNC static inline float normalize_angle_norm(float angle) {
     return angle - 2.0f * floorf((angle + 1.0f) * 0.5f);
+}
+
+/**
+ * @brief Self-Tuning Filter (STF) step in alpha-beta frame (Backward Euler)
+ * @param in_alpha  Alpha input signal
+ * @param in_beta   Beta input signal
+ * @param flt_alpha Pointer to filtered alpha state variable (updated in-place)
+ * @param flt_beta  Pointer to filtered beta state variable (updated in-place)
+ * @param wc        Cutoff angular frequency [rad/s]
+ * @param omega     Center tracking angular frequency [rad/s]
+ * @param dt        Sample period [s]
+ */
+CCMRAM_FUNC static inline void stf_filter_step(float in_alpha, float in_beta,
+                                              float* flt_alpha, float* flt_beta,
+                                              float wc, float omega, float dt) {
+    float a = wc * dt;
+    float b = omega * dt;
+    float D_inv = 1.0f / ((1.0f + a) * (1.0f + a) + b * b);
+
+    float r_alpha = *flt_alpha + a * in_alpha;
+    float r_beta  = *flt_beta  + a * in_beta;
+
+    *flt_alpha = ((1.0f + a) * r_alpha - b * r_beta) * D_inv;
+    *flt_beta  = (b * r_alpha + (1.0f + a) * r_beta) * D_inv;
 }
 
 /*===========================================================================*/

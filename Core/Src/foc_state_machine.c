@@ -77,6 +77,7 @@ void FOC_Init(void) {
     g_foc.data.Iq_ref_cmd = 0.0f;
     g_foc.data.Valpha = g_foc.data.Vbeta = 0.0f;
     g_foc.data.Vbus = 12.0f;
+    g_foc.data.Ibus = 0.0f;
 
     g_foc.cmd.Id_ref = 0.0f;
     g_foc.cmd.Iq_ref = 0.0f;
@@ -109,13 +110,15 @@ void FOC_Init(void) {
 
     BIST_Init(&g_foc.ctrl.bist);
 
-    g_foc.adc_cal.offset_a = ADC_CURRENT_OFFSET;
-    g_foc.adc_cal.offset_b = ADC_CURRENT_OFFSET;
-    g_foc.adc_cal.offset_c = ADC_CURRENT_OFFSET;
-    g_foc.adc_cal.offset_vphase_a = 234;
+    g_foc.adc_cal.offset_a = 2009;
+    g_foc.adc_cal.offset_b = 2012;
+    g_foc.adc_cal.offset_c = 2011;
+    g_foc.adc_cal.offset_vphase_a = 278;
     g_foc.adc_cal.offset_vphase_b = 234;
-    g_foc.adc_cal.offset_vphase_c = 234;
+    g_foc.adc_cal.offset_vphase_c = 276;
     g_foc.adc_cal.cal_samples = 0;
+    g_foc.noise_profile.noise_rms = 0.100f;
+    g_foc.cfg.motor_min_spd = FOC_CalculateObserverMinSpeed();
 
     g_foc.status.run_counter = 0;
     g_foc.isr_time_cycles = 0;
@@ -277,14 +280,10 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     clarke_transform(g_foc.data.Ia, g_foc.data.Ib, g_foc.data.Ic, &g_foc.data.Ialpha,
                      &g_foc.data.Ibeta);
 
-    float wc = TWO_PI * CURRENT_STF_FC;
-    float a = wc * CONTROL_PERIOD;
-    float b = g_foc.data.omega_elec * CONTROL_PERIOD;
-    float D_inv = 1.0f / ((1.0f + a) * (1.0f + a) + b * b);
-    float ri_alpha = g_foc.data.Ialpha_flt + a * g_foc.data.Ialpha;
-    float ri_beta = g_foc.data.Ibeta_flt + a * g_foc.data.Ibeta;
-    g_foc.data.Ialpha_flt = ((1.0f + a) * ri_alpha - b * ri_beta) * D_inv;
-    g_foc.data.Ibeta_flt = (b * ri_alpha + (1.0f + a) * ri_beta) * D_inv;
+    float f_bw = (g_foc.cfg.kp_iq / g_foc.cfg.motor_ls) * (1.0f / TWO_PI);
+    float wc = TWO_PI * clampf(3.0f * f_bw, 1000.0f, 4000.0f);
+    stf_filter_step(g_foc.data.Ialpha, g_foc.data.Ibeta, &g_foc.data.Ialpha_flt,
+                    &g_foc.data.Ibeta_flt, wc, g_foc.data.omega_elec, CONTROL_PERIOD);
 
     if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_FAULT) {
         if (g_foc.status.state == FOC_STATE_IDLE) {
@@ -302,11 +301,13 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     }
     if (g_foc.status.state == FOC_STATE_DETECT || g_foc.status.state == FOC_STATE_FLYING_START ||
         g_foc.status.state == FOC_STATE_COAST_FLUX_ID) {
-        g_foc.data.Vphase_a =
-            foc_adc_to_vphase(adc_regular_buffer[0], g_foc.adc_cal.offset_vphase_a);
-        g_foc.data.Vphase_c =
-            foc_adc_to_vphase(adc_regular_buffer[1], g_foc.adc_cal.offset_vphase_c);
-        g_foc.data.Vphase_b = -(g_foc.data.Vphase_a + g_foc.data.Vphase_c);
+        float va = foc_adc_to_vphase(adc_regular_buffer[0], g_foc.adc_cal.offset_vphase_a);
+        float vc = foc_adc_to_vphase(adc_regular_buffer[1], g_foc.adc_cal.offset_vphase_c);
+        float vb = -(va + vc);
+
+        g_foc.data.Vphase_a = va;
+        g_foc.data.Vphase_b = vb;
+        g_foc.data.Vphase_c = vc;
     }
 
     switch (g_foc.status.state) {
@@ -322,6 +323,9 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
             break;
         case FOC_STATE_FLYING_START:
             FOC_StateFlyingStart();
+            break;
+        case FOC_STATE_BRAKE:
+            FOC_StateBrake();
             break;
         case FOC_STATE_ALIGN:
             FOC_StateAlign();
@@ -604,6 +608,7 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
 static void FOC_StateStop(void) {
     FOC_SetPhaseVoltageDMA(0);
     FOC_EnableDrivers(0);
+    MotorID_Stop();
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
@@ -616,6 +621,7 @@ static void FOC_StateStop(void) {
 static void FOC_StateFault(void) {
     FOC_SetPhaseVoltageDMA(0);
     FOC_EnableDrivers(0);
+    MotorID_Stop();
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
@@ -655,7 +661,8 @@ void FOC_SetSpeedRef(float speed_rpm) {
 
 void FOC_SetTorqueRef(float torque_percent) {
     if (g_foc.status.state == FOC_STATE_STOP) return;
-    g_foc.cmd.Iq_ref_target = (torque_percent / 100.0f) * g_foc.cfg.motor_max_curr;
+    float pct = clampf(torque_percent, 0.0f, 100.0f);
+    g_foc.cmd.Iq_ref_target = (pct / 100.0f) * g_foc.cfg.motor_max_curr;
 }
 
 void FOC_SetVoltageRef(float voltage_percent) {
@@ -666,14 +673,6 @@ void FOC_SetVoltageRef(float voltage_percent) {
 
 void FOC_SetControlMode(FOC_ControlMode_t mode) {
     g_foc.status.control_mode = mode;
-}
-
-FOC_State_t FOC_GetState(void) {
-    return g_foc.status.state;
-}
-
-FOC_Fault_t FOC_GetFault(void) {
-    return g_foc.status.fault;
 }
 
 void FOC_ClearFault(void) {

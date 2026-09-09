@@ -51,9 +51,9 @@ uint8_t FOC_IsInTransition(void) {
 
 void FOC_StateAlign(void) {
     if (g_foc.startup.counter == 0) {
-        float rec_speed = FOC_CalculateRecommendedHandoffRpm();
-        if (g_foc.cfg.startup_handoff_speed < rec_speed) {
-            g_foc.cfg.startup_handoff_speed = rec_speed;
+        /* Ensure startup handoff speed respects physical observer minimum speed */
+        if (g_foc.cfg.startup_handoff_speed < g_foc.cfg.motor_min_spd) {
+            g_foc.cfg.startup_handoff_speed = g_foc.cfg.motor_min_spd;
         }
     }
     g_foc.startup.counter++;
@@ -139,9 +139,15 @@ void FOC_StateStartup(void) {
 
     /* Universal Vector Steering for Smooth Propeller Startup & Pole-Slip Immunity:
      * Steer current vector angle gamma_norm smoothly from 0 (all Id) to 1/3 (60 deg: 50% Id, 86.6%
-     * Iq). The 50% Id provides a stiff magnetic restoring spring preventing pole slipping, while
-     * the 86.6% Iq provides plenty of acceleration torque. */
-    float steer_threshold = 0.35f * handoff_omega;
+     * Iq). For Motor ID: uses a fixed 50 rad/s (~8 Hz) threshold because KV is not yet known. For
+     * normal startup: uses 0.35 * handoff_omega bounded to [30, 80] rad/s (5-13 Hz electrical) to
+     * ensure breakaway completes locally without keeping excessive Id at high handoff speeds. */
+    float steer_threshold;
+    if (MotorID_IsFluxMeasuring()) {
+        steer_threshold = 50.0f;
+    } else {
+        steer_threshold = clampf(0.35f * handoff_omega, 30.0f, 80.0f);
+    }
     float steer_ratio = (steer_threshold > 1.0f) ? (g_foc.startup.omega / steer_threshold) : 1.0f;
     if (steer_ratio > 1.0f) steer_ratio = 1.0f;
 
@@ -188,7 +194,16 @@ void FOC_StateStartup(void) {
 
 #if ENABLE_CLOSED_LOOP_HANDOFF
     if (MotorID_IsFluxMeasuring()) {
-        if (g_foc.startup.omega > handoff_omega) {
+        float ed = g_foc.data.Vd - g_foc.cfg.motor_rs * g_foc.data.Id +
+                   g_foc.startup.omega * g_foc.cfg.motor_ls * g_foc.data.Iq;
+        float eq = g_foc.data.Vq - g_foc.cfg.motor_rs * g_foc.data.Iq -
+                   g_foc.startup.omega * g_foc.cfg.motor_ls * g_foc.data.Id;
+        float E_bemf_est = sqrtf(ed * ed + eq * eq);
+        uint8_t freq_ok = g_foc.startup.omega >= 150.0f;
+        uint8_t bemf_ok = E_bemf_est >= 1.0f;
+        uint8_t v_limit_reached = g_foc.data.Vq >= 0.5f * g_foc.data.Vbus;
+        uint8_t speed_limit_reached = g_foc.data.speed_rpm >= 4000.0f;
+        if (freq_ok && (bemf_ok || v_limit_reached || speed_limit_reached)) {
             g_foc.status.state = FOC_STATE_COAST_FLUX_ID;
             return;
         }
@@ -226,7 +241,8 @@ void FOC_StateStartup(void) {
     }
 
     if (g_foc.startup.omega >= handoff_omega * STARTUP_STALL_SPEED_RATIO) {
-        if (g_foc.data.e_real_flt < STARTUP_STALL_BEMF_RATIO * e_expect) {
+        if ((g_foc.data.e_real_flt < STARTUP_STALL_BEMF_RATIO * e_expect) ||
+            (s_delta_theta_variance > 0.15f)) {
             s_startup_stall_cnt++;
             if (s_startup_stall_cnt >= STARTUP_STALL_SAMPLES) {
                 g_foc.status.fault = FOC_FAULT_STARTUP_FAIL;
@@ -247,14 +263,19 @@ void FOC_StateStartup(void) {
         PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
         PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
 
+        /* Seamless torque continuity for all modes */
+        float handoff_iq = g_foc.cmd.Iq_ref;
+        g_foc.cmd.Iq_ref = handoff_iq;
+        g_foc.data.Iq_ref_cmd = handoff_iq;
+
         if (g_foc.status.control_mode == FOC_MODE_SPEED) {
             g_foc.cmd.speed_ref = g_foc.startup.omega;
-            LADRC_SeedState(&g_foc.ctrl.speed, g_foc.startup.omega, 0.0f);
-            g_foc.cmd.Iq_ref = 0.0f;
-        } else {
-            g_foc.cmd.Iq_ref = g_foc.data.Iq;
+            if (fabsf(g_foc.cmd.speed_ref_target) < 1.0f ||
+                g_foc.cmd.speed_ref_target < g_foc.startup.omega) {
+                g_foc.cmd.speed_ref_target = g_foc.startup.omega;
+            }
+            LADRC_SeedState(&g_foc.ctrl.speed, g_foc.startup.omega, handoff_iq);
         }
-        g_foc.data.Iq_ref_cmd = g_foc.cmd.Iq_ref;
 
         if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
             float max_v = SQRT3_INV * g_foc.data.Vbus;
@@ -325,43 +346,4 @@ CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm
     g_foc.data.speed_rpm =
         (1.0f - s_blend_alpha) * (g_foc.startup.omega / g_foc.cfg.motor_poles * (60.0f / TWO_PI)) +
         s_blend_alpha * smo_speed_rpm;
-}
-
-float FOC_CalculateRecommendedHandoffRpm(void) {
-    float v_deadtime = (DEAD_TIME_NS * 1e-9f) * (float)CONTROL_FREQUENCY * g_foc.data.Vbus;
-    float v_dt_residual = 0.35f * v_deadtime;
-    float v_current_noise = g_foc.noise_profile.noise_rms * g_foc.cfg.motor_rs;
-    float v_hw_floor = 0.050f;
-    float v_noise_floor = v_dt_residual + v_current_noise + v_hw_floor;
-    const float k_snr = 3.5f;
-    float e_bemf_target = k_snr * v_noise_floor;
-    if (e_bemf_target < 0.350f) {
-        e_bemf_target = 0.350f;
-    }
-
-    float rec_handoff_rpm = 0.0f;
-    if (g_foc.cfg.motor_flux > 1e-6f) {
-        /* Direct physics: omega_e = E / psi -> RPM = omega_e * 60 / (2*PI * pole_pairs) */
-        float omega_e_target = e_bemf_target / g_foc.cfg.motor_flux;
-        rec_handoff_rpm = (omega_e_target / (float)g_foc.cfg.motor_poles) * (60.0f / TWO_PI);
-    } else {
-        /* Fallback via KV: RPM = sqrt(3) * KV * E_bemf */
-        rec_handoff_rpm = 1.732f * g_foc.cfg.motor_kv * e_bemf_target;
-    }
-
-    /* 7. Safety constraints:
-     * - Minimum electrical frequency: at least 15 Hz for STF/PLL to track cleanly
-     * - Maximum speed limit: clamp to 20% of max rated speed
-     */
-    float min_elec_rpm = (15.0f * 60.0f) / (float)g_foc.cfg.motor_poles;
-    if (rec_handoff_rpm < min_elec_rpm) {
-        rec_handoff_rpm = min_elec_rpm;
-    }
-
-    float max_handoff_limit = 0.20f * g_foc.cfg.motor_max_spd;
-    if (rec_handoff_rpm > max_handoff_limit) {
-        rec_handoff_rpm = max_handoff_limit;
-    }
-
-    return rec_handoff_rpm;
 }

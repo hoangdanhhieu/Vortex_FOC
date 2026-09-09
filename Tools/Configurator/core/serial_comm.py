@@ -88,11 +88,11 @@ class SerialThread(QThread):
             if not self._serial or not self._serial.is_open:
                 break
             try:
-                data = self._serial.read(256)
+                in_wait = self._serial.in_waiting
+                data = self._serial.read(in_wait if in_wait > 0 else 1)
                 if data:
                     self.raw_rx.emit(data)
                     packets = self._parser.feed(data)
-                    accumulated_plots = []
                     for pkt in packets:
                         self._dispatch(pkt)
             except Exception as e:

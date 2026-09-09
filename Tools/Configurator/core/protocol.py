@@ -62,20 +62,23 @@ class ParamId(IntEnum):
     OC_THR = 29; OV_THR = 30; UV_THR = 31
     STALL_SPD = 32; STALL_I = 33; STALL_MS = 34
     
+    # Input / Throttle
+    IN_SOURCE = 35; IN_MODE = 36; IN_MIN_SPD = 37; IN_MIN_CUR = 38; IN_MIN_VQ = 39; IN_DEADBAND = 40
+
     # Internal
-    DIRECTION = 35; OC_COUNT = 36; STALL_EN = 37
+    DIRECTION = 41; OC_COUNT = 42; STALL_EN = 43
     
     # Live Params
-    SPD_REF = 38; TRQ_REF = 39; VBUS = 40; RPM = 41
-    ID_MEAS = 42; IQ_MEAS = 43; IA = 44; IB = 45; IC = 46
-    DUTY_A = 47; DUTY_B = 48; DUTY_C = 49; VD = 50; VQ = 51
-    ID_RS_MEAS = 52; ID_LS_MEAS = 53; ID_ISAT_MEAS = 54
-    ID_ALPHA_MEAS = 55; ID_DT_MEAS = 56; ID_FREQ_MEAS = 57
-    ID_FLUX_MEAS = 58; ID_KV_MEAS = 59
-    ID_INERTIA_MEAS = 60; ID_B0_MEAS = 61
-    USER_PLOT1 = 62; USER_PLOT2 = 63; USER_PLOT3 = 64
-    THETA_ELEC = 65
-    PID_COUNT = 66
+    SPD_REF = 44; TRQ_REF = 45; VBUS = 46; RPM = 47
+    ID_MEAS = 48; IQ_MEAS = 49; IA = 50; IB = 51; IC = 52
+    DUTY_A = 53; DUTY_B = 54; DUTY_C = 55; VD = 56; VQ = 57
+    ID_RS_MEAS = 58; ID_LS_MEAS = 59; ID_ISAT_MEAS = 60
+    ID_ALPHA_MEAS = 61; ID_DT_MEAS = 62; ID_FREQ_MEAS = 63
+    ID_FLUX_MEAS = 64; ID_KV_MEAS = 65
+    ID_INERTIA_MEAS = 66; ID_B0_MEAS = 67
+    USER_PLOT1 = 68; USER_PLOT2 = 69; USER_PLOT3 = 70
+    THETA_ELEC = 71
+    PID_COUNT = 72
 
 
 
@@ -208,16 +211,18 @@ def parse_value(payload: bytes) -> tuple[int, float]:
 
 
 def parse_status(payload: bytes) -> dict:
-    """Parse STATUS response"""
-    if len(payload) >= 12:
+    """Parse STATUS response (16 bytes: state, fault, dir, pad, rpm, vbus, ibus)"""
+    if len(payload) >= 16:
         rpm = struct.unpack('<f', payload[4:8])[0]
         vbus = struct.unpack('<f', payload[8:12])[0]
+        ibus = struct.unpack('<f', payload[12:16])[0]
         return {
             'state': payload[0],
             'fault': payload[1],
             'dir': payload[2],
             'rpm': rpm,
             'vbus': vbus,
+            'ibus': ibus,
         }
     return {}
 
@@ -239,8 +244,8 @@ def parse_param_all(payload: bytes) -> dict[int, float]:
     return params
 
 
-def parse_sample_data(payload: bytes) -> tuple[int, int, list[int]]:
-    """Parse SAMPLE_DATA: returns (offset, size, raw_data_list)"""
+def parse_sample_data(payload: bytes) -> tuple[int, int, list[float]]:
+    """Parse SAMPLE_DATA: returns (offset, size, raw_data_list) where raw_data_list contains IEEE-754 float16 values."""
     if len(payload) < 4:
         return 0, 0, []
     offset, size = struct.unpack('<HH', payload[0:4])
@@ -252,6 +257,6 @@ def parse_sample_data(payload: bytes) -> tuple[int, int, list[int]]:
         
     raw_data = []
     if size > 0:
-        raw_data = list(struct.unpack(f'<{size}h', payload[4:4+size*2]))
+        raw_data = list(struct.unpack(f'<{size}e', payload[4:4+size*2]))
         
     return offset, size, raw_data

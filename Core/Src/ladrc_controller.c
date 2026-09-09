@@ -78,5 +78,6 @@ void LADRC_SeedState(LADRC_Controller_t* ctrl, float omega_init, float u_init) {
     ctrl->z1 = omega_init;
     ctrl->u_prev = u_init;
     /* In steady-state, derivative is zero: b0 * u + f = 0 => z2 = -b0 * u_init */
-    ctrl->z2 = -ctrl->b0 * u_init;
+    float z2_est = -ctrl->b0 * u_init;
+    ctrl->z2 = clampf(z2_est, -ctrl->z2_max, ctrl->z2_max);
 }

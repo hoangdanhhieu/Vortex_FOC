@@ -12,11 +12,12 @@ from core import protocol
 from ui.styles import GREEN, RED, TEXT_DIM, YELLOW
 from ui.widgets import WheelDoubleSpinBox
 
-STATE_NAMES = ["IDLE", "CAL", "DETECT", "FLY_START", "ALIGN", "STARTUP", "RUN", "STOP", "FAULT", "IDENT"]
+STATE_NAMES = ["IDLE", "CAL", "DETECT", "FLY_START", "ALIGN", "STARTUP", "RUN", "STOP", "FAULT", "IDENT", "COAST_ID", "BRAKE"]
 FAULT_NAMES = ["NONE", "OVERCURRENT", "OVERVOLTAGE", "UNDERVOLTAGE", "STARTUP_FAIL", "OBSERVER_FAIL", "STALL", "GROUND_FAULT"]
 STATE_COLORS = {
     0: TEXT_DIM, 1: YELLOW, 2: YELLOW, 3: YELLOW,
     4: YELLOW, 5: YELLOW, 6: GREEN, 7: YELLOW, 8: RED, 9: YELLOW,
+    10: YELLOW, 11: RED,
 }
 
 
@@ -71,7 +72,7 @@ class ControlPanel(QGroupBox):
         trq_group = QGroupBox("Torque (%)")
         trq_layout = QVBoxLayout(trq_group)
         self.trq_spin = WheelDoubleSpinBox()
-        self.trq_spin.setRange(-100.0, 100.0)
+        self.trq_spin.setRange(0.0, 100.0)
         self.trq_spin.setDecimals(1)
         self.trq_spin.setSingleStep(1.0)
         trq_layout.addWidget(self.trq_spin)
@@ -99,7 +100,8 @@ class ControlPanel(QGroupBox):
         self.lbl_state = QLabel("State: —")
         self.lbl_speed = QLabel("Speed: — RPM")
         self.lbl_vbus = QLabel("Vbus: — V")
-        for lbl in [self.lbl_state, self.lbl_speed, self.lbl_vbus]:
+        self.lbl_ibus = QLabel("Ibus: — A")
+        for lbl in [self.lbl_state, self.lbl_speed, self.lbl_vbus, self.lbl_ibus]:
             status_layout.addWidget(lbl)
         layout.addWidget(status_group)
 
@@ -115,6 +117,7 @@ class ControlPanel(QGroupBox):
 
         # Cache variables
         self._last_vbus = 0.0
+        self._last_ibus = 0.0
 
     def set_enabled_state(self, enabled: bool):
         """Update UI state based on connection status."""
@@ -162,6 +165,9 @@ class ControlPanel(QGroupBox):
         vbus = st.get('vbus', 0.0)
         self.lbl_vbus.setText(f"Vbus: {vbus:.1f} V")
         self._last_vbus = vbus
+        ibus = st.get('ibus', 0.0)
+        self.lbl_ibus.setText(f"Ibus: {ibus:.2f} A")
+        self._last_ibus = ibus
         
         # Update direction
         dir_val = st.get('dir', 0)

@@ -29,7 +29,8 @@ typedef enum {
     FOC_STATE_STOP,            /**< Controlled stop */
     FOC_STATE_FAULT,           /**< Fault condition */
     FOC_STATE_SELF_COMMISSION, /**< Motor parameter identification */
-    FOC_STATE_COAST_FLUX_ID    /**< Freewheeling BEMF measurement */
+    FOC_STATE_COAST_FLUX_ID,   /**< Freewheeling BEMF measurement */
+    FOC_STATE_BRAKE            /**< Active dynamic braking for reverse flying start recovery */
 } FOC_State_t;
 
 typedef enum {
@@ -54,16 +55,57 @@ typedef enum {
 /*===========================================================================*/
 
 typedef struct {
+    FOC_State_t state;              /**< Current state machine state */
+    FOC_ControlMode_t control_mode; /**< Control mode: Speed, Torque (Current), or Voltage */
+    FOC_Fault_t fault;              /**< Active system fault code */
+    float reverse;         /**< Motor rotation direction [dimensionless: 1.0 = FWD, -1.0 = REV] */
+    uint8_t in_transition; /**< Open-loop to closed-loop handoff flag [0 = Normal, 1 = Blending] */
+    uint32_t run_counter;  /**< Control loop execution tick counter [ISR cycles @ 48kHz] */
+} FOC_Status_t;
+
+typedef struct {
+    float Ia, Ib, Ic;            /**< 3-phase raw measured currents [A] */
+    float Ialpha, Ibeta;         /**< Clarke stationary frame currents (alpha, beta) [A] */
+    float Ialpha_flt, Ibeta_flt; /**< STF (Self-Tuning Filter) cleaned currents (alpha, beta) [A] */
+    float Vphase_a, Vphase_b, Vphase_c; /**< 3-phase terminal voltages [V] */
+    float Id, Iq;                       /**< Park rotating frame currents (d-axis, q-axis) [A] */
+    float Vd, Vq;        /**< Park rotating frame control voltages (d-axis, q-axis) [V] */
+    float Iq_ref_cmd;    /**< Slew-rate limited active Iq current command [A] */
+    float Valpha, Vbeta; /**< Inverse Park stationary frame output voltages [V] */
+    float theta_park;    /**< Electrical rotor position angle for Park transform (no hardware delay
+                            compensation) */
+    float theta_elec;    /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0,
+                            where 1.0 = +pi rad] */
+    float omega_elec;    /**< Electrical angular velocity [rad/s] */
+    float speed_rpm;     /**< Mechanical rotational speed [RPM] */
+    float Vbus;          /**< DC bus supply voltage [V] */
+    float Vbus_inv;      /**< Inverse of DC bus voltage (1.0 / Vbus) [1/V] */
+    float Ibus;          /**< Total DC bus consumed current [A] */
+    float duty_a, duty_b, duty_c; /**< Inverter phase PWM duty cycles [dimensionless: 0.0 to 1.0] */
+    float i_scale;                /**< ADC raw count to phase current conversion factor [A/count] */
+    float v_scale;                /**< ADC raw count to phase voltage conversion factor [V/count] */
+    float e_real_flt;             /**< Filtered real Back-EMF vector magnitude [V] */
+    float e_expect_flt;           /**< Filtered expected Back-EMF vector magnitude [V] */
+} FOC_Data_t;
+
+typedef struct {
+    float speed_ref;        /**< Ramp-filtered mechanical speed target [RPM] */
+    float speed_ref_target; /**< Commanded mechanical speed target from user/host [RPM] */
+    float Iq_ref;           /**< Ramp-filtered quadrature current target [A] */
+    float Iq_ref_target;    /**< Commanded quadrature current target from user/host [A] */
+    float Id_ref;           /**< Direct axis current reference (0A or field weakening) [A] */
+    float Id_ref_target;    /**< Commanded direct axis current target [A] */
+    float Vq_ref;        /**< Ramp-filtered normalized voltage command [normalized: -1.0 to 1.0] */
+    float Vq_ref_target; /**< Commanded normalized voltage target [normalized: -1.0 to 1.0] */
+} FOC_Cmd_t;
+
+/*===========================================================================*/
+/* FOC Control Structure                                                     */
+/*===========================================================================*/
+
+typedef struct {
     /*--- Main State ---*/
-    struct {
-        FOC_State_t state;              /**< Current state machine state */
-        FOC_ControlMode_t control_mode; /**< Control mode: Speed, Torque (Current), or Voltage */
-        FOC_Fault_t fault;              /**< Active system fault code */
-        float reverse; /**< Motor rotation direction [dimensionless: 1.0 = FWD, -1.0 = REV] */
-        uint8_t
-            in_transition; /**< Open-loop to closed-loop handoff flag [0 = Normal, 1 = Blending] */
-        uint32_t run_counter; /**< Control loop execution tick counter [ISR cycles @ 48kHz] */
-    } status;
+    FOC_Status_t status;
 
     /*--- Controllers ---*/
     struct {
@@ -75,43 +117,10 @@ typedef struct {
     } ctrl;
 
     /*--- Live Data / Signals ---*/
-    struct {
-        float Ia, Ib, Ic;    /**< 3-phase raw measured currents [A] */
-        float Ialpha, Ibeta; /**< Clarke stationary frame currents (alpha, beta) [A] */
-        float Ialpha_flt,
-            Ibeta_flt; /**< STF (Self-Tuning Filter) cleaned currents (alpha, beta) [A] */
-        float Vphase_a, Vphase_b, Vphase_c; /**< 3-phase terminal voltages [V] */
-        float Id, Iq;        /**< Park rotating frame currents (d-axis, q-axis) [A] */
-        float Vd, Vq;        /**< Park rotating frame control voltages (d-axis, q-axis) [V] */
-        float Iq_ref_cmd;    /**< Slew-rate limited active Iq current command [A] */
-        float Valpha, Vbeta; /**< Inverse Park stationary frame output voltages [V] */
-        float theta_park; /**< Electrical rotor position angle for Park transform (no hardware delay
-                             compensation) */
-        float theta_elec; /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0,
-                             where 1.0 = +pi rad] */
-        float omega_elec; /**< Electrical angular velocity [rad/s] */
-        float speed_rpm;  /**< Mechanical rotational speed [RPM] */
-        float Vbus;       /**< DC bus supply voltage [V] */
-        float Vbus_inv;   /**< Inverse of DC bus voltage (1.0 / Vbus) [1/V] */
-        float duty_a, duty_b,
-            duty_c;    /**< Inverter phase PWM duty cycles [dimensionless: 0.0 to 1.0] */
-        float i_scale; /**< ADC raw count to phase current conversion factor [A/count] */
-        float v_scale; /**< ADC raw count to phase voltage conversion factor [V/count] */
-        float e_real_flt;   /**< Filtered real Back-EMF vector magnitude [V] */
-        float e_expect_flt; /**< Filtered expected Back-EMF vector magnitude [V] */
-    } data;
+    FOC_Data_t data;
 
     /*--- References / Commands ---*/
-    struct {
-        float speed_ref;        /**< Ramp-filtered mechanical speed target [RPM] */
-        float speed_ref_target; /**< Commanded mechanical speed target from user/host [RPM] */
-        float Iq_ref;           /**< Ramp-filtered quadrature current target [A] */
-        float Iq_ref_target;    /**< Commanded quadrature current target from user/host [A] */
-        float Id_ref;           /**< Direct axis current reference (0A or field weakening) [A] */
-        float Id_ref_target;    /**< Commanded direct axis current target [A] */
-        float Vq_ref; /**< Ramp-filtered normalized voltage command [normalized: -1.0 to 1.0] */
-        float Vq_ref_target; /**< Commanded normalized voltage target [normalized: -1.0 to 1.0] */
-    } cmd;
+    FOC_Cmd_t cmd;
 
     /*--- Startup State ---*/
     struct {
@@ -173,6 +182,50 @@ typedef struct {
 extern FOC_Control_t g_foc;
 
 /*===========================================================================*/
+/* Read-Only State & Telemetry Getters (Zero-Overhead Inline)                */
+/*===========================================================================*/
+
+static inline const FOC_Data_t* FOC_GetData(void) {
+    return &g_foc.data;
+}
+
+static inline const FOC_Status_t* FOC_GetStatus(void) {
+    return &g_foc.status;
+}
+
+static inline FOC_State_t FOC_GetState(void) {
+    return g_foc.status.state;
+}
+
+static inline FOC_Fault_t FOC_GetFault(void) {
+    return g_foc.status.fault;
+}
+
+static inline float FOC_GetSpeedRPM(void) {
+    return g_foc.data.speed_rpm;
+}
+
+static inline float FOC_GetVbus(void) {
+    return g_foc.data.Vbus;
+}
+
+static inline float FOC_GetId(void) {
+    return g_foc.data.Id;
+}
+
+static inline float FOC_GetIq(void) {
+    return g_foc.data.Iq;
+}
+
+static inline float FOC_GetVd(void) {
+    return g_foc.data.Vd;
+}
+
+static inline float FOC_GetVq(void) {
+    return g_foc.data.Vq;
+}
+
+/*===========================================================================*/
 /* Public Functions                                                          */
 /*===========================================================================*/
 
@@ -226,18 +279,6 @@ void FOC_SetVoltageRef(float voltage_percent);
  * @param mode FOC_MODE_SPEED or FOC_MODE_TORQUE
  */
 void FOC_SetControlMode(FOC_ControlMode_t mode);
-
-/**
- * @brief Get current FOC state
- * @return Current state
- */
-FOC_State_t FOC_GetState(void);
-
-/**
- * @brief Get current fault code
- * @return Fault code (0 = no fault)
- */
-FOC_Fault_t FOC_GetFault(void);
 
 /**
  * @brief Clear fault and return to IDLE

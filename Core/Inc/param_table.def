@@ -64,6 +64,13 @@ PARAM_DEF(PID_STALL_SPD,  float,     fault_stall_speed,    FAULT_STALL_SPEED_RPM
 PARAM_DEF(PID_STALL_I,    float,     fault_stall_current,  FAULT_STALL_CURRENT_A)
 PARAM_DEF(PID_STALL_MS,   float,     fault_stall_time_ms,  FAULT_STALL_TIME_MS)
 
+/* Input / Throttle */
+PARAM_DEF(PID_IN_SOURCE,   float,     input_source,         INPUT_SOURCE_DEFAULT)
+PARAM_DEF(PID_IN_MODE,     float,     input_mode,           INPUT_MODE_DEFAULT)
+PARAM_DEF(PID_IN_MIN_SPD,  float,     input_min_spd,        INPUT_MIN_SPEED_DEFAULT)
+PARAM_DEF(PID_IN_MIN_CUR,  float,     input_min_cur,        INPUT_MIN_CURRENT_DEFAULT)
+PARAM_DEF(PID_IN_MIN_VQ,   float,     input_min_vq,         INPUT_MIN_VQ_DEFAULT)
+PARAM_DEF(PID_IN_DEADBAND, float,     input_deadband,       INPUT_DEADBAND_DEFAULT)
 
 /* Internal Non-GUI params */
 PARAM_DEF(PID_DIRECTION,  int8_t,    direction,            1)

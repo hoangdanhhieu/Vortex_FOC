@@ -23,4 +23,9 @@ void FOC_StateDetect(void);
  */
 void FOC_StateFlyingStart(void);
 
+/**
+ * @brief State handler for FOC_STATE_BRAKE (active low-side dynamic brake for reverse flying start recovery)
+ */
+void FOC_StateBrake(void);
+
 #endif /* FOC_FLYING_START_H */

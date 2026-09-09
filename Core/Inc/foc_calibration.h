@@ -32,4 +32,10 @@ void FOC_StateCalibration(void);
  */
 void FOC_ConfigureAWD(void);
 
+/**
+ * @brief Calculate physical minimum observer speed based on noise floor, deadtime & SNR constraints
+ * @return Minimum observer speed in RPM
+ */
+float FOC_CalculateObserverMinSpeed(void);
+
 #endif /* FOC_CALIBRATION_H */

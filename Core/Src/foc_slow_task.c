@@ -7,12 +7,12 @@
 
 #include "foc.h"
 #include "foc_config.h"
+#include "foc_input.h"
 #include "foc_state_machine.h"
 #include "ladrc_controller.h"
 #include "math.h"
-#include "peripheral_init.h"
-#include "foc_input.h"
 #include "motor_id.h"
+#include "peripheral_init.h"
 
 /* Safety check state */
 static uint32_t stall_counter = 0;       /* Stall timer (ticks) */
@@ -40,6 +40,16 @@ void FOC_SlowTask(void) {
         g_foc.data.Vbus = VBUS_IIR_ALPHA * g_foc.data.Vbus + (1.0f - VBUS_IIR_ALPHA) * vbus_new;
         if (g_foc.data.Vbus < 1.0f) g_foc.data.Vbus = 1.0f;
         g_foc.data.Vbus_inv = 1.0f / g_foc.data.Vbus;
+    }
+
+    /* --- Total DC Bus Current (Ibus) Estimation at 1 kHz --- */
+    if (g_foc.status.state == FOC_STATE_RUN || g_foc.status.state == FOC_STATE_STARTUP ||
+        g_foc.status.state == FOC_STATE_ALIGN) {
+        float p_elec = 1.5f * (g_foc.data.Vd * g_foc.data.Id + g_foc.data.Vq * g_foc.data.Iq);
+        float ibus_raw = (g_foc.data.Vbus > 1.0f) ? (p_elec * g_foc.data.Vbus_inv) : 0.0f;
+        g_foc.data.Ibus = 0.90f * g_foc.data.Ibus + 0.10f * ibus_raw;
+    } else {
+        g_foc.data.Ibus = 0.0f;
     }
 
     /* Software OV/UV protection (replaces hardware AWD2) */
@@ -95,14 +105,18 @@ void FOC_SlowTask(void) {
             }
 
             /* Condition A: Significant current effort (motor trying hard to produce torque) */
-            uint8_t is_high_current = (iq_abs >= stall_i_thr) || (iq_abs >= 0.70f * g_foc.cfg.motor_max_curr);
+            uint8_t is_high_current =
+                (iq_abs >= stall_i_thr) || (iq_abs >= 0.70f * g_foc.cfg.motor_max_curr);
 
-            /* Condition B1: BEMF collapsed despite expected speed (catches observer hallucination) */
+            /* Condition B1: BEMF collapsed despite expected speed (catches observer hallucination)
+             */
             uint8_t is_bemf_collapsed = (g_foc.data.e_expect_flt > 0.5f) &&
                                         (g_foc.data.e_real_flt < 0.35f * g_foc.data.e_expect_flt);
 
-            /* Condition B2: Measured speed collapsed below minimum sensorless operational threshold (catches observer collapse) */
-            uint8_t is_speed_collapsed = (fabsf(g_foc.data.speed_rpm) < g_foc.cfg.fault_stall_speed);
+            /* Condition B2: Measured speed collapsed below minimum sensorless operational threshold
+             * (catches observer collapse) */
+            uint8_t is_speed_collapsed =
+                (fabsf(g_foc.data.speed_rpm) < g_foc.cfg.fault_stall_speed);
 
             if (is_high_current && (is_bemf_collapsed || is_speed_collapsed)) {
                 stall_counter++;
@@ -139,27 +153,33 @@ void FOC_SlowTask(void) {
 
     if (g_foc.status.state == FOC_STATE_RUN) {
         MotorID_InertiaSlowTask(); /* Offline inertia measurement hook */
-        
-        if (g_foc.status.control_mode == FOC_MODE_SPEED) {
-            float accel_rate =
-                g_foc.cfg.speed_ramp_accel * RPM_TO_RAD * g_foc.cfg.motor_poles * 0.001f;
-            float decel_rate =
-                g_foc.cfg.speed_ramp_decel * RPM_TO_RAD * g_foc.cfg.motor_poles * 0.001f;
-            float ramp_error = g_foc.cmd.speed_ref_target - g_foc.cmd.speed_ref;
 
-            if (ramp_error > accel_rate) {
-                g_foc.cmd.speed_ref += accel_rate;
-            } else if (ramp_error < -decel_rate) {
-                g_foc.cmd.speed_ref -= decel_rate;
+        if (g_foc.status.control_mode == FOC_MODE_SPEED) {
+            if (!g_foc.status.in_transition) {
+                float accel_rate =
+                    g_foc.cfg.speed_ramp_accel * RPM_TO_RAD * g_foc.cfg.motor_poles * 0.001f;
+                float decel_rate =
+                    g_foc.cfg.speed_ramp_decel * RPM_TO_RAD * g_foc.cfg.motor_poles * 0.001f;
+                float ramp_error = g_foc.cmd.speed_ref_target - g_foc.cmd.speed_ref;
+
+                if (ramp_error > accel_rate) {
+                    g_foc.cmd.speed_ref += accel_rate;
+                } else if (ramp_error < -decel_rate) {
+                    g_foc.cmd.speed_ref -= decel_rate;
+                } else {
+                    g_foc.cmd.speed_ref = g_foc.cmd.speed_ref_target;
+                }
             } else {
-                g_foc.cmd.speed_ref = g_foc.cmd.speed_ref_target;
+                /* Hold speed reference steady at handoff speed during 20ms angle & Id blending */
+                g_foc.cmd.speed_ref = g_foc.startup.omega;
             }
 
             float target_iq =
                 LADRC_Update(&g_foc.ctrl.speed, g_foc.cmd.speed_ref, g_foc.data.omega_elec);
 
-            /* In Speed Mode, LADRC must be allowed to apply torque instantly to track the speed ramp.
-             * Applying current_ramp_rate here would cause severe actuator delay windup and triangle oscillations. */
+            /* In Speed Mode, LADRC must be allowed to apply torque instantly to track the speed
+             * ramp. Applying current_ramp_rate here would cause severe actuator delay windup and
+             * triangle oscillations. */
             g_foc.cmd.Iq_ref = target_iq;
 
             /* Anti-windup tracking for LESO */

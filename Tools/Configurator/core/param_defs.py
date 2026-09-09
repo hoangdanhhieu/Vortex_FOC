@@ -36,7 +36,6 @@ PARAM_DEFS = [
     (ParamId.M_POLES,  "Pole Pairs",    "",      "Motor",       1, 100, 1,     False),
     (ParamId.M_J,      "Rotor Inertia J","kg*m^2","Motor",      1e-8, 1.0, 1e-7, False),
     (ParamId.M_MAX_SPD, "Max Speed",     "RPM",   "Motor",       0, 100000, 10, False),
-    (ParamId.M_MIN_SPD, "Min Speed",     "RPM",   "Motor",       0, 10000, 10,  False),
     (ParamId.M_MAX_I,  "Max Current",   "A",     "Motor",       0, 100, 0.1,   False),
     (ParamId.COMP_DELAY,"Comp Delay*",   "samp", "ADC",         0, 50, 0.01,  False),
     # ADC
@@ -48,10 +47,24 @@ PARAM_DEFS = [
     (ParamId.STALL_SPD,"Stall Speed*",   "RPM",   "Safety",      0, 1000, 1,  False),
     (ParamId.STALL_I,  "Stall Current*", "A",     "Safety",      0, 100, 0.1,  False),
     (ParamId.STALL_MS, "Stall Time*",    "ms",    "Safety",      0, 10000, 10, False),
+    # Input
+    (ParamId.IN_SOURCE,   "Input Source*", "",      "Input",       0, 2,     1,    False),
+    (ParamId.IN_MODE,     "Control Mode*", "",      "Input",       0, 2,     1,    False),
+    (ParamId.IN_MIN_SPD,  "Min Speed*",    "RPM",   "Input",       0, 10000, 50,   False),
+    (ParamId.IN_MIN_CUR,  "Min Current*",  "A",     "Input",       0, 50,    0.1,  False),
+    (ParamId.IN_MIN_VQ,   "Min Voltage*",  "ratio", "Input",       0, 0.5,   0.01, False),
+    (ParamId.IN_DEADBAND, "Deadband*",     "ratio", "Input",       0, 0.3,   0.01, False),
 ]
 
+# Parameters that should be rendered as dropdown choice boxes instead of spinboxes
+# Mapping: ParamId -> list of option labels (index corresponds to float value)
+CHOICE_PARAMS = {
+    ParamId.IN_SOURCE: ["0: Disabled", "1: Potentiometer (PC4)", "2: Custom Driver"],
+    ParamId.IN_MODE: ["0: Speed (RPM)", "1: Torque (Current)", "2: Voltage (Duty %)"],
+}
+
 # Groups in display order
-PARAM_GROUPS = ["Current PI", "Speed LADRC", "Startup", "Ramp Rates", "Motor", "ADC", "Safety"]
+PARAM_GROUPS = ["Current PI", "Speed LADRC", "Startup", "Ramp Rates", "Motor", "ADC", "Safety", "Input"]
 
 
 def get_params_by_group(group: str):

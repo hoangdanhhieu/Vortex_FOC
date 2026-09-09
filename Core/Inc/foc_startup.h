@@ -44,9 +44,4 @@ uint8_t FOC_IsInTransition(void);
 CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega,
                                        float smo_speed_rpm);
 
-/**
- * @brief Calculate recommended sensorless handoff speed based on physical noise floor
- * @return Recommended handoff speed in RPM
- */
-float FOC_CalculateRecommendedHandoffRpm(void);
 #endif /* FOC_STARTUP_H */

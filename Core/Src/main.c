@@ -31,7 +31,6 @@ volatile uint32_t saved_psr = 0;
 
 volatile uint8_t adc_isr_flag = 0;
 volatile float ADC_Vref = 3.3f;
-uint16_t input = 0;
 
 /**
  * @brief  The application entry point.
@@ -39,6 +38,7 @@ uint16_t input = 0;
  */
 int main(void) {
     /* Reset of all peripherals, Initializes Flash interface and Systick */
+
     HAL_Init();
 
     /* Configure 170 MHz system clock */

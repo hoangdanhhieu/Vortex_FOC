@@ -219,6 +219,10 @@ void FOC_StateCalibration(void) {
         g_foc.startup.omega = 0.0f;
         g_foc.startup.counter = 0;
 
+        /* Auto-calculate physical minimum observer speed based on freshly calibrated noise &
+         * deadtime */
+        g_foc.cfg.motor_min_spd = FOC_CalculateObserverMinSpeed();
+
         if (id_result.state != MOTOR_ID_STATE_ALIGN) {
             g_foc.status.state = FOC_STATE_DETECT;
         } else {
@@ -231,4 +235,48 @@ void FOC_StateCalibration(void) {
             g_foc.status.state = FOC_STATE_SELF_COMMISSION;
         }
     }
+}
+
+float FOC_CalculateObserverMinSpeed(void) {
+    /* 1. In-Band noise attenuation using PLL minimum cutoff bandwidth:
+     * Directly links to smo->pll_cutoff_min without any complex math! */
+    float pll_bw = g_foc.ctrl.smo.pll_cutoff_min;
+    if (pll_bw < 10.0f) pll_bw = 10.0f; /* Safety baseline */
+    float f_nyquist = (float)CONTROL_FREQUENCY * 0.5f;
+    float k_atten = sqrtf(pll_bw / f_nyquist);
+    float noise_in_band = g_foc.noise_profile.noise_rms * k_atten;
+    float v_current_noise = noise_in_band * g_foc.cfg.motor_rs;
+    /* 2. Effective residual deadtime voltage after active DTC (residual ~5%) */
+    float v_deadtime = (DEAD_TIME_NS * 1e-9f) * (float)CONTROL_FREQUENCY * g_foc.data.Vbus;
+    float v_dt_residual = 0.05f * v_deadtime;
+    /* 3. Physical hardware floor (~2 LSB ADC quantization residual) */
+    const float v_hw_floor = 0.025f;
+    /* 4. Total In-Band Noise Floor */
+    float v_noise_floor = v_current_noise + v_dt_residual + v_hw_floor;
+    /* 5. 3-Sigma Target BEMF (99.73% statistical confidence) */
+    const float k_snr = 3.0f;
+    float e_bemf_target = k_snr * v_noise_floor;
+    if (e_bemf_target < 0.080f) {
+        e_bemf_target = 0.080f; /* 80 mV physical floor */
+    }
+    /* 6. Convert target BEMF to RPM */
+    float rec_handoff_rpm = 0.0f;
+    if (g_foc.cfg.motor_flux > 1e-6f) {
+        float omega_e_target = e_bemf_target / g_foc.cfg.motor_flux;
+        rec_handoff_rpm = (omega_e_target / (float)g_foc.cfg.motor_poles) * (60.0f / TWO_PI);
+    } else {
+        rec_handoff_rpm = 1.732f * g_foc.cfg.motor_kv * e_bemf_target;
+    }
+    /* 7. Safety constraints:
+     * - Minimum 15 Hz electrical frequency for clean STF/PLL tracking
+     * - Maximum clamp to 25% of max rated speed */
+    float min_elec_rpm = (15.0f * 60.0f) / (float)g_foc.cfg.motor_poles;
+    if (rec_handoff_rpm < min_elec_rpm) {
+        rec_handoff_rpm = min_elec_rpm;
+    }
+    float max_handoff_limit = 0.25f * g_foc.cfg.motor_max_spd;
+    if (rec_handoff_rpm > max_handoff_limit) {
+        rec_handoff_rpm = max_handoff_limit;
+    }
+    return rec_handoff_rpm;
 }

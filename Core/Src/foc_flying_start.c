@@ -8,7 +8,6 @@
 #include "cordic_math.h"
 #include "foc.h"
 #include "foc_config.h"
-#include "foc_startup.h"
 #include "foc_state_machine.h"
 #include "math.h"
 #include "peripheral_init.h"
@@ -27,11 +26,20 @@ static float s_cross_prod_sum = 0.0f;
 static float s_dc_alpha = 0.0f;
 static float s_dc_beta = 0.0f;
 
+/* Active dynamic brake state (reverse spinning recovery) */
+static uint32_t s_brake_counter = 0;
+static uint32_t s_brake_min_samples = 0;
+static uint32_t s_brake_max_samples = 0;
+static uint32_t s_brake_debounce_target = 0;
+static uint32_t s_brake_debounce_counter = 0;
+static float s_brake_exit_curr_sq = 0.0f;
+static float s_i_mag_sq_flt = 100.0f;
+
 /* Helper to extract pure BEMF fundamental by rejecting common-mode DC offset */
 static inline void get_pure_bemf(float* alpha, float* beta) {
     float Ea = g_foc.data.Vphase_a;
-    float Eb = g_foc.data.Vphase_b;
-    float Ec = g_foc.data.Vphase_c;
+    float Eb = (g_foc.status.reverse > 0.0f) ? g_foc.data.Vphase_b : g_foc.data.Vphase_c;
+    float Ec = (g_foc.status.reverse > 0.0f) ? g_foc.data.Vphase_c : g_foc.data.Vphase_b;
 
     float raw_alpha = (Ea - 0.5f * Eb - 0.5f * Ec) * TWO_THIRDS;
     float raw_beta = SQRT3_INV * (Eb - Ec);
@@ -52,13 +60,30 @@ static inline void get_pure_bemf(float* alpha, float* beta) {
 }
 
 void FOC_FlyingStart_Init(void) {
-    float f_elec_min = g_foc.cfg.motor_min_spd * g_foc.cfg.motor_poles / 60.0f;
-    if (f_elec_min < 1.0f) f_elec_min = 1.0f;
-    s_detect_samples = (uint32_t)(2.0f / f_elec_min * (float)CONTROL_FREQUENCY);
-    s_lock_samples = (uint32_t)(5.0f / (TWO_PI * SMO_PPL_CUTOFF) * (float)CONTROL_FREQUENCY);
-    uint32_t min_lock_samples = (uint32_t)(0.05f * (float)CONTROL_FREQUENCY);  // 50 ms
-    if (s_lock_samples < min_lock_samples) s_lock_samples = min_lock_samples;
-    s_bemf_threshold = g_foc.cfg.motor_min_spd / g_foc.cfg.motor_kv * 0.8f;
+    /* 1. Physical minimum observer speed determined by calibration */
+    float min_rpm = g_foc.cfg.motor_min_spd;
+    if (min_rpm < 50.0f) min_rpm = 50.0f;
+
+    /* 2. Minimum electrical frequency for detection */
+    float f_elec_min = (min_rpm * g_foc.cfg.motor_poles) / 60.0f;
+    if (f_elec_min < 10.0f) f_elec_min = 10.0f; /* Safety baseline: >= 10 Hz */
+
+    /* 3. Detect duration: Observe at least 2 electrical cycles, clamped between [50ms, 150ms] */
+    float t_detect = 2.0f / f_elec_min;
+    if (t_detect < 0.05f) t_detect = 0.05f;
+    if (t_detect > 0.15f) t_detect = 0.15f;
+    s_detect_samples = (uint32_t)(t_detect * (float)CONTROL_FREQUENCY);
+
+    /* 4. Lock duration: 40 ms is optimal for PLL angle lock and noise filtering */
+    s_lock_samples = (uint32_t)(0.040f * (float)CONTROL_FREQUENCY);
+
+    /* 5. Peak phase BEMF threshold:
+     * Derived directly from min_rpm and motor flux (E_phase = omega_elec * flux).
+     * Set threshold to 60% of min_rpm BEMF for responsive detection */
+    float omega_min_elec = (min_rpm * g_foc.cfg.motor_poles) * (TWO_PI / 60.0f);
+    s_bemf_threshold = (omega_min_elec * g_foc.cfg.motor_flux) * 0.6f;
+
+    /* Clamp floor to 50 mV (well above 15-20mV ADC noise floor, but sensitive to hand spinning) */
     if (s_bemf_threshold < 0.05f) s_bemf_threshold = 0.05f;
 
     s_detect_counter = 0;
@@ -71,6 +96,19 @@ void FOC_FlyingStart_Init(void) {
 
     s_dc_alpha = 0.0f;
     s_dc_beta = 0.0f;
+
+    /* Braking timing initialization */
+    s_brake_min_samples =
+        (uint32_t)((float)BRAKE_MIN_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY);
+    s_brake_max_samples =
+        (uint32_t)((float)BRAKE_MAX_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY);
+    s_brake_debounce_target =
+        (uint32_t)((float)BRAKE_DEBOUNCE_MS * 0.001f * (float)CONTROL_FREQUENCY);
+    s_brake_counter = 0;
+    s_brake_debounce_counter = 0;
+    float exit_curr = BRAKE_EXIT_CURR_MIN;
+    s_brake_exit_curr_sq = exit_curr * exit_curr;
+    s_i_mag_sq_flt = 100.0f;
 }
 
 void FOC_StateDetect(void) {
@@ -143,6 +181,28 @@ void FOC_StateFlyingStart(void) {
         g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.5f;
 
     } else if (s_flying_start_counter == s_lock_samples) {
+        if (omega_now <= 0.0f) {
+            /* Reverse rotation: active dynamic brake to stop motor */
+            FOC_SetPhaseVoltageDMA(0);
+            FOC_EnableDrivers(1);
+            s_brake_counter = 0;
+            s_brake_debounce_counter = 0;
+            s_i_mag_sq_flt = 100.0f;
+            g_foc.status.state = FOC_STATE_BRAKE;
+            return;
+        }
+
+        float min_handoff_rpm = g_foc.cfg.motor_min_spd;
+        float min_handoff_omega = (min_handoff_rpm * g_foc.cfg.motor_poles) * (TWO_PI / 60.0f);
+        if (omega_now < min_handoff_omega * 0.6f) {
+            /* Too slow for closed-loop SMO: abort to ALIGN for smooth open-loop ramp-up */
+            FOC_SetPhaseVoltageDMA(0);
+            FOC_EnableDrivers(1);
+            g_foc.startup.counter = 0;
+            g_foc.status.state = FOC_STATE_ALIGN;
+            return;
+        }
+
         float theta_park = SMO_GetParkAngle(&g_foc.ctrl.smo);
 
         float sin_th, cos_th;
@@ -195,12 +255,14 @@ void FOC_StateFlyingStart(void) {
 
         svpwm_calculate(theta_pwm);
 
-        /* Pre-load current PI integrals for bumpless transfer (compensate for FOC_StateRun FF) */
+        /* Pre-load current PI integrals for bumpless transfer (FOC_StateRun FF already provides
+         * BEMF) */
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
         LADRC_Reset(&g_foc.ctrl.speed);
 
-        g_foc.ctrl.iq.integral = E_bemf * 0.5;
+        g_foc.ctrl.iq.integral = 0.0;
+        // E_bemf * 1.0;
 
         /* Seed SMO current observer with actual measured currents */
         g_foc.ctrl.smo.Ialpha_est = g_foc.data.Ialpha;
@@ -249,5 +311,33 @@ void FOC_StateFlyingStart(void) {
         FOC_SetPhaseVoltageDMA(0);
         FOC_EnableDrivers(1);
         g_foc.status.state = FOC_STATE_RUN;
+    }
+}
+
+CCMRAM_FUNC void FOC_StateBrake(void) {
+    s_brake_counter++;
+    g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.0f;
+
+    /* Current magnitude squared in stationary alpha-beta frame */
+    float i_mag_sq =
+        g_foc.data.Ialpha_flt * g_foc.data.Ialpha_flt + g_foc.data.Ibeta_flt * g_foc.data.Ibeta_flt;
+
+    /* 2ms IIR smoothing on magnitude squared (~80Hz cutoff at 48kHz, alpha = 0.01) */
+    s_i_mag_sq_flt += 0.01f * (i_mag_sq - s_i_mag_sq_flt);
+
+    /* Check exit criteria */
+    if (s_brake_counter >= s_brake_max_samples) {
+        /* Maximum timeout expired: fail-safe exit to ALIGN */
+        g_foc.startup.counter = 0;
+        g_foc.status.state = FOC_STATE_ALIGN;
+    } else if (s_brake_counter >= s_brake_min_samples && s_i_mag_sq_flt < s_brake_exit_curr_sq) {
+        /* Below noise threshold: count consecutive debounce samples */
+        s_brake_debounce_counter++;
+        if (s_brake_debounce_counter >= s_brake_debounce_target) {
+            g_foc.startup.counter = 0;
+            g_foc.status.state = FOC_STATE_ALIGN;
+        }
+    } else {
+        s_brake_debounce_counter = 0;
     }
 }

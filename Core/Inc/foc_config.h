@@ -378,8 +378,38 @@ extern volatile float ADC_Vref;
 #define ID_ALIGN_DURATION_MS 150U  /**< D-axis alignment duration at I1 [ms] */
 
 /*===========================================================================*/
-#define POT_STOP_THRESHOLD 400  /**< Under 10% (30 degrees) to force stop/idle */
-#define POT_START_THRESHOLD 600 /**< Over 15% (44 degrees) to trigger motor start */
-#define POT_ADC_MAX 4095        /**< Maximum ADC value */
-#define POT_LPF_ALPHA 0.95f     /**< Potentiometer LPF coefficient (~8 Hz cutoff at 1 kHz) */
-#endif                          /* FOC_CONFIG_H */
+/* Input & Throttle Defaults                                                 */
+/*===========================================================================*/
+#define INPUT_SOURCE_DEFAULT      1.0f    /**< Default hardware: 0=NONE, 1=POT, 2=CUSTOM */
+#define INPUT_MODE_DEFAULT        2.0f    /**< Default input control mode: 0=SPEED, 1=TORQUE, 2=VOLTAGE */
+#define INPUT_MIN_SPEED_DEFAULT   800.0f  /**< Minimum speed for throttle setpoint [RPM] */
+#define INPUT_MIN_CURRENT_DEFAULT 0.5f    /**< Minimum current for throttle setpoint [A] */
+#define INPUT_MIN_VQ_DEFAULT      0.05f   /**< Minimum voltage ratio [0.0 to 1.0] */
+#define INPUT_DEADBAND_DEFAULT    0.05f   /**< Throttle deadband ratio [0.0 to 1.0] */
+
+#define POT_ADC_MAX               4095    /**< Maximum ADC value */
+#define POT_LPF_ALPHA             0.95f   /**< Potentiometer LPF coefficient (~8 Hz cutoff at 1 kHz) */
+
+/*===========================================================================*/
+/* Flying Start & Active Braking Configuration                               */
+/*===========================================================================*/
+
+/** Minimum active dynamic brake duration [ms] to allow current to settle */
+#define BRAKE_MIN_DURATION_MS 50U
+
+/** Maximum fail-safe active dynamic brake timeout [ms] */
+#define BRAKE_MAX_DURATION_MS 350U
+
+/** Multiplier for adaptive noise floor threshold (4-sigma = 99.994% confidence) */
+#define BRAKE_NOISE_SIGMA_MULT 4.0f
+
+/** Lower clamp for exit current threshold [A] (well above 10-30mA ADC DC offset floor) */
+#define BRAKE_EXIT_CURR_MIN 0.15f
+
+/** Upper clamp for exit current threshold [A] */
+#define BRAKE_EXIT_CURR_MAX 0.50f
+
+/** Debounce duration [ms] confirming motor has stopped before transitioning to ALIGN */
+#define BRAKE_DEBOUNCE_MS 10U
+
+#endif                                    /* FOC_CONFIG_H */

@@ -11,6 +11,7 @@
 #define MOTOR_ID_H
 
 #include <stdint.h>
+#include "foc_config.h"
 
 /*===========================================================================*/
 /* State Enum                                                                */
@@ -42,8 +43,8 @@ typedef struct {
     float measured_flux;    /* Identified permanent magnet flux [Wb]*/
     float measured_kv;      /* Calculated Motor KV              [RPM/V]*/
     float measured_b0;      /* Identified system gain b0        [rad/s^2 / A] */
-    float measured_inertia; /* Identified mechanical inertia J  [kg.m^2] */
-    
+    float measured_inertia; /* Identified rotor inertia J       [kg*m^2] */
+    int8_t detected_direction; /* Detected rotation: +1 = Forward, -1 = Reverse */
     MotorID_State_t state;
     uint32_t error_code;  /* 0 = OK, 1=Rs invalid, 2=Ls invalid, 3=Fit error, 7=No delta */
 } MotorID_Result_t;
@@ -72,7 +73,7 @@ uint8_t MotorID_IsFluxMeasuring(void);
 /**
  * @brief State handler for Freewheeling Flux Measurement
  */
-void FOC_StateCoastFluxID(void);
+CCMRAM_FUNC void FOC_StateCoastFluxID(void);
 
 /**
  * @brief Initiate Offline Inertia Measurement (Speed Step Integral)
