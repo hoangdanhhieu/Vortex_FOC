@@ -1,26 +1,28 @@
 # Vortex FOC
 
-High-performance Sensorless Field Oriented Control (FOC) for BLDC/PMSM motors, optimized for STM32G4 microcontrollers.
+High-performance, sensorless Field Oriented Control (FOC) firmware for PMSM/BLDC motors,
+heavily optimized for STM32G4 microcontrollers (CORDIC, OPAMPs, Injected ADC DMA, CCMRAM).
 
 [![Vortex FOC Demo](Hardware/Prototype/Image.jpg)](https://www.youtube.com/watch?v=LBecr3bSMa8)
 
 [![Watch on YouTube](https://img.shields.io/badge/YouTube-Watch_Video-red?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=LBecr3bSMa8)
 
-## 🚀 Key Features
-- **Sensorless FOC**: Sliding Mode Observer (SMO) + PLL for position/speed estimation.
-- **Optimized Performance**: ~10µs control loop @ 48kHz (48% CPU load @ 170MHz) using CORDIC and CCMRAM.
-- **Motor ID**: Automatic measurement of Phase Resistance ($R_s$) and Inductance ($L_s$).
-- **Tuning**: High-frequency command profiler (8kHz) for PID tuning.
-- **Communication**: High-bandwidth USB CDC protocol for real-time telemetry (1kHz).
+## Key Features
+- **Sensorless FOC**: - 48 kHz Control Loop: CCMRAM execution (~10 us compute time).
+- STF-SMO Observer: Self-Tuning Filter + Adaptive PLL + 6th harmonic compensation.
+- Speed Loop LADRC: 2nd-order Linear Extended State Observer (LESO) for active disturbance rejection.
+- Automated Motor ID: Offline Rs, Ls, Flux Linkage, Motor KV, Rotor Inertia (J), and System Gain (b0).
+- Advanced Flying Start & Braking: Direct BEMF capture + Active low-side dynamic brake for reverse recovery.
+- High-Bandwidth Telemetry: 48kHz sampled telemetry streamed over USB CDC.
 
-## 🧱 Hardware
+## Hardware
 - **MCU**: STM32G431 (CORDIC, OPAMPs, ADC DMA).
 - **Topology**: 3-Phase Gate Driver, 3-Shunt Low-side current sensing.
 
-## 💻 Configurator GUI
+## Configurator GUI
 Python-based (PySide6) tool for live tuning and visualization:
 - **Telemetry**: Real-time plotting with adjustable EMA smoothing.
-- **Helpers**: Calculators for Flux Linkage, PI Gains, and Filter Alpha.
+- **Parameter Tuning**: Real-time gain adjustment with built-in calculators for PI gains, LADRC bandwidth, and filter cutoff.
 - **Persistence**: Save/Load parameters to MCU Flash.
 
 ## 🛠 Getting Started
@@ -34,19 +36,6 @@ cd Tools/Configurator
 pip install -r requirements.txt
 python main.py
 ```
-
-## 📊 Project Status / Roadmap
-
-- [x] Basic FOC Algorithms & SVPWM
-- [x] Sensorless SMO Observer
-- [x] High-Speed USB CDC Protocol
-- [x] Offline Motor ID (Rs, Ls)
-- [x] High-Frequency PID Profiler
-- [x] Python Configurator GUI integration
-- [x] Flying Start
-- [ ] Field Weakening (Flux Weakening)
-- [ ] Online RLS Inductance tracking
-- [ ] PWM / DShot Input (1-Wire Interface)
 
 ## 🤖 Acknowledgements
 This project was developed with the assistance of advanced AI coding assistants. The AI acted as a pair-programmer, contributing to architectural decisions, complex mathematical implementations (FOC, SMO), and boilerplate generation. The core concepts, system integration, validation, and hardware-specific debugging were driven by human engineering.
