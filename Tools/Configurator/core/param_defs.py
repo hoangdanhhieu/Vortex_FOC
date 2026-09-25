@@ -2,7 +2,31 @@
 Parameter definitions — mirrors MCU param_table.
 """
 
+import math
 from core.protocol import ParamId
+
+# PIDs that are displayed/edited as RPM in GUI but stored as electrical rad/s in MCU
+SPEED_RPM_PIDS = {
+    ParamId.M_MAX_SPD,
+    ParamId.HANDOFF,
+    ParamId.STALL_SPD,
+    ParamId.IN_MIN_SPD,
+}
+
+
+def mcu_to_gui(pid: int, val: float, poles: float = 7.0) -> float:
+    """Convert MCU SI value to GUI display value."""
+    if pid in SPEED_RPM_PIDS:
+        return (val / poles) * (60.0 / (2.0 * math.pi)) if poles > 0 else 0.0
+    return val
+
+
+def gui_to_mcu(pid: int, val: float, poles: float = 7.0) -> float:
+    """Convert GUI display value to MCU SI value."""
+    if pid in SPEED_RPM_PIDS:
+        return val * (2.0 * math.pi / 60.0) * poles
+    return val
+
 
 # Parameter metadata: (id, name, unit, group, min, max, step, readonly)
 PARAM_DEFS = [
@@ -19,11 +43,11 @@ PARAM_DEFS = [
     # Startup
     (ParamId.I_STRT,   "Startup I*",     "A",     "Startup",     0, 100, 0.1,   False),
     (ParamId.I_ALGN,   "Align I*",       "A",     "Startup",     0, 100, 0.1,   False),
-    (ParamId.ACCEL,    "Accel*",         "RPM/s", "Startup",     0, 50000, 100, False),
-    (ParamId.HANDOFF,  "Handoff*",       "RPM",   "Startup",     0, 10000, 10,  False),
+    (ParamId.ACCEL,    "Accel*",         "rad/s²", "Startup",    0, 500000, 1000, False),
+    (ParamId.HANDOFF,  "Handoff*",       "RPM",   "Startup",     0, 100000, 10,  False),
     # Ramp Rates
-    (ParamId.RAMP_ACC, "Ramp Accel*",    "RPM/s", "Ramp Rates",  0, 100000, 100, False),
-    (ParamId.RAMP_DEC, "Ramp Decel*",    "RPM/s", "Ramp Rates",  0, 100000, 100, False),
+    (ParamId.RAMP_ACC, "Ramp Accel*",    "rad/s²", "Ramp Rates", 0, 500000, 1000, False),
+    (ParamId.RAMP_DEC, "Ramp Decel*",    "rad/s²", "Ramp Rates", 0, 500000, 1000, False),
     (ParamId.I_RAMP,   "Current Ramp*",  "A/s",   "Ramp Rates",  0, 100000, 10, False),
     (ParamId.V_RAMP,   "Voltage Ramp*",  "V/s",   "Ramp Rates",  0.1, 100000, 10, False),
     # Motor
@@ -44,7 +68,7 @@ PARAM_DEFS = [
     (ParamId.OC_THR,   "OC Threshold*",  "A",     "Safety",      0, 100, 0.1,  False),
     (ParamId.OV_THR,   "OV Threshold*",  "V",     "Safety",      0, 100, 0.1, False),
     (ParamId.UV_THR,   "UV Threshold*",  "V",     "Safety",      0, 100, 0.1, False),
-    (ParamId.STALL_SPD,"Stall Speed*",   "RPM",   "Safety",      0, 1000, 1,  False),
+    (ParamId.STALL_SPD,"Stall Speed*",   "RPM",   "Safety",      0, 10000, 10,  False),
     (ParamId.STALL_I,  "Stall Current*", "A",     "Safety",      0, 100, 0.1,  False),
     (ParamId.STALL_MS, "Stall Time*",    "ms",    "Safety",      0, 10000, 10, False),
     # Input
@@ -54,17 +78,26 @@ PARAM_DEFS = [
     (ParamId.IN_MIN_CUR,  "Min Current*",  "A",     "Input",       0, 50,    0.1,  False),
     (ParamId.IN_MIN_VQ,   "Min Voltage*",  "ratio", "Input",       0, 0.5,   0.01, False),
     (ParamId.IN_DEADBAND, "Deadband*",     "ratio", "Input",       0, 0.3,   0.01, False),
+    # System
+    (ParamId.PWM_FREQ,    "PWM Frequency*", "Hz",   "System",      16000, 96000, 1000, False),
 ]
 
 # Parameters that should be rendered as dropdown choice boxes instead of spinboxes
-# Mapping: ParamId -> list of option labels (index corresponds to float value)
+# Mapping: ParamId -> list of option labels (index corresponds to float value) or list of (label, float_val)
 CHOICE_PARAMS = {
     ParamId.IN_SOURCE: ["0: Disabled", "1: Potentiometer (PC4)", "2: Custom Driver"],
     ParamId.IN_MODE: ["0: Speed (RPM)", "1: Torque (Current)", "2: Voltage (Duty %)"],
+    ParamId.PWM_FREQ: [
+        ("24000 Hz", 24000.0),
+        ("32000 Hz", 32000.0),
+        ("48000 Hz (Standard)", 48000.0),
+        ("64000 Hz", 64000.0),
+        ("96000 Hz (High Speed)", 96000.0),
+    ],
 }
 
 # Groups in display order
-PARAM_GROUPS = ["Current PI", "Speed LADRC", "Startup", "Ramp Rates", "Motor", "ADC", "Safety", "Input"]
+PARAM_GROUPS = ["Current PI", "Speed LADRC", "Startup", "Ramp Rates", "Motor", "ADC", "Safety", "Input", "System"]
 
 
 def get_params_by_group(group: str):

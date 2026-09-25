@@ -4,8 +4,7 @@
 #include <stdint.h>
 
 #include "foc_config.h"
-#include "foc_state_machine.h"
-#include "stm32g4xx_ll_tim.h"
+#include "foc_hardware.h"
 
 /*===========================================================================*/
 /* Clarke/Park Transforms                                                    */
@@ -13,7 +12,7 @@
 
 CCMRAM_FUNC static inline void clarke_transform(float Ia, float Ib, float Ic, float* alpha,
                                                 float* beta) {
-    *alpha = (2.0f * Ia - Ib - Ic) * (1.0f / 3.0f);
+    *alpha = Ia;
     *beta = (Ib - Ic) * SQRT3_INV;
 }
 
@@ -49,7 +48,9 @@ CCMRAM_FUNC static inline void inverse_park_transform(float Vd, float Vq, float 
  * @brief Normalize angle to [-1, 1) range (corresponds to [-pi, pi))
  */
 CCMRAM_FUNC static inline float normalize_angle_norm(float angle) {
-    return angle - 2.0f * floorf((angle + 1.0f) * 0.5f);
+    float y = (angle + 1.0f) * 0.5f + 64.0f;
+    float flr = (float)((int32_t)y) - 64.0f;
+    return angle - 2.0f * flr;
 }
 
 /**
@@ -62,18 +63,17 @@ CCMRAM_FUNC static inline float normalize_angle_norm(float angle) {
  * @param omega     Center tracking angular frequency [rad/s]
  * @param dt        Sample period [s]
  */
-CCMRAM_FUNC static inline void stf_filter_step(float in_alpha, float in_beta,
-                                              float* flt_alpha, float* flt_beta,
-                                              float wc, float omega, float dt) {
+CCMRAM_FUNC static inline void stf_filter_step(float in_alpha, float in_beta, float* flt_alpha,
+                                               float* flt_beta, float wc, float omega, float dt) {
     float a = wc * dt;
     float b = omega * dt;
     float D_inv = 1.0f / ((1.0f + a) * (1.0f + a) + b * b);
 
     float r_alpha = *flt_alpha + a * in_alpha;
-    float r_beta  = *flt_beta  + a * in_beta;
+    float r_beta = *flt_beta + a * in_beta;
 
     *flt_alpha = ((1.0f + a) * r_alpha - b * r_beta) * D_inv;
-    *flt_beta  = (b * r_alpha + (1.0f + a) * r_beta) * D_inv;
+    *flt_beta = (b * r_alpha + (1.0f + a) * r_beta) * D_inv;
 }
 
 /*===========================================================================*/
@@ -93,13 +93,7 @@ void svpwm_calculate(float theta);
  * @param duty_c Phase C duty (0.0 to 1.0)
  */
 CCMRAM_FUNC static inline void foc_set_pwm_duty(float duty_a, float duty_b, float duty_c) {
-    uint32_t ccr_a = (uint32_t)(duty_a * (float)TIM1_ARR);
-    uint32_t ccr_b = (uint32_t)(duty_b * (float)TIM1_ARR);
-    uint32_t ccr_c = (uint32_t)(duty_c * (float)TIM1_ARR);
-
-    LL_TIM_OC_SetCompareCH1(TIM1, ccr_a);
-    LL_TIM_OC_SetCompareCH2(TIM1, ccr_b);
-    LL_TIM_OC_SetCompareCH3(TIM1, ccr_c);
+    FOC_HW_SetPWMDuty(duty_a, duty_b, duty_c);
 }
 
 /*===========================================================================*/
@@ -124,7 +118,7 @@ CCMRAM_FUNC static inline float foc_adc_to_vbus(uint16_t adc_value) {
  */
 CCMRAM_FUNC static inline float foc_adc_to_vphase(uint16_t adc_value, uint16_t adc_offset) {
     float adc_diff = (float)adc_value - (float)adc_offset;
-    return adc_diff * (ADC_Vref / (float)ADC_RESOLUTION) * PHASE_VOLTAGE_GAIN;
+    return adc_diff * ADC_Vref * (PHASE_VOLTAGE_GAIN / (float)ADC_RESOLUTION);
 }
 
 /**

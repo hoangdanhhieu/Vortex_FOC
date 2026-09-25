@@ -47,11 +47,6 @@ void PI_Reset(PI_Controller_t* pi);
  * @return Controller output
  */
 CCMRAM_FUNC static inline float PI_Update(PI_Controller_t* pi, float error) {
-    if (isnan(error) || isnan(pi->integral)) {
-        error = 0.0f;
-        if (isnan(pi->integral)) pi->integral = 0.0f;
-    }
-
     float p_term = pi->Kp * error;
 
     float new_integral = pi->integral + pi->Ki * error * pi->dt;
@@ -76,28 +71,29 @@ CCMRAM_FUNC static inline float PI_Update(PI_Controller_t* pi, float error) {
     return output;
 }
 
-/**
- * @brief Set PI gains at runtime
- * @param pi Pointer to PI controller structure
- * @param Kp New proportional gain
- * @param Ki New integral gain
- */
-void PI_SetGains(PI_Controller_t* pi, float Kp, float Ki);
+static inline void PI_SetGains(PI_Controller_t* pi, float Kp, float Ki) {
+    pi->Kp = Kp;
+    pi->Ki = Ki;
+}
 
-/**
- * @brief Set PI output limits at runtime
- * @param pi Pointer to PI controller structure
- * @param out_min New minimum limit
- * @param out_max New maximum limit
- */
-void PI_SetLimits(PI_Controller_t* pi, float out_min, float out_max);
+static inline void PI_SetLimits(PI_Controller_t* pi, float out_min, float out_max) {
+    pi->out_min = out_min;
+    pi->out_max = out_max;
+    if (pi->integral > out_max) {
+        pi->integral = out_max;
+    } else if (pi->integral < out_min) {
+        pi->integral = out_min;
+    }
+}
 
-/**
- * @brief Set PI integral limits at runtime (for anti-windup tuning)
- * @param pi Pointer to PI controller structure
- * @param int_min New integral minimum limit
- * @param int_max New integral maximum limit
- */
-void PI_SetIntLimits(PI_Controller_t* pi, float int_min, float int_max);
+static inline void PI_SetIntLimits(PI_Controller_t* pi, float int_min, float int_max) {
+    pi->int_min = int_min;
+    pi->int_max = int_max;
+    if (pi->integral > int_max) {
+        pi->integral = int_max;
+    } else if (pi->integral < int_min) {
+        pi->integral = int_min;
+    }
+}
 
 #endif /* PI_CONTROLLER_H */

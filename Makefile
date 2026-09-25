@@ -52,7 +52,7 @@ Core/Src/input_pot.c \
 Core/Src/motor_id.c \
 Core/Src/comm_protocol.c \
 Core/Src/flash_config.c \
-Core/Src/bist_profiler.c \
+Core/Src/response_profiler.c \
 Core/Src/peripheral_init.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c \
@@ -168,7 +168,7 @@ C_INCLUDES =  \
 # compile gcc flags
 ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
 
-CFLAGS += $(MCU) -mfp16-format=ieee $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+CFLAGS += $(MCU) -mfp16-format=ieee $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -mlong-calls
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2
@@ -188,7 +188,7 @@ LDSCRIPT = STM32G431XX_FLASH.ld
 # libraries
 LIBS = -lc -lm -lnosys 
 LIBDIR = 
-LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
+LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -Wl,--print-memory-usage
 
 # default action: build all
 all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin

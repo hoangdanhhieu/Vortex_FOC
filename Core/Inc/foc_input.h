@@ -2,7 +2,6 @@
 #define FOC_INPUT_H
 
 #include <stdint.h>
-#include "foc_config.h"
 
 /*===========================================================================*/
 /* Input Data Structures                                                     */
@@ -10,9 +9,9 @@
 
 typedef enum {
     FOC_INPUT_SOURCE_NONE = 0,
-    FOC_INPUT_SOURCE_POT,       /**< Onboard Potentiometer (PC4) */
-    FOC_INPUT_SOURCE_CUSTOM,    /**< Pluggable external/custom driver */
-    FOC_INPUT_SOURCE_UART_USB,  /**< Host GUI via USB Virtual COM Port (Override) */
+    FOC_INPUT_SOURCE_POT,      /**< Onboard Potentiometer (PC4) */
+    FOC_INPUT_SOURCE_CUSTOM,   /**< Pluggable external/custom driver */
+    FOC_INPUT_SOURCE_UART_USB, /**< Host GUI via USB Virtual COM Port (Override) */
 } FOC_InputSource_t;
 
 /**

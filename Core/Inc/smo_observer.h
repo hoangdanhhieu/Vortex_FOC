@@ -47,7 +47,7 @@ typedef struct {
     float pll_cutoff_min; /**< Minimum PLL bandwidth [Hz] */
     float pll_alpha;      /**< Speed-to-bandwidth scaling factor */
     float omega_est_filt; /**< Low-pass filtered electrical speed [rad/s] */
-    float omega_stf;      /**< 48kHz LPF filtered speed for STF center frequency [rad/s] */
+    float omega_stf;      /**< LPF filtered speed for STF center frequency [rad/s] */
 
     /* 6th Harmonic Adaptive Compensator parameters */
     float Ac;                     /**< Cosine 6th harmonic coefficient */
@@ -63,12 +63,13 @@ typedef struct {
     float sat_alpha; /**< Magnetic saturation coefficient [1/A^2] */
     float psi;       /**< Flux linkage */
     float poles;     /**< Number of pole pairs */
-    float min_omega; /**< Minimum omega for STF decay (from motor_min_spd) [rad/s] */
     /* Sample time */
     float dt; /**< Control loop period */
 
     /* Diagnostics & Time constants */
     float current_err_sq; /**< Squared current estimation error magnitude [A^2] */
+    float theta_err;      /**< Instantaneous PLL angle tracking error [-1.0 to 1.0) */
+    float bemf_mag;       /**< Instantaneous Back-EMF vector magnitude [V] */
 
     /* Precomputed Implicit Backward Euler coefficients */
     float dt_over_Ls; /**< Precomputed dt * Ls_inv */
@@ -77,6 +78,12 @@ typedef struct {
     /* Dynamic load current magnitude & saturation */
     float I_mag;   /**< Measured phase current magnitude [A] */
     float l_ratio; /**< Real-time L(I)/L0 saturation ratio (shared with current loop) */
+
+    /* Precomputed constants for zero-cycle-overhead 48kHz execution */
+    float dt_over_pi;   /**< Precomputed dt / PI */
+    float gamma_6th_dt; /**< Precomputed gamma_6th * dt */
+    float pll_ki_dt;    /**< Precomputed pll_ki * dt */
+    float wc_base;      /**< Precomputed base cutoff frequency for STF BEMF filter [rad/s] */
 } SMO_Observer_t;
 
 /**
@@ -113,33 +120,43 @@ void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, float Ialpha, fl
  */
 void SMO_SlowTask(SMO_Observer_t* smo);
 
+#include "foc.h"
+
 /**
  * @brief Get estimated electrical angle for Park transform (no hardware delay compensation)
  * @param smo Pointer to SMO structure
  * @return Electrical angle in [-1, 1) representing [-pi, pi)
  */
-float SMO_GetParkAngle(SMO_Observer_t* smo);
+CCMRAM_FUNC static inline float SMO_GetParkAngle(const SMO_Observer_t* smo) {
+    return smo->theta_est;
+}
 
 /**
  * @brief Get estimated electrical angle for PWM generation (compensated for hardware delay)
  * @param smo Pointer to SMO structure
  * @return Electrical angle in [-1, 1) representing [-pi, pi)
  */
-float SMO_GetPWMAngle(SMO_Observer_t* smo);
+CCMRAM_FUNC static inline float SMO_GetPWMAngle(const SMO_Observer_t* smo) {
+    /* PWM Hardware Delay Compensation (Total = 1.0 dt):
+     * - t = 0: ADC samples current at the Peak. Observer calculates theta_est for t=0.
+     * - t = 0.5 dt: Update Event occurs at the Valley. New CCR is loaded.
+     * - t = 0.5 dt to 1.5 dt: New voltage is applied to the motor.
+     * - t = 1.0 dt: The exact center (average) of the new voltage application.
+     * Since the voltage calculated now takes effect symmetrically around t = 1.0 dt,
+     * we must advance the PWM angle by exactly 1.0 dt to align it perfectly.
+     */
+    float theta_advance = (smo->omega_est / PI) * (1.0f * smo->dt);
+    return normalize_angle_norm(smo->theta_est + theta_advance);
+}
 
 /**
  * @brief Get estimated electrical speed
  * @param smo Pointer to SMO structure
  * @return Electrical speed in rad/s
  */
-float SMO_GetSpeed(SMO_Observer_t* smo);
-
-/**
- * @brief Get estimated mechanical speed in RPM
- * @param smo Pointer to SMO structure
- * @return Mechanical speed in RPM
- */
-float SMO_GetSpeedRPM(SMO_Observer_t* smo);
+CCMRAM_FUNC static inline float SMO_GetSpeed(const SMO_Observer_t* smo) {
+    return smo->omega_out;
+}
 
 /**
  * @brief Set dynamic motor parameters at runtime
@@ -149,11 +166,10 @@ float SMO_GetSpeedRPM(SMO_Observer_t* smo);
  * @param sat_alpha Magnetic saturation coefficient [1/A^2]
  * @param flux_linkage Flux linkage [Wb]
  * @param poles Number of pole pairs
- * @param max_speed_rpm Maximum motor speed in RPM
- * @param min_speed_rpm Minimum motor speed in RPM
+ * @param max_speed_elec_rad Maximum motor speed in electrical rad/s
  */
-void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha, float flux_linkage,
-                        float poles, float max_speed_rpm, float min_speed_rpm);
+void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha,
+                        float flux_linkage, float poles, float max_speed_elec_rad);
 
 /**
  * @brief Feed external BEMF directly into PLL (bypass current observer)
@@ -162,5 +178,12 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha
  * @param Ebeta Beta-axis BEMF voltage [V]
  */
 void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta);
+
+/**
+ * @brief Set timing (sample time dt) for SMO observer
+ * @param smo Pointer to SMO structure
+ * @param dt Control period in seconds
+ */
+void SMO_SetTiming(SMO_Observer_t* smo, float dt);
 
 #endif /* SMO_OBSERVER_H */

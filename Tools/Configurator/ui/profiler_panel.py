@@ -1,13 +1,13 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGroupBox, QGridLayout, 
-    QLabel, QDoubleSpinBox, QComboBox, QPushButton,
+    QLabel, QComboBox, QPushButton,
     QGraphicsOpacityEffect
 )
 from PySide6.QtCore import Qt
 import core.protocol as protocol
 from ui.widgets import WheelDoubleSpinBox
 
-class BISTPanel(QWidget):
+class ProfilerPanel(QWidget):
     def __init__(self, serial_thread):
         super().__init__()
         self._serial = serial_thread
@@ -72,4 +72,7 @@ class BISTPanel(QWidget):
         amp = float(self.sp_amp.value())
         offset = float(self.sp_offset.value())
         freq = float(self.sp_freq.value())
-        self._serial.send(protocol.build_bist(mode, amp, offset, freq))
+        self._serial.send(protocol.build_profiler(mode, amp, offset, freq))
+
+# Backward-compatibility alias
+BISTPanel = ProfilerPanel

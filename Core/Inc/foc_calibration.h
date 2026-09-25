@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 
-#define CAL_SAMPLES 512
+#define CAL_SAMPLES 768
 
 /**
  * @brief Reset calibration accumulators and min/max statistics
@@ -17,10 +17,11 @@ void FOC_Calibration_Reset(void);
 
 /**
  * @brief Accumulate sample data during calibration step
- * @param adc1_data Raw ADC1 measurement (Phase A)
- * @param adc2_data Raw ADC2 measurement (Phase B or Phase C)
+ * @param adc1_data Raw ADC1 measurement
+ * @param adc2_data Raw ADC2 measurement
+ * @param cal_phase Active calibration phase skip index (0 = Skip A, 1 = Skip B, 2 = Skip C)
  */
-void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data);
+void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t cal_phase);
 
 /**
  * @brief State handler for FOC_STATE_CALIBRATION (computes offsets, noise profile and configures AWD)

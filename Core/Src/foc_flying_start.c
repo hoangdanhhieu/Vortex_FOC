@@ -8,9 +8,9 @@
 #include "cordic_math.h"
 #include "foc.h"
 #include "foc_config.h"
+#include "foc_startup.h"
 #include "foc_state_machine.h"
 #include "math.h"
-#include "peripheral_init.h"
 
 /* Flying start state */
 static uint32_t s_detect_counter = 0;
@@ -34,23 +34,27 @@ static uint32_t s_brake_debounce_target = 0;
 static uint32_t s_brake_debounce_counter = 0;
 static float s_brake_exit_curr_sq = 0.0f;
 static float s_i_mag_sq_flt = 100.0f;
+static float s_detect_peak_alpha;
 
 /* Helper to extract pure BEMF fundamental by rejecting common-mode DC offset */
 static inline void get_pure_bemf(float* alpha, float* beta) {
-    float Ea = g_foc.data.Vphase_a;
-    float Eb = (g_foc.status.reverse > 0.0f) ? g_foc.data.Vphase_b : g_foc.data.Vphase_c;
-    float Ec = (g_foc.status.reverse > 0.0f) ? g_foc.data.Vphase_c : g_foc.data.Vphase_b;
+    float va = g_foc.data.Vphase_a;
+    float vc = g_foc.data.Vphase_c;
 
-    float raw_alpha = (Ea - 0.5f * Eb - 0.5f * Ec) * TWO_THIRDS;
-    float raw_beta = SQRT3_INV * (Eb - Ec);
+    /* Direct 2-phase Clarke transform (since vb = -(va + vc)):
+     * raw_alpha = (va - 0.5*vb - 0.5*vc) * (2/3) = va
+     * raw_beta  = SQRT3_INV * (vb - vc) = -SQRT3_INV * (va + 2*vc) */
+    float raw_alpha = va;
+    float raw_beta = (g_foc.status.reverse > 0.0f) ? (-SQRT3_INV * (va + 2.0f * vc))
+                                                   : (SQRT3_INV * (va + 2.0f * vc));
 
-    /* Fast DC blocker (HPF) to remove the massive offset caused by diode clamping and ADC clipping.
-     * Cutoff ~15Hz at 48kHz (alpha = 2 * pi * 15 * 20.8us = 0.002) */
+    /* Fast DC blocker (HPF) to remove offset caused by diode clamping and ADC clipping.
+     * Cutoff ~15Hz*/
     if (s_detect_counter <= 1 && g_foc.status.state == FOC_STATE_DETECT) {
         s_dc_alpha = raw_alpha;
         s_dc_beta = raw_beta;
     } else {
-        float alpha_dc = 0.002f;
+        float alpha_dc = 15 * g_foc.dt * TWO_PI;
         s_dc_alpha += (raw_alpha - s_dc_alpha) * alpha_dc;
         s_dc_beta += (raw_beta - s_dc_beta) * alpha_dc;
     }
@@ -60,27 +64,26 @@ static inline void get_pure_bemf(float* alpha, float* beta) {
 }
 
 void FOC_FlyingStart_Init(void) {
-    /* 1. Physical minimum observer speed determined by calibration */
-    float min_rpm = g_foc.cfg.motor_min_spd;
-    if (min_rpm < 50.0f) min_rpm = 50.0f;
+    /* 1. Physical minimum electrical speed determined by calibration [rad/s elec] */
+    float omega_min_elec = g_foc.cfg.motor_min_spd;
+    if (omega_min_elec < 30.0f) omega_min_elec = 30.0f;
 
     /* 2. Minimum electrical frequency for detection */
-    float f_elec_min = (min_rpm * g_foc.cfg.motor_poles) / 60.0f;
+    float f_elec_min = omega_min_elec * (1.0f / TWO_PI);
     if (f_elec_min < 10.0f) f_elec_min = 10.0f; /* Safety baseline: >= 10 Hz */
 
     /* 3. Detect duration: Observe at least 2 electrical cycles, clamped between [50ms, 150ms] */
     float t_detect = 2.0f / f_elec_min;
     if (t_detect < 0.05f) t_detect = 0.05f;
     if (t_detect > 0.15f) t_detect = 0.15f;
-    s_detect_samples = (uint32_t)(t_detect * (float)CONTROL_FREQUENCY);
+    s_detect_samples = (uint32_t)(t_detect * g_foc.cfg.pwm_frequency);
 
     /* 4. Lock duration: 40 ms is optimal for PLL angle lock and noise filtering */
-    s_lock_samples = (uint32_t)(0.040f * (float)CONTROL_FREQUENCY);
+    s_lock_samples = (uint32_t)(0.040f * g_foc.cfg.pwm_frequency);
 
     /* 5. Peak phase BEMF threshold:
-     * Derived directly from min_rpm and motor flux (E_phase = omega_elec * flux).
-     * Set threshold to 60% of min_rpm BEMF for responsive detection */
-    float omega_min_elec = (min_rpm * g_foc.cfg.motor_poles) * (TWO_PI / 60.0f);
+     * Derived directly from omega_min_elec and motor flux (E_phase = omega_elec * flux).
+     * Set threshold to 60% of min BEMF for responsive detection */
     s_bemf_threshold = (omega_min_elec * g_foc.cfg.motor_flux) * 0.6f;
 
     /* Clamp floor to 50 mV (well above 15-20mV ADC noise floor, but sensitive to hand spinning) */
@@ -97,13 +100,15 @@ void FOC_FlyingStart_Init(void) {
     s_dc_alpha = 0.0f;
     s_dc_beta = 0.0f;
 
+    s_detect_peak_alpha = 400.0f * TWO_PI * FOC_GetDt();
+
     /* Braking timing initialization */
     s_brake_min_samples =
-        (uint32_t)((float)BRAKE_MIN_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY);
+        (uint32_t)((float)BRAKE_MIN_DURATION_MS * 0.001f * g_foc.cfg.pwm_frequency);
     s_brake_max_samples =
-        (uint32_t)((float)BRAKE_MAX_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY);
+        (uint32_t)((float)BRAKE_MAX_DURATION_MS * 0.001f * g_foc.cfg.pwm_frequency);
     s_brake_debounce_target =
-        (uint32_t)((float)BRAKE_DEBOUNCE_MS * 0.001f * (float)CONTROL_FREQUENCY);
+        (uint32_t)((float)BRAKE_DEBOUNCE_MS * 0.001f * g_foc.cfg.pwm_frequency);
     s_brake_counter = 0;
     s_brake_debounce_counter = 0;
     float exit_curr = BRAKE_EXIT_CURR_MIN;
@@ -121,7 +126,7 @@ void FOC_StateDetect(void) {
     float amp = E_alpha * E_alpha + E_beta * E_beta;
 
     /* Low-Pass Filter on amplitude squared (DC value) to reject noise spikes */
-    s_detect_peak += 0.05f * (amp - s_detect_peak);
+    s_detect_peak += s_detect_peak_alpha * (amp - s_detect_peak);
 
     /* Cross-product for direction detection */
     float cross = s_E_alpha_prev * E_beta - s_E_beta_prev * E_alpha;
@@ -153,19 +158,17 @@ void FOC_StateDetect(void) {
             g_foc.ctrl.smo.omega_out = est_omega;
             g_foc.ctrl.smo.pll_integral = est_omega;
             g_foc.data.omega_elec = est_omega;
-            g_foc.data.speed_rpm = (est_omega / g_foc.cfg.motor_poles) * (60.0f / TWO_PI);
 
             s_flying_start_counter = 0;
             g_foc.status.state = FOC_STATE_FLYING_START;
         } else {
-            FOC_SetPhaseVoltageDMA(0);
             FOC_EnableDrivers(1);
             g_foc.status.state = FOC_STATE_ALIGN;
         }
     }
 }
 
-void FOC_StateFlyingStart(void) {
+RAM_FUNC void FOC_StateFlyingStart(void) {
     s_flying_start_counter++;
 
     float E_alpha, E_beta;
@@ -175,102 +178,85 @@ void FOC_StateFlyingStart(void) {
 
     float omega_now = g_foc.ctrl.smo.omega_est;
     g_foc.data.omega_elec = omega_now;
-    g_foc.data.speed_rpm = (omega_now / g_foc.cfg.motor_poles) * (60.0f / TWO_PI);
 
     if (s_flying_start_counter < s_lock_samples) {
         g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.5f;
+        return;
+    }
 
-    } else if (s_flying_start_counter == s_lock_samples) {
-        if (omega_now <= 0.0f) {
-            /* Reverse rotation: active dynamic brake to stop motor */
-            FOC_SetPhaseVoltageDMA(0);
-            FOC_EnableDrivers(1);
-            s_brake_counter = 0;
-            s_brake_debounce_counter = 0;
-            s_i_mag_sq_flt = 100.0f;
-            g_foc.status.state = FOC_STATE_BRAKE;
-            return;
-        }
+    /* Check exit criteria before precharge / enable */
+    if (omega_now <= 0.0f) {
+        FOC_EnableDrivers(1);
+        s_brake_counter = 0;
+        s_brake_debounce_counter = 0;
+        s_i_mag_sq_flt = 100.0f;
+        g_foc.status.state = FOC_STATE_BRAKE;
+        return;
+    }
 
-        float min_handoff_rpm = g_foc.cfg.motor_min_spd;
-        float min_handoff_omega = (min_handoff_rpm * g_foc.cfg.motor_poles) * (TWO_PI / 60.0f);
-        if (omega_now < min_handoff_omega * 0.6f) {
-            /* Too slow for closed-loop SMO: abort to ALIGN for smooth open-loop ramp-up */
-            FOC_SetPhaseVoltageDMA(0);
-            FOC_EnableDrivers(1);
-            g_foc.startup.counter = 0;
-            g_foc.status.state = FOC_STATE_ALIGN;
-            return;
-        }
+    if (omega_now < g_foc.cfg.motor_min_spd * 0.6f) {
+        FOC_EnableDrivers(1);
+        g_foc.startup.counter = 0;
+        g_foc.status.state = FOC_STATE_ALIGN;
+        return;
+    }
 
-        float theta_park = SMO_GetParkAngle(&g_foc.ctrl.smo);
+    /* Common voltage and PWM duty calculation for both Precharge and Enable cycles:
+     * - Cycle s_lock_samples (Precharge): Drivers remain disabled. CCR preload registers are
+     * written. Timer update event latches duty cycles into shadow registers at the next valley.
+     * - Cycle s_lock_samples + 1 (Enable): Drivers enabled with matching PWM voltage on the motor.
+     */
+    float theta_park = SMO_GetParkAngle(&g_foc.ctrl.smo);
 
-        float sin_th, cos_th;
-        cordic_sincos(theta_park, &cos_th, &sin_th);
-        float Ed, Eq;
-        park_transform(E_alpha, E_beta, cos_th, sin_th, &Ed, &Eq);
+    float sin_th, cos_th;
+    cordic_sincos(theta_park, &cos_th, &sin_th);
+    float Ed, Eq;
+    park_transform(E_alpha, E_beta, cos_th, sin_th, &Ed, &Eq);
 
-        /* Use actual measured BEMF (Ed, Eq) instead of theoretical (omega * flux) */
-        float E_bemf = Eq;
+    /* Use actual measured BEMF (Eq) instead of theoretical (omega * flux) */
+    float E_bemf = Eq;
 
-        g_foc.data.Vd = Ed;
-        g_foc.data.Vq = E_bemf;
+    g_foc.data.Vd = 0.0f;
+    g_foc.data.Vq = E_bemf;
 
-        /* Calculate exact same PWM angle used in FOC_StateRun to prevent angle jump */
-        float theta_pwm = SMO_GetPWMAngle(&g_foc.ctrl.smo);
-        if (g_foc.cfg.comp_delay_samples > 0.001f) {
-            theta_pwm += omega_now * (g_foc.cfg.comp_delay_samples * CONTROL_PERIOD) / PI;
-            theta_pwm = normalize_angle_norm(theta_pwm);
-        }
+    float theta_pwm = SMO_GetPWMAngle(&g_foc.ctrl.smo);
+    if (g_foc.cfg.comp_delay_samples > 0.001f) {
+        theta_pwm += omega_now * (g_foc.cfg.comp_delay_samples * CONTROL_PERIOD) / PI;
+        theta_pwm = normalize_angle_norm(theta_pwm);
+    }
 
-        svpwm_calculate(theta_pwm);
+    svpwm_calculate(theta_pwm);
 
-    } else {
-        /* -----------------------------------------------------------
-         * ENABLE CYCLE: The timer update event between the previous
-         * ISR and this one has loaded the correct duty from the
-         * precharge cycle into the CCR shadow register. The PWM output
-         * NOW matches back-EMF. Safe to enable gate drivers — the
-         * very first PWM pulse the motor sees is correct.
-         * ----------------------------------------------------------- */
-        float theta_park = SMO_GetParkAngle(&g_foc.ctrl.smo);
-
-        float sin_th, cos_th;
-        cordic_sincos(theta_park, &cos_th, &sin_th);
-        float Ed, Eq;
-        park_transform(E_alpha, E_beta, cos_th, sin_th, &Ed, &Eq);
-
-        /* Use actual measured BEMF (Eq) instead of theoretical (omega * flux) */
-        float E_bemf = Eq;
-
-        /* Recompute SVPWM for the updated angle (one cycle later) */
-        g_foc.data.Vd = 0.0f;
-        g_foc.data.Vq = E_bemf;
-
-        float theta_pwm = SMO_GetPWMAngle(&g_foc.ctrl.smo);
-        if (g_foc.cfg.comp_delay_samples > 0.001f) {
-            theta_pwm += omega_now * (g_foc.cfg.comp_delay_samples * CONTROL_PERIOD) / PI;
-            theta_pwm = normalize_angle_norm(theta_pwm);
-        }
-
-        svpwm_calculate(theta_pwm);
-
-        /* Pre-load current PI integrals for bumpless transfer (FOC_StateRun FF already provides
-         * BEMF) */
+    if (s_flying_start_counter > s_lock_samples) {
+        /* Pre-load current PI integrals for bumpless transfer (FOC_StateRun FF provides 0.9 *
+         * E_bemf) */
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
         LADRC_Reset(&g_foc.ctrl.speed);
 
-        g_foc.ctrl.iq.integral = 0.0;
-        // E_bemf * 1.0;
+        const float ff_gain = 0.9f;
+        g_foc.ctrl.id.integral = 0.0f;
+        g_foc.ctrl.iq.integral = E_bemf * (1.0f - ff_gain);
 
-        /* Seed SMO current observer with actual measured currents */
-        g_foc.ctrl.smo.Ialpha_est = g_foc.data.Ialpha;
-        g_foc.ctrl.smo.Ibeta_est = g_foc.data.Ibeta;
+        /* Seed SMO current observer using inverse sigmoid so the observer starts ALREADY
+         * on the sliding surface. This prevents BEMF from collapsing to 0.0V (zero-sigmoid shock)
+         * on cycle 1 of RUN. */
+        float k_slide = g_foc.ctrl.smo.k_slide;
+        float k_sigmoid = g_foc.ctrl.smo.k_sigmoid;
+        if (k_slide > 0.1f) {
+            float inv_ks = 1.0f / k_slide;
+            float ya = clampf(g_foc.ctrl.smo.Ealpha_flt * inv_ks, -0.95f, 0.95f);
+            float yb = clampf(g_foc.ctrl.smo.Ebeta_flt * inv_ks, -0.95f, 0.95f);
+            float err_a = (k_sigmoid * ya) / (1.0f - fabsf(ya));
+            float err_b = (k_sigmoid * yb) / (1.0f - fabsf(yb));
+            g_foc.ctrl.smo.Ialpha_est = g_foc.data.Ialpha + err_a;
+            g_foc.ctrl.smo.Ibeta_est = g_foc.data.Ibeta + err_b;
+        } else {
+            g_foc.ctrl.smo.Ialpha_est = g_foc.data.Ialpha;
+            g_foc.ctrl.smo.Ibeta_est = g_foc.data.Ibeta;
+        }
 
-        /* Seed SMO raw BEMF states using the clean STF-filtered BEMF vector.
-         * Do not use theta_park here, as it contains a PLL phase advance compensation
-         * which would inject a phase mismatch into the observer states! */
+        /* Seed SMO raw BEMF states using clean STF-filtered BEMF vector */
         g_foc.ctrl.smo.Ealpha = g_foc.ctrl.smo.Ealpha_flt;
         g_foc.ctrl.smo.Ebeta = g_foc.ctrl.smo.Ebeta_flt;
 
@@ -280,14 +266,12 @@ void FOC_StateFlyingStart(void) {
                 g_foc.cmd.speed_ref_target < omega_now) {
                 g_foc.cmd.speed_ref_target = omega_now;
             }
-            float iq_hand_off = g_foc.cfg.startup_current;
-            float iq_min = 0.8f;
-            float iq_max = g_foc.cfg.motor_max_curr * 0.15f;
-            if (iq_max < iq_min) iq_max = iq_min;
-            iq_hand_off = clampf(iq_hand_off, iq_min, iq_max);
-            g_foc.cmd.Iq_ref = iq_hand_off;
-            g_foc.data.Iq_ref_cmd = iq_hand_off;
-            LADRC_SeedState(&g_foc.ctrl.speed, omega_now, iq_hand_off);
+            /* Bumpless zero-torque handoff: motor is freewheeling, so initial torque command is 0.
+             * LADRC seamlessly ramps torque according to the user throttle target without an
+             * initial current kick. */
+            g_foc.cmd.Iq_ref = 0.0f;
+            g_foc.data.Iq_ref_cmd = 0.0f;
+            LADRC_SeedState(&g_foc.ctrl.speed, omega_now, 0.0f);
         } else if (g_foc.status.control_mode == FOC_MODE_TORQUE) {
             g_foc.data.Iq_ref_cmd = g_foc.cmd.Iq_ref;
         } else {
@@ -296,25 +280,22 @@ void FOC_StateFlyingStart(void) {
         }
         g_foc.cmd.Id_ref = 0.0f;
         if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
-            float max_v = SQRT3_INV * 2.0f * (MAX_DUTY_HIGH - 0.5f) * g_foc.data.Vbus;
+            float max_v = SQRT3_INV * 2.0f * (g_foc.max_duty - 0.5f) * g_foc.data.Vbus;
             float E_bemf_norm = (max_v > 1.0f) ? (E_bemf / max_v) : 0.0f;
             E_bemf_norm = clampf(E_bemf_norm, -1.0f, 1.0f);
             g_foc.cmd.Vq_ref = E_bemf_norm;
         }
 
-        /* Transition blending: bypass for flying start since the observer is already
-         * locked and aligned. Angle blending can cause phase drift and current spikes. */
+        /* Direct handoff: bypass startup angle blending */
         g_foc.startup.theta = theta_park;
         g_foc.startup.omega = omega_now;
         FOC_Startup_ForceComplete();
-
-        FOC_SetPhaseVoltageDMA(0);
         FOC_EnableDrivers(1);
         g_foc.status.state = FOC_STATE_RUN;
     }
 }
 
-CCMRAM_FUNC void FOC_StateBrake(void) {
+void FOC_StateBrake(void) {
     s_brake_counter++;
     g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.0f;
 
@@ -322,7 +303,6 @@ CCMRAM_FUNC void FOC_StateBrake(void) {
     float i_mag_sq =
         g_foc.data.Ialpha_flt * g_foc.data.Ialpha_flt + g_foc.data.Ibeta_flt * g_foc.data.Ibeta_flt;
 
-    /* 2ms IIR smoothing on magnitude squared (~80Hz cutoff at 48kHz, alpha = 0.01) */
     s_i_mag_sq_flt += 0.01f * (i_mag_sq - s_i_mag_sq_flt);
 
     /* Check exit criteria */

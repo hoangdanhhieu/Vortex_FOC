@@ -3,7 +3,7 @@
  * @brief Binary communication protocol for FOC GUI configurator
  *
  * Replaces text-based UART commands with a compact binary protocol
- * optimized for real-time streaming and GUI interaction over USB CDC.
+ * optimized for real-time continuous streaming over USB CDC.
  */
 
 #ifndef COMM_PROTOCOL_H
@@ -18,46 +18,52 @@
 #define COMM_HEADER 0xAA
 #define COMM_MAX_PAYLOAD 255
 
-
-
 /*===========================================================================*/
 /* Command Types (PC → MCU)                                                  */
 /*===========================================================================*/
 
-#define CMD_SET 0x01       /**< Set parameter: id(1B) + value(4B) */
-#define CMD_GET 0x02       /**< Get parameter: id(1B) */
-#define CMD_SAVE 0x03      /**< Save config to Flash */
-#define CMD_LOAD 0x04      /**< Load config from Flash */
-#define CMD_DEFAULTS 0x05  /**< Reset to defaults */
-#define CMD_START 0x06     /**< Start motor */
-#define CMD_STOP 0x07      /**< Stop motor */
-#define CMD_DIR 0x08       /**< Set direction: dir(1B) 0=FWD,1=REV */
-#define CMD_SPEED 0x09     /**< Set speed ref: rpm(4B float) */
-#define CMD_TORQUE 0x0A    /**< Set torque ref: pct(4B float) */
-#define CMD_PLOT 0x0B      /**< Enable/disable plot: enable(1B) */
-#define CMD_STATUS 0x0C    /**< Request status */
-#define CMD_PARAM_ALL 0x0D /**< Request all parameters */
-#define CMD_IDENT 0x0E     /**< Trigger motor parameter identification */
-#define CMD_CLEAR 0x0F     /**< Clear faults */
-#define CMD_BIST 0x10      /**< Built-In Self Test Profiler settings */
-#define CMD_VOLTAGE 0x11   /**< Set voltage ref: pct(4B float) */
-#define CMD_IDENT_FLUX 0x12/**< Trigger offline flux identification */
-#define CMD_IDENT_INERTIA 0x13/**< Trigger offline inertia identification */
-#define CMD_SAMPLE_START 0x14 /**< Start sampling to RAM: channels, decimation */
-#define CMD_SAMPLE_READ  0x15 /**< Read sampled data: offset, size */
+#define CMD_SET 0x01           /**< Set parameter: id(1B) + value(4B) */
+#define CMD_GET 0x02           /**< Get parameter: id(1B) */
+#define CMD_SAVE 0x03          /**< Save config to Flash */
+#define CMD_LOAD 0x04          /**< Load config from Flash */
+#define CMD_DEFAULTS 0x05      /**< Reset to defaults */
+#define CMD_START 0x06         /**< Start motor */
+#define CMD_STOP 0x07          /**< Stop motor */
+#define CMD_DIR 0x08           /**< Set direction: dir(1B) 0=FWD,1=REV */
+#define CMD_SPEED 0x09         /**< Set speed ref: speed_rad(4B float) */
+#define CMD_TORQUE 0x0A        /**< Set torque ref: pct(4B float) */
+#define CMD_PLOT 0x0B          /**< (reserved) */
+#define CMD_STATUS 0x0C        /**< Request status */
+#define CMD_PARAM_ALL 0x0D     /**< Request all parameters */
+#define CMD_IDENT 0x0E         /**< Trigger motor parameter identification */
+#define CMD_CLEAR 0x0F         /**< Clear faults */
+#define CMD_PROFILER 0x10      /**< Dynamic Response Profiler settings */
+#define CMD_VOLTAGE 0x11       /**< Set voltage ref: pct(4B float) */
+#define CMD_IDENT_FLUX 0x12    /**< Trigger offline flux identification */
+#define CMD_IDENT_INERTIA 0x13 /**< Trigger offline inertia identification */
+#define CMD_STREAM_START 0x14  /**< Start continuous stream: num_ch(1B) + dec(1B) + ch[0..N-1] */
+#define CMD_STREAM_STOP 0x15   /**< Stop continuous stream */
 
 /*===========================================================================*/
 /* Response Types (MCU → PC)                                                 */
 /*===========================================================================*/
 
-#define RSP_ACK 0x81       /**< ACK: cmd_type(1B) + status(1B) */
-#define RSP_VALUE 0x82     /**< Value: id(1B) + value(4B float) */
-#define RSP_STATUS 0x83    /**< Status: state(1B)+fault(1B)+dir(1B)+pad+rpm(4B)+vbus(4B)+ibus(4B) */
-#define RSP_PARAM_ALL 0x84 /**< All params: count(1B) + [id(1B)+val(4B)]×N */
-#define RSP_PLOT                                                                     \
-    0x90 /**< Stream: Vd,Vq,Id,Iq,Iq_ref,theta,Ia,Ib,Ic,duty_a,duty_b,duty_c (12x2B) \
-          */
-#define RSP_SAMPLE_DATA 0x91 /**< Sample chunk: offset(2B), size(2B), data... */
+#define RSP_ACK 0x81         /**< ACK: cmd_type(1B) + status(1B) */
+#define RSP_VALUE 0x82       /**< Value: id(1B) + value(4B float) */
+#define RSP_STATUS 0x83      /**< Status: state+fault+dir+pad+omega_elec+vbus+ibus */
+#define RSP_PARAM_ALL 0x84   /**< All params: count(1B) + [id(1B)+val(4B)]xN */
+#define RSP_STREAM_DATA 0x91 /**< Stream: seq(2B) + num_sets(1B) + [ch0..ch3 fp16] x num_sets */
+
+/*===========================================================================*/
+/* Streaming Constants                                                       */
+/*===========================================================================*/
+
+/** Decimation range: effective rate = 48000 / decimation
+ *  dec=1 → 48000 Hz (max, ~375 KB/s USB load)
+ *  dec=10 → 4800 Hz (min, ~38 KB/s USB load)
+ */
+#define STREAM_DEC_MIN 1
+#define STREAM_DEC_MAX 10
 
 /*===========================================================================*/
 /* Parameter IDs                                                             */
@@ -116,18 +122,30 @@ void Comm_Init(void);
 void Comm_PushByte(uint8_t byte);
 
 /**
- * @brief Process queued bytes and execute protocol logic (Call from main loop)
+ * @brief Process queued RX bytes and execute protocol logic (call from main loop)
  */
 void Comm_Update(void);
 
 /**
- * @brief Process high-frequency snapshot sampling (Call from 48kHz ISR)
+ * @brief Push one sample-set into the streaming ring buffer.
+ *        Must be called from the HF ISR. Handles decimation internally.
+ *        No-op when stream_active == 0.
  */
-void Comm_ProcessSampling(void);
+#include "foc_config.h"
+CCMRAM_FUNC void Comm_StreamPush(void);
 
 /**
- * @brief Send status packet
+ * @brief Drain the streaming ring buffer and transmit over USB CDC.
+ *        Called from Comm_Update() in Thread Mode (main superloop).
+ */
+void Comm_StreamDrain(void);
+
+/**
+ * @brief Send status packet (called periodically from slow task)
  */
 void Comm_SendStatus(void);
+
+/** Non-zero while streaming is active */
+extern volatile uint8_t stream_active;
 
 #endif /* COMM_PROTOCOL_H */

@@ -9,6 +9,7 @@
 #define LADRC_CONTROLLER_H
 
 #include <math.h>
+
 #include "foc_config.h"
 
 /*===========================================================================*/
@@ -16,24 +17,24 @@
 /*===========================================================================*/
 
 typedef struct {
-    float omega_c;  /**< Controller bandwidth [rad/s] */
-    float omega_o;  /**< Observer bandwidth [rad/s] */
-    float b0;       /**< Control gain scaling factor = 1.5 * p^2 * psi / J */
-    float b0_inv;   /**< 1.0 / b0 */
-    float dt;       /**< Sample time [s] (e.g. 0.001 s for 1 kHz task) */
-    float out_min;  /**< Saturated minimum output command [A] */
-    float out_max;  /**< Saturated maximum output command [A] */
+    float omega_c; /**< Controller bandwidth [rad/s] */
+    float omega_o; /**< Observer bandwidth [rad/s] */
+    float b0;      /**< Control gain scaling factor = 1.5 * p^2 * psi / J */
+    float b0_inv;  /**< 1.0 / b0 */
+    float dt;      /**< Sample time [s] (e.g. 0.001 s for 1 kHz task) */
+    float out_min; /**< Saturated minimum output command [A] */
+    float out_max; /**< Saturated maximum output command [A] */
 
     /* Pre-calculated Backward Euler LESO observer gains */
-    float beta1;    /**< 2.0 * omega_o */
-    float beta2;    /**< omega_o * omega_o */
-    float D_inv;    /**< 1.0 / (1.0 + beta1 * dt + beta2 * dt * dt) */
+    float beta1; /**< 2.0 * omega_o */
+    float beta2; /**< omega_o * omega_o */
+    float D_inv; /**< 1.0 / (1.0 + beta1 * dt + beta2 * dt * dt) */
 
     /* Internal states */
-    float z1;       /**< Estimated electrical speed [rad/s] */
-    float z2;       /**< Estimated total disturbance [rad/s^2] */
-    float z2_max;   /**< Anti-windup limit for disturbance estimation */
-    float u_prev;   /**< Previous saturated control command [A] (for feedback anti-windup) */
+    float z1;     /**< Estimated electrical speed [rad/s] */
+    float z2;     /**< Estimated total disturbance [rad/s^2] */
+    float z2_max; /**< Anti-windup limit for disturbance estimation */
+    float u_prev; /**< Previous saturated control command [A] (for feedback anti-windup) */
 } LADRC_Controller_t;
 
 /*===========================================================================*/
@@ -50,14 +51,14 @@ typedef struct {
  * @param out_max Saturated maximum output limit
  * @param dt Sample time in seconds
  */
-void LADRC_Init(LADRC_Controller_t* ctrl, float omega_c, float omega_o, float b0,
-                float out_min, float out_max, float dt);
+void LADRC_Init(LADRC_Controller_t* ctrl, float omega_c, float omega_o, float b0, float out_min,
+                float out_max, float dt);
 
-/**
- * @brief Reset LADRC controller states to zero
- * @param ctrl Pointer to LADRC controller structure
- */
-void LADRC_Reset(LADRC_Controller_t* ctrl);
+static inline void LADRC_Reset(LADRC_Controller_t* ctrl) {
+    ctrl->z1 = 0.0f;
+    ctrl->z2 = 0.0f;
+    ctrl->u_prev = 0.0f;
+}
 
 /**
  * @brief Update LADRC tuning parameters
@@ -107,17 +108,9 @@ CCMRAM_FUNC static inline void LADRC_SetActualOutput(LADRC_Controller_t* ctrl, f
  * @param omega_fb Electrical speed feedback from observer [rad/s]
  * @return Saturated Iq_ref current command [A]
  */
-CCMRAM_FUNC static inline float LADRC_Update(LADRC_Controller_t* ctrl, float omega_ref, float omega_fb) {
-    /* Fault-tolerant protection against NaN/Inf inputs or corrupted states */
-    if (isnan(omega_ref) || isnan(omega_fb) || isnan(ctrl->z1) || isnan(ctrl->z2)) {
-        LADRC_Reset(ctrl);
-        return 0.0f;
-    }
-
-    /* 1. Update Linear Extended State Observer (LESO) via Implicit Backward Euler */
-    float num = ctrl->z1 +
-                ctrl->dt * ctrl->z2 +
-                ctrl->dt * ctrl->b0 * ctrl->u_prev +
+CCMRAM_FUNC static inline float LADRC_Update(LADRC_Controller_t* ctrl, float omega_ref,
+                                             float omega_fb) {
+    float num = ctrl->z1 + ctrl->dt * ctrl->z2 + ctrl->dt * ctrl->b0 * ctrl->u_prev +
                 ctrl->dt * (ctrl->beta1 + ctrl->beta2 * ctrl->dt) * omega_fb;
     float z1_new = num * ctrl->D_inv;
 

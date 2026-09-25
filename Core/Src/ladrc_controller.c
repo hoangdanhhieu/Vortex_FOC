@@ -17,12 +17,6 @@ void LADRC_Init(LADRC_Controller_t* ctrl, float omega_c, float omega_o, float b0
     LADRC_Reset(ctrl);
 }
 
-void LADRC_Reset(LADRC_Controller_t* ctrl) {
-    ctrl->z1 = 0.0f;
-    ctrl->z2 = 0.0f;
-    ctrl->u_prev = 0.0f;
-}
-
 void LADRC_SetGains(LADRC_Controller_t* ctrl, float omega_c, float omega_o, float b0) {
     ctrl->omega_c = (omega_c > 0.0f) ? omega_c : 35.0f;
     ctrl->omega_o = (omega_o > 0.0f) ? omega_o : 122.0f;
@@ -40,7 +34,7 @@ void LADRC_SetGains(LADRC_Controller_t* ctrl, float omega_c, float omega_o, floa
     ctrl->beta2 = ctrl->omega_o * ctrl->omega_o;
 
     /* Guard against uninitialized or invalid sample time */
-    if (ctrl->dt <= 0.0f || isnan(ctrl->dt)) {
+    if (ctrl->dt <= 0.0f) {
         ctrl->dt = 0.001f; /* Default 1 kHz slow task */
     }
 
@@ -56,7 +50,7 @@ void LADRC_SetGains(LADRC_Controller_t* ctrl, float omega_c, float omega_o, floa
 }
 
 void LADRC_SetDt(LADRC_Controller_t* ctrl, float dt) {
-    if (dt > 0.0f && !isnan(dt)) {
+    if (dt > 0.0f) {
         ctrl->dt = dt;
         LADRC_SetGains(ctrl, ctrl->omega_c, ctrl->omega_o, ctrl->b0);
     }

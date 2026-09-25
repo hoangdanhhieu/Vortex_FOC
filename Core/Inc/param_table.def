@@ -45,8 +45,7 @@ PARAM_DEF(PID_M_KV,       float,     motor_kv,             MOTOR_KV)
 PARAM_DEF(PID_M_FLUX,     float,     motor_flux,           MOTOR_FLUX_LINKAGE)
 PARAM_DEF(PID_M_POLES,    float,     motor_poles,          (float)MOTOR_POLE_PAIRS)
 PARAM_DEF(PID_M_J,        float,     motor_inertia,        MOTOR_INERTIA)
-PARAM_DEF(PID_M_MAX_SPD,  float,     motor_max_spd,        MOTOR_MAX_SPEED_RPM)
-PARAM_DEF(PID_M_MIN_SPD,  float,     motor_min_spd,        MOTOR_MIN_SPEED_RPM)
+PARAM_DEF(PID_M_MAX_SPD,  float,     motor_max_spd,        MOTOR_MAX_SPEED_ELEC_RAD)
 PARAM_DEF(PID_M_MAX_I,    float,     motor_max_curr,       MOTOR_MAX_CURRENT)
 PARAM_DEF(PID_M_ISAT,     float,     motor_isat,           MOTOR_ISAT)
 PARAM_DEF(PID_M_ALPHA,    float,     motor_alpha,          MOTOR_ALPHA)
@@ -71,6 +70,9 @@ PARAM_DEF(PID_IN_MIN_SPD,  float,     input_min_spd,        INPUT_MIN_SPEED_DEFA
 PARAM_DEF(PID_IN_MIN_CUR,  float,     input_min_cur,        INPUT_MIN_CURRENT_DEFAULT)
 PARAM_DEF(PID_IN_MIN_VQ,   float,     input_min_vq,         INPUT_MIN_VQ_DEFAULT)
 PARAM_DEF(PID_IN_DEADBAND, float,     input_deadband,       INPUT_DEADBAND_DEFAULT)
+
+/* Hardware / System */
+PARAM_DEF(PID_PWM_FREQ,    float,     pwm_frequency,        48000.0f)
 
 /* Internal Non-GUI params */
 PARAM_DEF(PID_DIRECTION,  int8_t,    direction,            1)

@@ -2,17 +2,11 @@
 
 #include <stddef.h>
 
-#include "foc_config.h"
 #include "foc_state_machine.h"
 #include "input_pot.h"
-#include "peripheral_init.h"
 #include "usb_device.h"
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
-
-/*===========================================================================*/
-/* State Variables                                                           */
-/*===========================================================================*/
 
 static FOC_InputSource_t s_input_source = FOC_INPUT_SOURCE_NONE;
 static const FOC_InputDriver_t* s_custom_driver = NULL;
@@ -21,10 +15,6 @@ static float s_throttle_active = 0.0f;
 static float s_dynamic_min_vq = 0.0f;
 static uint8_t s_armed = 0;
 static uint16_t s_zero_count = 0;
-
-/*===========================================================================*/
-/* Public APIs                                                               */
-/*===========================================================================*/
 
 void FOC_Input_Init(void) {
     s_armed = 0;
@@ -77,7 +67,6 @@ void FOC_Input_Update(void) {
     /* 2. Select Active Physical Driver based on Config */
     uint8_t src_cfg = (uint8_t)(g_foc.cfg.input_source + 0.5f);
     if (src_cfg == 0) {
-        /* Input disabled */
         s_input_source = FOC_INPUT_SOURCE_NONE;
         s_armed = 0;
         s_zero_count = 0;
@@ -147,8 +136,8 @@ void FOC_Input_Update(void) {
             case FOC_MODE_SPEED: {
                 float min_spd = g_foc.cfg.input_min_spd;
                 float max_spd = g_foc.cfg.motor_max_spd;
-                float target_rpm = min_spd + cmd.throttle * (max_spd - min_spd);
-                FOC_SetSpeedRef(target_rpm);
+                float target_spd = min_spd + cmd.throttle * (max_spd - min_spd);
+                FOC_SetSpeedRef(target_spd);
                 break;
             }
             case FOC_MODE_TORQUE: {

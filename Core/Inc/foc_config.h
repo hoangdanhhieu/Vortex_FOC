@@ -6,6 +6,8 @@
 #ifndef FOC_CONFIG_H
 #define FOC_CONFIG_H
 
+#include "motor_params.h"
+
 /* Place function in CCM SRAM for zero wait-state execution */
 #define CCMRAM_FUNC __attribute__((section(".ccmram")))
 
@@ -43,8 +45,6 @@ CCMRAM_FUNC static inline float saturatef(float val, float max_val) {
     if (val > max_val) return max_val;
     return val;
 }
-
-#include "motor_params.h"
 
 extern volatile float ADC_Vref;
 /*===========================================================================*/
@@ -84,7 +84,7 @@ extern volatile float ADC_Vref;
 #define TIM1_COUNTER_MAX TIM1_ARR
 
 /** Dead-time duration in nanoseconds */
-#define DEAD_TIME_NS 480.0f
+#define DEAD_TIME_NS 400.0f
 #define DEADTIME_NS_TO_TICKS(ns)                                                                 \
     ((uint8_t)(((ns) <= 747.0f)    ? ((uint32_t)((ns) * 170.0f / 1000.0f + 0.5f))                \
                : ((ns) <= 1494.0f) ? (0x80 | ((uint32_t)((ns) * 170.0f / 2000.0f + 0.5f) - 64))  \
@@ -180,11 +180,11 @@ extern volatile float ADC_Vref;
 /* Speed Ramp Configuration                                                  */
 /*===========================================================================*/
 
-/** Maximum acceleration rate [RPM/s] */
-#define SPEED_RAMP_ACCEL 20000.0f
+/** Maximum acceleration rate [rad/s^2 elec] (equivalent to 20000 RPM/s mech @ 7PP) */
+#define SPEED_RAMP_ACCEL ((20000.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
 
-/** Maximum deceleration rate [RPM/s] (positive value) */
-#define SPEED_RAMP_DECEL 20000.0f
+/** Maximum deceleration rate [rad/s^2 elec] (positive value) */
+#define SPEED_RAMP_DECEL ((20000.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
 
 /** Current reference ramp rate [A/s] */
 #define CURRENT_RAMP_RATE 50.0f
@@ -194,10 +194,13 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 
 /** Current loop bandwidth [Hz]*/
-#define CURRENT_LOOP_BW 4800.0f
+#define CURRENT_LOOP_BW 4800.0f * TWO_PI
 
 /** Voltage ramp rate default [V/s] */
 #define VOLTAGE_RAMP_RATE 50.0f
+
+/** Voltage mode regenerative braking current limit [A] */
+#define VOLTAGE_MODE_REGEN_CURRENT_MAX 1.5f
 
 /** Current PI controller gains (Kp = Ls * BW, Ki = Rs * BW) */
 #define PI_ID_KP (MOTOR_LS * CURRENT_LOOP_BW)
@@ -258,7 +261,7 @@ extern volatile float ADC_Vref;
 #define STARTUP_CURRENT 0.5f
 
 /** Minimum continuous lock duration required before closed-loop handoff [ms] */
-#define HANDOFF_LOCK_DURATION_MS 500.0f
+#define HANDOFF_LOCK_DURATION_MS 10.0f
 #define HANDOFF_LOCK_SAMPLES \
     ((uint32_t)(HANDOFF_LOCK_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY))
 
@@ -266,26 +269,19 @@ extern volatile float ADC_Vref;
 #define STARTUP_VOLTAGE_MIN 0.5f
 #define STARTUP_VOLTAGE_MAX 1.0f
 
-/** Startup acceleration [RPM/s] */
-#define STARTUP_ACCEL 500.0f
+/** Startup acceleration [rad/s^2 elec] (equivalent to 500 RPM/s mech @ 7PP) */
+#define STARTUP_ACCEL ((500.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
 
-/** Minimum speed before switching to closed-loop [RPM] */
-#define STARTUP_HANDOFF_SPEED 1000.0f
+/** Minimum speed before switching to closed-loop [rad/s elec] (equivalent to 1000 RPM mech @ 7PP)
+ */
+#define STARTUP_HANDOFF_SPEED ((1000.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
 
 /** Transition blend duration from open-loop to closed-loop [ms] */
 #define TRANSITION_BLEND_MS 20.0f
 
 /** Startup timeout [ms] - set to 0 to disable */
-#define STARTUP_TIMEOUT_MS 0
+#define STARTUP_TIMEOUT_MS 500
 
-/** Startup Stall / Desynchronization Detection */
-#define STARTUP_STALL_SPEED_RATIO                                                                \
-    0.50f                              /* Start evaluating stall when omega >= 70% handoff_omega \
-                                        */
-#define STARTUP_STALL_BEMF_RATIO 0.60f /* Consider stalled when e_real < 40% of e_expect */
-#define STARTUP_STALL_TIMEOUT_MS 50.0f /* Continuous stall hold time before tripping [ms] */
-#define STARTUP_STALL_SAMPLES \
-    ((uint32_t)(STARTUP_STALL_TIMEOUT_MS * 0.001f * (float)CONTROL_FREQUENCY))
 /*===========================================================================*/
 /* Safety / Fault Protection                                                 */
 /*===========================================================================*/
@@ -311,7 +307,7 @@ extern volatile float ADC_Vref;
 
 /** Stall is detected when |speed| < SPEED_THRESHOLD AND |Iq| > CURRENT_THRESHOLD
  *  persists for longer than TIME_MS. */
-#define FAULT_STALL_SPEED_RPM 700.0f
+#define FAULT_STALL_SPEED_RPM ((700.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
 #define FAULT_STALL_CURRENT_A 35.0f
 #define FAULT_STALL_TIME_MS 100
 
@@ -377,18 +373,23 @@ extern volatile float ADC_Vref;
 #define ID_SETTLE_HOLD_TIME_MS 15U /**< Minimum settle hold delay before averaging [ms] */
 #define ID_ALIGN_DURATION_MS 150U  /**< D-axis alignment duration at I1 [ms] */
 
+/** Hand spin BEMF Flux Identification minimum Vac threshold [V] */
+#define ID_FLUX_MIN_VAC 0.3f
+
 /*===========================================================================*/
 /* Input & Throttle Defaults                                                 */
 /*===========================================================================*/
-#define INPUT_SOURCE_DEFAULT      1.0f    /**< Default hardware: 0=NONE, 1=POT, 2=CUSTOM */
-#define INPUT_MODE_DEFAULT        2.0f    /**< Default input control mode: 0=SPEED, 1=TORQUE, 2=VOLTAGE */
-#define INPUT_MIN_SPEED_DEFAULT   800.0f  /**< Minimum speed for throttle setpoint [RPM] */
-#define INPUT_MIN_CURRENT_DEFAULT 0.5f    /**< Minimum current for throttle setpoint [A] */
-#define INPUT_MIN_VQ_DEFAULT      0.05f   /**< Minimum voltage ratio [0.0 to 1.0] */
-#define INPUT_DEADBAND_DEFAULT    0.05f   /**< Throttle deadband ratio [0.0 to 1.0] */
+#define INPUT_SOURCE_DEFAULT 1.0f /**< Default hardware: 0=NONE, 1=POT, 2=CUSTOM */
+#define INPUT_MODE_DEFAULT 2.0f   /**< Default input control mode: 0=SPEED, 1=TORQUE, 2=VOLTAGE */
+#define INPUT_MIN_SPEED_DEFAULT  \
+    ((800.0f / 60.0f) * TWO_PI * \
+     (float)MOTOR_POLE_PAIRS)          /**< Minimum speed for throttle setpoint [rad/s elec] */
+#define INPUT_MIN_CURRENT_DEFAULT 0.5f /**< Minimum current for throttle setpoint [A] */
+#define INPUT_MIN_VQ_DEFAULT 0.05f     /**< Minimum voltage ratio [0.0 to 1.0] */
+#define INPUT_DEADBAND_DEFAULT 0.05f   /**< Throttle deadband ratio [0.0 to 1.0] */
 
-#define POT_ADC_MAX               4095    /**< Maximum ADC value */
-#define POT_LPF_ALPHA             0.95f   /**< Potentiometer LPF coefficient (~8 Hz cutoff at 1 kHz) */
+#define POT_ADC_MAX 4095    /**< Maximum ADC value */
+#define POT_LPF_ALPHA 0.95f /**< Potentiometer LPF coefficient (~8 Hz cutoff at 1 kHz) */
 
 /*===========================================================================*/
 /* Flying Start & Active Braking Configuration                               */
@@ -412,4 +413,4 @@ extern volatile float ADC_Vref;
 /** Debounce duration [ms] confirming motor has stopped before transitioning to ALIGN */
 #define BRAKE_DEBOUNCE_MS 10U
 
-#endif                                    /* FOC_CONFIG_H */
+#endif /* FOC_CONFIG_H */

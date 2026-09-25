@@ -65,6 +65,10 @@
 #define MOTOR_MAX_SPEED_ELEC_RAD \
     ((MOTOR_MAX_SPEED_RPM / 60.0f) * 2.0f * 3.14159265f * MOTOR_POLE_PAIRS)
 
+/** Minimum electrical speed for sensorless operation [rad/s] */
+#define MOTOR_MIN_SPEED_ELEC_RAD \
+    ((MOTOR_MIN_SPEED_RPM / 60.0f) * 2.0f * 3.14159265f * MOTOR_POLE_PAIRS)
+
 /** Electrical time constant [s] = Ls / Rs */
 #define MOTOR_ELEC_TIME_CONST (MOTOR_LS / MOTOR_RS)
 

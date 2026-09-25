@@ -6,10 +6,11 @@
 
 #include "peripheral_init.h"
 
+#include "flash_config.h"
 #include "foc_config.h"
 #include "usb_device.h"
 /* Exported variables */
-volatile uint16_t adc_regular_buffer[2];
+volatile uint16_t adc_regular_buffer[3];
 
 /* Private defines */
 #define ADC_THRESHOLD_LOW 200 /* ~5% of 4096, for calibration detection */
@@ -28,6 +29,9 @@ void SystemClock_Config(void) {
     LL_FLASH_SetLatency(LL_FLASH_LATENCY_4);
     while (LL_FLASH_GetLatency() != LL_FLASH_LATENCY_4) {
     }
+    LL_FLASH_EnablePrefetch();
+    LL_FLASH_EnableInstCache();
+    LL_FLASH_EnableDataCache();
     LL_PWR_EnableRange1BoostMode();
     LL_RCC_HSE_Enable();
     /* Wait till HSE is ready */
@@ -90,9 +94,6 @@ void Error_Handler(void) {
  */
 void MX_GPIO_Init(void) {
     LL_GPIO_InitTypeDef GPIO_InitStruct = {0};
-    /* USER CODE BEGIN MX_GPIO_Init_1 */
-
-    /* USER CODE END MX_GPIO_Init_1 */
 
     /* GPIO Ports Clock Enable */
     LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOF);
@@ -197,9 +198,9 @@ void MX_ADC1_Init(void) {
     ADC_InitStruct.LowPowerMode = LL_ADC_LP_MODE_NONE;
     LL_ADC_Init(ADC1, &ADC_InitStruct);
     ADC_REG_InitStruct.TriggerSource = LL_ADC_REG_TRIG_SOFTWARE;
-    ADC_REG_InitStruct.SequencerLength = LL_ADC_REG_SEQ_SCAN_ENABLE_2RANKS;
+    ADC_REG_InitStruct.SequencerLength = LL_ADC_REG_SEQ_SCAN_ENABLE_3RANKS;
     ADC_REG_InitStruct.SequencerDiscont = LL_ADC_REG_SEQ_DISCONT_DISABLE;
-    ADC_REG_InitStruct.ContinuousMode = LL_ADC_REG_CONV_CONTINUOUS;
+    ADC_REG_InitStruct.ContinuousMode = LL_ADC_REG_CONV_SINGLE;
     ADC_REG_InitStruct.DMATransfer = LL_ADC_REG_DMA_TRANSFER_UNLIMITED;
     ADC_REG_InitStruct.Overrun = LL_ADC_REG_OVR_DATA_OVERWRITTEN;
     LL_ADC_REG_Init(ADC1, &ADC_REG_InitStruct);
@@ -222,12 +223,7 @@ void MX_ADC1_Init(void) {
     LL_ADC_DisableDeepPowerDown(ADC1);
     /* Enable ADC internal voltage regulator */
     LL_ADC_EnableInternalRegulator(ADC1);
-    /* Delay for ADC internal voltage regulator stabilization. */
-    /* Compute number of CPU cycles to wait for, from delay in us. */
-    /* Note: Variable divided by 2 to compensate partially */
-    /* CPU processing cycles (depends on compilation optimization). */
-    /* Note: If system core clock frequency is below 200kHz, wait time */
-    /* is only a few CPU processing cycles. */
+    /* Wait for ADC internal voltage regulator stabilization */
     uint32_t wait_loop_index;
     wait_loop_index =
         ((LL_ADC_DELAY_INTERNAL_REGUL_STAB_US * (SystemCoreClock / (100000 * 2))) / 10);
@@ -253,10 +249,6 @@ void MX_ADC1_Init(void) {
     LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_12, LL_ADC_SAMPLINGTIME_6CYCLES_5);
     LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_12, LL_ADC_SINGLE_ENDED);
 
-    /** Pre-configure sampling time for CH14 (PB11 = Vbus, used by regular single-shot at 1kHz) */
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_14, LL_ADC_SAMPLINGTIME_47CYCLES_5);
-    LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_14, LL_ADC_SINGLE_ENDED);
-
     /** Configure Regular Channel Rank 1 (Phase A Voltage: PB12 = ADC1_IN11) */
     LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_11);
     LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_11, LL_ADC_SAMPLINGTIME_24CYCLES_5);
@@ -266,6 +258,10 @@ void MX_ADC1_Init(void) {
     LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_2, LL_ADC_CHANNEL_1);
     LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_1, LL_ADC_SAMPLINGTIME_24CYCLES_5);
     LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_1, LL_ADC_SINGLE_ENDED);
+
+    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_3, LL_ADC_CHANNEL_14);
+    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_14, LL_ADC_SAMPLINGTIME_47CYCLES_5);
+    LL_ADC_SetChannelSingleDiff(ADC1, LL_ADC_CHANNEL_14, LL_ADC_SINGLE_ENDED);
 }
 
 /**
@@ -339,12 +335,7 @@ void MX_ADC2_Init(void) {
     LL_ADC_DisableDeepPowerDown(ADC2);
     /* Enable ADC internal voltage regulator */
     LL_ADC_EnableInternalRegulator(ADC2);
-    /* Delay for ADC internal voltage regulator stabilization. */
-    /* Compute number of CPU cycles to wait for, from delay in us. */
-    /* Note: Variable divided by 2 to compensate partially */
-    /* CPU processing cycles (depends on compilation optimization). */
-    /* Note: If system core clock frequency is below 200kHz, wait time */
-    /* is only a few CPU processing cycles. */
+    /* Wait for ADC internal voltage regulator stabilization */
     uint32_t wait_loop_index;
     wait_loop_index =
         ((LL_ADC_DELAY_INTERNAL_REGUL_STAB_US * (SystemCoreClock / (100000 * 2))) / 10);
@@ -478,7 +469,7 @@ void MX_OPAMP3_Init(void) {
 }
 
 /**
- * @brief TIM1 Initialization Function (SVPWM 48kHz & TRGO2)
+ * @brief TIM1 Initialization Function (SVPWM & TRGO2)
  */
 void MX_TIM1_Init(void) {
     LL_TIM_InitTypeDef TIM_InitStruct = {0};
@@ -490,9 +481,15 @@ void MX_TIM1_Init(void) {
     /* Peripheral clock enable */
     LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_TIM1);
 
+    float pwm_freq = FlashConfig_Get()->pwm_frequency;
+    if (pwm_freq < 16000.0f || pwm_freq > 96000.0f) {
+        pwm_freq = 48000.0f;
+    }
+    volatile uint32_t arr = (uint32_t)((float)SYSCLK_FREQ / (2.0f * pwm_freq) + 0.5f);
+
     TIM_InitStruct.Prescaler = 0;
     TIM_InitStruct.CounterMode = LL_TIM_COUNTERMODE_CENTER_UP;
-    TIM_InitStruct.Autoreload = TIM1_ARR;
+    TIM_InitStruct.Autoreload = arr;
     TIM_InitStruct.ClockDivision = LL_TIM_CLOCKDIVISION_DIV1;
     TIM_InitStruct.RepetitionCounter = 1;
     LL_TIM_Init(TIM1, &TIM_InitStruct);
@@ -517,7 +514,7 @@ void MX_TIM1_Init(void) {
     LL_TIM_OC_DisableFast(TIM1, LL_TIM_CHANNEL_CH3);
     LL_TIM_OC_EnablePreload(TIM1, LL_TIM_CHANNEL_CH4);
     TIM_OC_InitStruct.OCMode = LL_TIM_OCMODE_PWM2;
-    TIM_OC_InitStruct.CompareValue = 1600;
+    TIM_OC_InitStruct.CompareValue = arr - ADC_TICKS / 2;
     LL_TIM_OC_Init(TIM1, LL_TIM_CHANNEL_CH4, &TIM_OC_InitStruct);
     LL_TIM_OC_DisableFast(TIM1, LL_TIM_CHANNEL_CH4);
     LL_TIM_SetTriggerOutput(TIM1, LL_TIM_TRGO_RESET);
@@ -685,9 +682,6 @@ void MX_TIM4_Init(void) {
     LL_DMA_SetMemoryIncMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MEMORY_INCREMENT);
     LL_DMA_SetPeriphSize(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PDATAALIGN_HALFWORD);
     LL_DMA_SetMemorySize(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MDATAALIGN_HALFWORD);
-
-    NVIC_SetPriority(TIM4_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), 0, 0));
-    NVIC_EnableIRQ(TIM4_IRQn);
 
     TIM_InitStruct.Prescaler = 0;
     TIM_InitStruct.CounterMode = LL_TIM_COUNTERMODE_UP;
@@ -960,13 +954,18 @@ void ADC_Start(void) {
     LL_ADC_Disable(ADC1);
     while (LL_ADC_IsEnabled(ADC1));
 
-    /* Re-init ADC1 with 3-rank phase voltage continuous DMA */
+    /* Re-init ADC1 with default configuration */
     MX_ADC1_Init();
 
+    LL_ADC_REG_SetContinuousMode(ADC1, LL_ADC_REG_CONV_SINGLE);
+    LL_ADC_REG_SetDMATransfer(ADC1, LL_ADC_REG_DMA_TRANSFER_UNLIMITED);
+    LL_ADC_REG_SetSequencerLength(ADC1, LL_ADC_REG_SEQ_SCAN_ENABLE_3RANKS);
+
+    LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
     LL_DMA_ConfigAddresses(DMA1, LL_DMA_CHANNEL_1,
                            LL_ADC_DMA_GetRegAddr(ADC1, LL_ADC_DMA_REG_REGULAR_DATA),
                            (uint32_t)&adc_regular_buffer, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
-    LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 2);
+    LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 3);
     LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
 
     LL_ADC_Enable(ADC1);
@@ -980,82 +979,7 @@ void ADC_Start(void) {
     LL_ADC_EnableIT_JEOS(ADC1);
     LL_ADC_INJ_StartConversion(ADC1);
 
-    /* Regular DMA is not enabled at boot (motor starts in IDLE).
-     * FOC_SetPhaseVoltageDMA(1) will dynamically configure and start it during CALIBRATION/DETECT.
-     */
-}
-
-/**
- * @brief  Enable or Disable Phase Voltage Sensing via ADC1 Regular DMA
- */
-void FOC_SetPhaseVoltageDMA(uint8_t enable) {
-    if (enable) {
-        if (!LL_DMA_IsEnabledChannel(DMA1, LL_DMA_CHANNEL_1)) {
-            /* 1. Stop any ongoing conversion before reconfiguring */
-            if (LL_ADC_REG_IsConversionOngoing(ADC1) != 0) {
-                LL_ADC_REG_StopConversion(ADC1);
-                while (LL_ADC_REG_IsConversionOngoing(ADC1) != 0);
-            }
-
-            /* 2. Fully restore ADC1 Regular channel for 2-rank Continuous DMA */
-            LL_ADC_REG_SetContinuousMode(ADC1, LL_ADC_REG_CONV_CONTINUOUS);
-            LL_ADC_REG_SetDMATransfer(ADC1, LL_ADC_REG_DMA_TRANSFER_UNLIMITED);
-            LL_ADC_REG_SetSequencerLength(ADC1, LL_ADC_REG_SEQ_SCAN_ENABLE_2RANKS);
-            LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_11);
-            LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_11, LL_ADC_SAMPLINGTIME_6CYCLES_5);
-            LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_2, LL_ADC_CHANNEL_1);
-            LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_1, LL_ADC_SAMPLINGTIME_6CYCLES_5);
-
-            /* 3. Re-configure and enable DMA */
-            LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
-            LL_DMA_ConfigAddresses(
-                DMA1, LL_DMA_CHANNEL_1, LL_ADC_DMA_GetRegAddr(ADC1, LL_ADC_DMA_REG_REGULAR_DATA),
-                (uint32_t)&adc_regular_buffer, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
-            LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, 2);
-            LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
-
-            /* 4. Start continuous conversion */
-            LL_ADC_REG_StartConversion(ADC1);
-        }
-    } else {
-        if (LL_DMA_IsEnabledChannel(DMA1, LL_DMA_CHANNEL_1)) {
-            LL_ADC_REG_StopConversion(ADC1);
-            while (LL_ADC_REG_IsConversionOngoing(ADC1) != 0);
-            LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
-        }
-    }
-}
-
-/**
- * @brief  Read Vbus via software-triggered ADC1 regular single conversion.
- *         Only call when ADC1 regular DMA is DISABLED (i.e. not in DETECT/FLYING_START).
- *         Safe to call from TIM6 ISR (priority 4) — injected conversions (priority 0)
- *         will auto-preempt via STM32G4 hardware injected context queue.
- * @return Raw 12-bit ADC value, or 0 if DMA is active (caller should keep previous value).
- */
-uint16_t ADC_ReadVbus_SingleShot(void) {
-    /* Don't interfere with regular DMA when it's running */
-    if (LL_DMA_IsEnabledChannel(DMA1, LL_DMA_CHANNEL_1)) {
-        return 0; /* Caller should keep previous value */
-    }
-
-    /* Temporarily configure ADC1 regular for single-shot Vbus */
-    LL_ADC_REG_SetContinuousMode(ADC1, LL_ADC_REG_CONV_SINGLE);
-    LL_ADC_REG_SetDMATransfer(ADC1, LL_ADC_REG_DMA_TRANSFER_NONE);
-    LL_ADC_REG_SetSequencerLength(ADC1, LL_ADC_REG_SEQ_SCAN_DISABLE);
-    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_14);
-
     LL_ADC_REG_StartConversion(ADC1);
-    uint32_t timeout = 10000;
-    while (!LL_ADC_IsActiveFlag_EOC(ADC1) && --timeout);
-    if (timeout == 0) {
-        return 0;
-    }
-    uint16_t result = LL_ADC_REG_ReadConversionData12(ADC1);
-    LL_ADC_ClearFlag_EOC(ADC1);
-    LL_ADC_ClearFlag_OVR(ADC1);
-
-    return result;
 }
 
 /**
@@ -1137,5 +1061,4 @@ void Peripheral_Init(void) {
     /* Start ADC conversions & Timers */
     ADC_Start();
     TIM_Start();
-    // CAPTURE_Start();
 }

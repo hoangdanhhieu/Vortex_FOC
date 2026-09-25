@@ -13,7 +13,7 @@ extern "C" {
 #include "main.h"
 
 /* Exported variables */
-extern volatile uint16_t adc_regular_buffer[2];
+extern volatile uint16_t adc_regular_buffer[3];
 
 /* High-level System Initialization */
 void SystemClock_Config(void);
@@ -23,8 +23,6 @@ void Peripheral_Init(void);
 void OPAMP_Calibration_ADC(OPAMP_TypeDef* OPAMPx, ADC_TypeDef* ADCx, uint32_t adc_channel);
 void ADC_Setup(void);
 void ADC_Start(void);
-void FOC_SetPhaseVoltageDMA(uint8_t enable);
-uint16_t ADC_ReadVbus_SingleShot(void);
 uint16_t ADC_ReadPot_SingleShot(void);
 
 /* Timer & Capture Controls */

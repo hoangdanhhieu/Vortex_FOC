@@ -8,10 +8,10 @@
 
 #include <stdint.h>
 
-#include "bist_profiler.h"
 #include "flash_config.h"
 #include "ladrc_controller.h"
 #include "pi_controller.h"
+#include "response_profiler.h"
 #include "smo_observer.h"
 
 /*===========================================================================*/
@@ -60,7 +60,7 @@ typedef struct {
     FOC_Fault_t fault;              /**< Active system fault code */
     float reverse;         /**< Motor rotation direction [dimensionless: 1.0 = FWD, -1.0 = REV] */
     uint8_t in_transition; /**< Open-loop to closed-loop handoff flag [0 = Normal, 1 = Blending] */
-    uint32_t run_counter;  /**< Control loop execution tick counter [ISR cycles @ 48kHz] */
+    uint32_t run_counter;  /**< Control loop execution tick counter */
 } FOC_Status_t;
 
 typedef struct {
@@ -77,7 +77,6 @@ typedef struct {
     float theta_elec;    /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0,
                             where 1.0 = +pi rad] */
     float omega_elec;    /**< Electrical angular velocity [rad/s] */
-    float speed_rpm;     /**< Mechanical rotational speed [RPM] */
     float Vbus;          /**< DC bus supply voltage [V] */
     float Vbus_inv;      /**< Inverse of DC bus voltage (1.0 / Vbus) [1/V] */
     float Ibus;          /**< Total DC bus consumed current [A] */
@@ -86,11 +85,16 @@ typedef struct {
     float v_scale;                /**< ADC raw count to phase voltage conversion factor [V/count] */
     float e_real_flt;             /**< Filtered real Back-EMF vector magnitude [V] */
     float e_expect_flt;           /**< Filtered expected Back-EMF vector magnitude [V] */
+    float inv_i_th;               /**< Precomputed inverse deadtime threshold [1/A] */
+    float stall_risk;             /**< Real-time leaky stall risk accumulator [0.0 to 1.0] */
+    float eta_em;                 /**< Scale-free electromechanical power conversion ratio */
+    float d_desync;               /**< Back-EMF vector desynchronization index [0.0 to 1.0] */
+    float r_bemf; /**< Residual Back-EMF ratio (Hallucination buster) [0.0 to 1.0] */
 } FOC_Data_t;
 
 typedef struct {
-    float speed_ref;        /**< Ramp-filtered mechanical speed target [RPM] */
-    float speed_ref_target; /**< Commanded mechanical speed target from user/host [RPM] */
+    float speed_ref;        /**< Ramp-filtered electrical speed target [rad/s] */
+    float speed_ref_target; /**< Commanded electrical speed target from user/host [rad/s] */
     float Iq_ref;           /**< Ramp-filtered quadrature current target [A] */
     float Iq_ref_target;    /**< Commanded quadrature current target from user/host [A] */
     float Id_ref;           /**< Direct axis current reference (0A or field weakening) [A] */
@@ -113,7 +117,10 @@ typedef struct {
         PI_Controller_t iq;       /**< Quadrature axis (q-axis) current PI controller [A -> V] */
         LADRC_Controller_t speed; /**< Speed loop Linear ADRC controller [RPM -> A] */
         SMO_Observer_t smo; /**< Sensorless Sliding Mode Observer for angle/speed estimation */
-        BIST_State_t bist;  /**< Built-In Self-Test and automated parameter profiler */
+        union {
+            Profiler_State_t profiler; /**< Dynamic response profiler & test signal generator */
+            Profiler_State_t bist;     /**< Backward-compatibility alias */
+        };
     } ctrl;
 
     /*--- Live Data / Signals ---*/
@@ -136,7 +143,10 @@ typedef struct {
     struct {
         int32_t offset_a; /**< Phase A current ADC zero-crossing offset [ADC counts: 0 to 4095] */
         int32_t offset_b; /**< Phase B current ADC zero-crossing offset [ADC counts: 0 to 4095] */
-        int32_t offset_c; /**< Phase C current ADC zero-crossing offset [ADC counts: 0 to 4095] */
+        int32_t offset_c_pb1; /**< Phase C current offset measured on ADC1 via PB1 [ADC counts: 0 to
+                                 4095] */
+        int32_t offset_c_opamp3; /**< Phase C current offset measured on ADC2 via VOPAMP3 [ADC
+                                    counts: 0 to 4095] */
         int32_t offset_vphase_a; /**< Phase A voltage ADC zero-crossing offset [ADC counts: 0 to
                                     4095] */
         int32_t offset_vphase_b; /**< Phase B voltage ADC zero-crossing offset [ADC counts: 0 to
@@ -156,10 +166,16 @@ typedef struct {
         uint8_t health_status; /**< Hardware health: 0=EXCELLENT, 1=GOOD, 2=NOISY, 3=FAULT */
     } noise_profile;
 
+    /*--- Dynamic Timing & Hardware Timer ---*/
+    uint32_t timer_arr;   /**< TIM1 Auto-Reload value based on pwm_frequency */
+    float timer_arr_f;    /**< Float copy of timer_arr for fast duty cycle calculation */
+    float dt;             /**< Control loop sample period [s] (1.0 / pwm_frequency) */
+    float deadtime_duty;  /**< Dynamic deadtime duty compensation [dimensionless] */
+    float wc_current_stf; /**< Precomputed cutoff frequency for current STF filter [rad/s] */
+
     /*--- Constraints & Performance ---*/
     float max_duty; /**< Maximum allowed PWM duty cycle clamp [dimensionless: 0.0 to 1.0] */
-    uint32_t
-        isr_time_cycles; /**< 48kHz ADC ISR execution execution time [CPU clock cycles @ 170MHz] */
+    uint32_t isr_time_cycles; /**< ADC ISR execution time [CPU clock cycles @ 170MHz] */
 
     /*--- Plotting (Telemetry Snapshot) ---*/
     struct {
@@ -169,11 +185,6 @@ typedef struct {
     } plot;
 
 } FOC_Control_t;
-
-#include "foc_calibration.h"
-#include "foc_flying_start.h"
-#include "foc_slow_task.h"
-#include "foc_startup.h"
 
 /*===========================================================================*/
 /* Global FOC Instance                                                       */
@@ -201,8 +212,12 @@ static inline FOC_Fault_t FOC_GetFault(void) {
     return g_foc.status.fault;
 }
 
-static inline float FOC_GetSpeedRPM(void) {
-    return g_foc.data.speed_rpm;
+CCMRAM_FUNC static inline uint8_t FOC_IsInTransition(void) {
+    return g_foc.status.in_transition;
+}
+
+static inline float FOC_GetSpeed(void) {
+    return g_foc.data.omega_elec;
 }
 
 static inline float FOC_GetVbus(void) {
@@ -258,9 +273,9 @@ void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data);
 
 /**
  * @brief Set speed reference
- * @param speed_rpm Target speed in RPM
+ * @param speed_rad Target speed in electrical rad/s
  */
-void FOC_SetSpeedRef(float speed_rpm);
+void FOC_SetSpeedRef(float speed_rad);
 
 /**
  * @brief Set torque reference (Iq)
@@ -284,18 +299,9 @@ void FOC_SetControlMode(FOC_ControlMode_t mode);
  * @brief Clear fault and return to IDLE
  */
 void FOC_ClearFault(void);
+void FOC_ResetStallDetector(void);
 
-/**
- * @brief Enable/disable gate drivers
- * @param enable 1 to enable, 0 to disable
- */
 void FOC_EnableDrivers(uint8_t enable);
-
-/**
- * @brief Enable/disable gate driver
- * @param phase Phase to enable/disable
- * @param enable 1 to enable, 0 to disable
- */
 void FOC_EnableDriver(uint8_t phase, uint8_t enable);
 
 /**
@@ -315,6 +321,12 @@ void FOC_SetDirection(int8_t dir);
  * @return 1 = forward, -1 = reverse
  */
 int8_t FOC_GetDirection(void);
+
+/**
+ * @brief Get control loop sample period
+ * @return Control loop sample period in seconds
+ */
+float FOC_GetDt(void);
 
 /**
  * @brief Play a tune on motor phases

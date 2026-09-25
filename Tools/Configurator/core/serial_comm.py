@@ -9,7 +9,7 @@ from PySide6.QtCore import QThread, Signal, QMutex, QMutexLocker
 
 from core.protocol import (
     PacketParser, Packet, RspType,
-    parse_ack, parse_value, parse_status, parse_param_all, parse_sample_data,
+    parse_ack, parse_value, parse_status, parse_param_all, parse_stream_data,
 )
 
 
@@ -24,7 +24,7 @@ class SerialThread(QThread):
     value_received = Signal(int, float)     # param_id, value
     status_received = Signal(object)        # status dict
     params_received = Signal(object)        # {pid: value}
-    sample_data_received = Signal(object)   # (offset, size, raw_data_list)
+    stream_data_received = Signal(object)   # (seq, num_sets, data: np.ndarray [N, 4] float32)
     raw_tx = Signal(bytes)                  # for console
     raw_rx = Signal(bytes)                  # for console
 
@@ -114,9 +114,9 @@ class SerialThread(QThread):
             elif pkt.ptype == RspType.PARAM_ALL:
                 params = parse_param_all(pkt.payload)
                 self.params_received.emit(params)
-            elif pkt.ptype == RspType.SAMPLE_DATA:
-                offset, size, raw_data = parse_sample_data(pkt.payload)
-                self.sample_data_received.emit((offset, size, raw_data))
+            elif pkt.ptype == RspType.STREAM_DATA:
+                seq, num_sets, data = parse_stream_data(pkt.payload)
+                self.stream_data_received.emit((seq, num_sets, data))
         except Exception:
             pass
 

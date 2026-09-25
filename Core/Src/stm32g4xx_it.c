@@ -5,7 +5,7 @@
 
 #include "stm32g4xx_it.h"
 
-#include "foc_config.h"
+#include "foc_slow_task.h"
 #include "foc_state_machine.h"
 #include "main.h"
 
@@ -17,7 +17,8 @@ extern volatile uint16_t raw_adc_a;
 extern volatile uint16_t raw_adc_b;
 extern volatile uint16_t raw_adc_c;
 extern volatile uint32_t adc_isr_us;
-extern volatile uint8_t adc_isr_flag;
+extern volatile uint16_t g_adc_ticks;
+extern volatile uint8_t g_slow_ticks;
 
 /* Fault debug variables */
 volatile uint32_t fault_pc = 0;
@@ -137,10 +138,10 @@ void DMA1_Channel2_IRQHandler(void) {
 }
 
 /**
- * @brief This function handles ADC1 and ADC2 global interrupt (FOC Fast Loop 48kHz).
+ * @brief This function handles ADC1 and ADC2 global interrupt (FOC Fast Loop).
  */
 
-void ADC1_2_IRQHandler(void) {
+CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
     // Check AWD1 on ADC1 (Phase A overcurrent)
     if (LL_ADC_IsActiveFlag_AWD1(ADC1)) {
         LL_ADC_ClearFlag_AWD1(ADC1);
@@ -158,7 +159,7 @@ void ADC1_2_IRQHandler(void) {
     }
 
     if (LL_ADC_IsActiveFlag_JEOS(ADC1)) {
-        uint32_t start_count = TIM2->CNT;
+        uint32_t start_count = FOC_Get_1MhzCounter();
         LL_ADC_ClearFlag_JEOS(ADC1);
 
         /* Read 1 rank from each ADC (dual simultaneous) */
@@ -166,12 +167,12 @@ void ADC1_2_IRQHandler(void) {
         adc2_data = LL_ADC_INJ_ReadConversionData12(ADC2, LL_ADC_INJ_RANK_1);
 
         FOC_HighFrequencyTask(adc1_data, adc2_data);
-        adc_isr_us = TIM2->CNT - start_count;
+        adc_isr_us = FOC_Get_1MhzCounter() - start_count;
         if (adc_isr_us > TAMP->BKP2R) {
             TAMP->BKP2R = adc_isr_us;
         }
         TAMP->BKP3R = adc_isr_us;
-        adc_isr_flag = 1;
+        g_adc_ticks++;
     }
 
     if (LL_ADC_IsActiveFlag_JEOS(ADC2)) {
@@ -199,7 +200,10 @@ void TIM6_DAC_IRQHandler(void) {
     if (LL_TIM_IsActiveFlag_UPDATE(TIM6)) {
         LL_TIM_ClearFlag_UPDATE(TIM6);
 
+        if (!FOC_IsInitialized()) return;
+
         FOC_SlowTask();
         SMO_SlowTask(&g_foc.ctrl.smo);
+        g_slow_ticks++;
     }
 }

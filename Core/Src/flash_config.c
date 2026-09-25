@@ -11,8 +11,10 @@
 
 #include <string.h>
 
+#include "foc_calibration.h"
 #include "foc_config.h"
 #include "foc_state_machine.h"
+#include "main.h"
 #include "pi_controller.h"
 #include "smo_observer.h"
 #include "stm32g4xx_ll_tim.h"
@@ -137,6 +139,18 @@ void FlashConfig_Init(void) {
 void FlashConfig_Apply(void) {
     memcpy(&g_foc.cfg, &g_config, sizeof(FlashConfig_t));
 
+    if (g_foc.cfg.pwm_frequency < 16000.0f || g_foc.cfg.pwm_frequency > 96000.0f) {
+        g_foc.cfg.pwm_frequency = 48000.0f;
+    }
+
+    g_foc.timer_arr = (uint32_t)((float)SYSCLK_FREQ / (2.0f * g_foc.cfg.pwm_frequency) + 0.5f);
+    g_foc.timer_arr_f = (float)g_foc.timer_arr;
+    g_foc.dt = 1.0f / g_foc.cfg.pwm_frequency;
+    g_foc.deadtime_duty = DEAD_TIME_NS * 1e-9f * g_foc.cfg.pwm_frequency;
+
+    float f_bw = (g_foc.cfg.kp_iq / g_foc.cfg.motor_ls) * (1.0f / TWO_PI);
+    g_foc.wc_current_stf = TWO_PI * clampf(3.0f * f_bw, 1000.0f, 4000.0f);
+
     FOC_SetDirection(g_foc.cfg.direction);
 
     float i_limit = g_foc.cfg.motor_max_curr;
@@ -145,10 +159,12 @@ void FlashConfig_Apply(void) {
     PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
     PI_SetLimits(&g_foc.ctrl.id, -v_limit, v_limit);
     PI_SetIntLimits(&g_foc.ctrl.id, -v_limit, v_limit);
+    g_foc.ctrl.id.dt = g_foc.dt;
 
     PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
     PI_SetLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
     PI_SetIntLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
+    g_foc.ctrl.iq.dt = g_foc.dt;
 
     LADRC_SetGains(&g_foc.ctrl.speed, g_foc.cfg.ladrc_omega_c, g_foc.cfg.ladrc_omega_o,
                    g_foc.cfg.ladrc_b0);
@@ -159,21 +175,22 @@ void FlashConfig_Apply(void) {
         g_foc.status.state == FOC_STATE_FAULT) {
         SMO_Init(&g_foc.ctrl.smo);
     }
+    SMO_SetTiming(&g_foc.ctrl.smo, g_foc.dt);
 
     SMO_SetMotorParams(&g_foc.ctrl.smo, g_foc.cfg.motor_rs, g_foc.cfg.motor_ls,
                        g_foc.cfg.motor_alpha, g_foc.cfg.motor_flux, g_foc.cfg.motor_poles,
-                       g_foc.cfg.motor_max_spd, g_foc.cfg.motor_min_spd);
+                       g_foc.cfg.motor_max_spd);
 
     /* Update hardware-level constraints (ADC trigger shifting & Max Duty) */
     float margin = g_foc.cfg.adc_margin_ticks + DEAD_TIME_NS * 1e-9f * (float)SYSCLK_FREQ;
     float total_sampling_ticks = margin + ADC_TICKS / 2.0f;
-    float max_duty = 1.0f - total_sampling_ticks / (float)TIM1_ARR;
+    float max_duty = 1.0f - total_sampling_ticks / g_foc.timer_arr_f;
 
-    /* Clamp max duty to safe operating region [10%, 99%] */
-    g_foc.max_duty = clampf(max_duty, 0.10f, 0.99f);
+    g_foc.max_duty = clampf(max_duty, 0.50f, MAX_DUTY_HIGH);
 
-    uint32_t trigger = TIM1_ARR - ADC_TICKS / 2;
+    uint32_t trigger = g_foc.timer_arr - ADC_TICKS / 2;
     LL_TIM_OC_SetCompareCH4(TIM1, trigger);
+    LL_TIM_SetAutoReload(TIM1, g_foc.timer_arr);
 
     /* Update hardware watchdogs dynamically with the new safety limits */
     FOC_ConfigureAWD();
@@ -182,6 +199,13 @@ void FlashConfig_Apply(void) {
 int FlashConfig_Save(void) {
     /* Update CRC before saving */
     g_config.crc = config_compute_crc(&g_config);
+
+    if (FLASH_CONFIG_PTR->magic == FLASH_CONFIG_MAGIC && FLASH_CONFIG_PTR->crc == g_config.crc &&
+        memcmp(FLASH_CONFIG_PTR, &g_config, sizeof(FlashConfig_t)) == 0) {
+        return 0;
+    }
+
+    LL_IWDG_ReloadCounter(IWDG);
 
     /* Disable interrupts during Flash operations */
     __disable_irq();

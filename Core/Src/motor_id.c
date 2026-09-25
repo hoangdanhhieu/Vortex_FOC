@@ -36,13 +36,8 @@
 #include <math.h>
 #include <stdbool.h>
 
-#include "cordic_math.h"
-#include "flash_config.h"
-#include "foc.h"
 #include "foc_config.h"
 #include "foc_state_machine.h"
-#include "math.h"
-#include "peripheral_init.h"
 
 /* DEBUG VARIABLES FOR ACTIVE NOISE MEASUREMENT */
 float debug_rs_id_sq_sum = 0.0f;
@@ -69,6 +64,7 @@ static uint16_t N_DFT;
 static float sat_freq;
 static float sat_omega;
 static float sat_phase_inc;
+static float sat_cos_half_phi;
 
 /* Timekeeping */
 static uint32_t id_timer_ms;
@@ -88,6 +84,8 @@ static float min_delta_i_req;
 
 /* Align */
 static float align_vd;
+static float align_target_i;
+static float id_motor_max_curr;
 
 /* Measure Rs */
 static uint8_t rs_sub;
@@ -124,31 +122,30 @@ static uint8_t sat_backtrack_cnt;  // Counter for backtrack steps (limit to 2)
 static float sat_target_i_bias;    // Dynamic DC bias current target
 static float sat_vd_error_int;     // Slow DC bias voltage integrator
 
-static float meas_accum_L[500];
+static float meas_accum_L[128];
 static uint16_t meas_accum_count;
+
+/* Shared variables between FastTask (48kHz) and SlowTask (1kHz) */
+static volatile uint8_t s_rs_accum_en = 0;
+static volatile uint8_t s_rs_accum_done = 0;
+static float rs_probe_vd_bias = 0.0f;
+static float rs_probe_v_inj = 0.0f;
 
 /* Public Result */
 MotorID_Result_t id_result;
 
-/* Flux ID Variables */
 static uint8_t s_is_flux_measuring = 0;
 static uint32_t s_flux_coast_counter = 0;
-static float s_flux_theta_unwrapped = 0.0f;
-static uint32_t s_flux_sample_count = 0;
-static float s_flux_prev_theta = 0.0f;
-static float s_vac_sq_sum = 0.0f;
-static uint32_t s_vac_samples = 0;
-static float s_last_zc_sum = 0.0f;
-static uint32_t s_last_zc_samples = 0;
-static float s_last_zc_theta_unwrapped = 0.0f;
-static uint32_t s_last_zc_th_samples = 0;
-static uint16_t s_zc_count = 0;
-static float s_prev_vac = 0.0f;
-static uint8_t s_zc_started = 0;
-static float s_max_vac = -100.0f;
-static float s_min_vac = 100.0f;
-static float s_flux_dc_alpha = 0.0f;
-static float s_flux_dc_beta = 0.0f;
+static float s_cycle_max_vac = -100.0f;
+static float s_cycle_min_vac = 100.0f;
+static uint8_t s_zc_state = 0;
+static uint32_t s_zc_cycle_count = 0;
+static uint32_t s_last_zc_sample = 0;
+static uint32_t s_valid_cycle_count = 0;
+static float s_accum_flux = 0.0f;
+static float s_accum_kv = 0.0f;
+static uint8_t s_spin_detected = 0;
+static int8_t s_flux_direction = 1;
 
 /*===========================================================================*/
 /* Private Helper Functions                                                  */
@@ -157,13 +154,17 @@ static float s_flux_dc_beta = 0.0f;
 static void configure_freq(float f_probe) {
     sat_freq = f_probe;
     sat_omega = TWO_PI * sat_freq;
-    sat_phase_inc = TWO_PI * sat_freq * CONTROL_PERIOD_F;
-    N_DFT = (uint16_t)((float)PWM_FREQUENCY / sat_freq + 0.5f);
+    sat_phase_inc = TWO_PI * sat_freq * g_foc.dt;
+    sat_cos_half_phi = cosf(0.5f * sat_phase_inc);
+    N_DFT = (uint16_t)(g_foc.cfg.pwm_frequency / sat_freq + 0.5f);
     if (N_DFT > ID_MAX_DFT_N) N_DFT = ID_MAX_DFT_N;
     if (N_DFT < 4) N_DFT = 4;
 
-    /* Compensate exact 1.5-cycle PWM hardware delay (0.5 sample ADC + 1.0 sample Timer shadow
-     * reload) */
+    /* Total 1.5-cycle phase lag between command and ADC sample:
+     * - 1.0 dt: PWM reload at Valley (t=0.5dt), center of PWM pulse at t=1.0dt.
+     * - 0.5 dt: Voltage mixing across sampling interval (V_eff = 0.5*V[k-1] + 0.5*V[k]).
+     * Note: The corresponding amplitude attenuation cos(phi/2) is precomputed in sat_cos_half_phi
+     * and compensated when calculating Z_mag_sq. */
     float delay_phase = 1.5f * sat_phase_inc;
     for (uint16_t k = 0; k < N_DFT; k++) {
         float phase_cmd = sat_phase_inc * (float)k;
@@ -223,13 +224,14 @@ void MotorID_Init(void) {
     tick_counter = 0;
 
     /* 2. Retrieve hardware specifications and live calibration noise profile */
-    float ts = CONTROL_PERIOD_F;
+    float ts = g_foc.dt;
     float noise_rms = g_foc.noise_profile.noise_rms;
     if (noise_rms < ID_NOISE_FLOOR_MIN) noise_rms = ID_NOISE_FLOOR_MIN;
 
     float lsb_current = fabsf(ADC_TO_CURRENT) * ADC_Vref;
     float motor_max_curr = FlashConfig_Get()->motor_max_curr;
     if (motor_max_curr < 0.5f) motor_max_curr = 2.0f;
+    id_motor_max_curr = motor_max_curr;
 
     /* 3. Compute Fast Filter alpha (tau = 1.04 ms for instant ramp stop) */
     id_alpha_fast = ts / ID_FAST_TAU_TARGET_S;
@@ -265,6 +267,14 @@ void MotorID_Init(void) {
     id_filt_slow = 0.0f;
 
     align_vd = 0.0f;
+    float target_i1 = 50.0f * lsb_current;
+    if (target_i1 < 5.0f * noise_rms) {
+        target_i1 = 5.0f * noise_rms;
+    }
+    if (target_i1 < 0.08f) target_i1 = 0.08f;
+    if (target_i1 > 0.20f * motor_max_curr) target_i1 = 0.20f * motor_max_curr;
+    align_target_i = target_i1;
+
     rs_sub = 0;
     sat_sub = 0;
     sat_level_idx = 0;
@@ -280,6 +290,11 @@ void MotorID_Init(void) {
     sat_target_i_bias = 0.0f;
     sat_vd_error_int = 0.0f;
 
+    s_rs_accum_en = 0;
+    s_rs_accum_done = 0;
+    rs_probe_vd_bias = 0.0f;
+    rs_probe_v_inj = 0.0f;
+
     configure_freq(2400.0f);
 }
 
@@ -289,7 +304,10 @@ void MotorID_Start(void) {
 }
 
 void MotorID_Stop(void) {
-    id_result.state = MOTOR_ID_STATE_IDLE;
+    if (id_result.state != MOTOR_ID_STATE_COMPLETE && id_result.state != MOTOR_ID_STATE_ERROR) {
+        id_result.state = MOTOR_ID_STATE_IDLE;
+    }
+    s_is_flux_measuring = 0;
     FOC_EnableDrivers(0);
 }
 
@@ -298,172 +316,148 @@ uint8_t MotorID_IsFluxMeasuring(void) {
 }
 
 void MotorID_MeasureFluxOffline(void) {
+    if (g_foc.status.state != FOC_STATE_IDLE) {
+        return;
+    }
     s_is_flux_measuring = 1;
+    id_result.state = MOTOR_ID_STATE_MEASURE_FLUX;
+    id_result.error_code = 0;
     s_flux_coast_counter = 0;
-    s_flux_theta_unwrapped = 0.0f;
-    s_flux_sample_count = 0;
-    s_flux_prev_theta = 0.0f;
-    s_vac_sq_sum = 0.0f;
-    s_vac_samples = 0;
-    s_last_zc_sum = 0.0f;
-    s_last_zc_samples = 0;
-    s_zc_count = 0;
-    s_prev_vac = 0.0f;
-    s_zc_started = 0;
-    s_max_vac = -100.0f;
-    s_min_vac = 100.0f;
-    FOC_Start();
+    s_cycle_max_vac = -100.0f;
+    s_cycle_min_vac = 100.0f;
+    s_zc_state = 0;
+    s_zc_cycle_count = 0;
+    s_last_zc_sample = 0;
+    s_valid_cycle_count = 0;
+    s_accum_flux = 0.0f;
+    s_accum_kv = 0.0f;
+    s_spin_detected = 0;
+    s_flux_direction = 1;
+
+    FOC_EnableDrivers(0);
+    g_foc.status.state = FOC_STATE_COAST_FLUX_ID;
 }
 
-CCMRAM_FUNC void FOC_StateCoastFluxID(void) {
+void FOC_StateCoastFluxID(void) {
     if (s_flux_coast_counter == 0) {
-        FOC_SetPhaseVoltageDMA(1);
         FOC_EnableDrivers(0);
-        s_flux_theta_unwrapped = 0.0f;
-        s_flux_sample_count = 0;
-        s_flux_prev_theta = 0.0f;
-        s_vac_sq_sum = 0.0f;
-        s_vac_samples = 0;
-        s_last_zc_sum = 0.0f;
-        s_last_zc_samples = 0;
-        s_last_zc_theta_unwrapped = 0.0f;
-        s_last_zc_th_samples = 0;
-        s_zc_count = 0;
-        s_prev_vac = 0.0f;
-        s_zc_started = 0;
-        s_max_vac = -100.0f;
-        s_min_vac = 100.0f;
-        s_flux_dc_alpha = 0.0f;
-        s_flux_dc_beta = 0.0f;
     }
 
     float Ea = g_foc.data.Vphase_a;
     float Ec = g_foc.data.Vphase_c;
-
     /* Differential Line-to-Line terminal voltage Vac = Ea - Ec.
-     * When coasting with MOSFETs disabled, diode clamping shifts the floating
-     * neutral point by Vn(t) = -min(ea, eb, ec). Because both Phase A and Phase C
-     * share the identical Vn(t), Vac = (Ea + Vn) - (Ec + Vn) = Ea - Ec.
-     * The diode distortion and neutral point shift cancel out 100%, leaving a
-     * pure, undistorted, zero-centered sinusoid Vac with peak Vac_peak = sqrt(3) * E_phase_peak. */
+     * Cancels out all floating neutral point shift Vn(t), diode clipping,
+     * and 3rd harmonics 100%, leaving a pure, clean, zero-centered sinusoid Vac. */
     float Vac = Ea - Ec;
 
-    /* Reconstruct 2-phase Clarke Transform directly from Ea, Ec for angle and speed tracking */
-    float E_alpha = 1.5f * Ea;
-    float E_beta = -0.8660254f * (Ea + 2.0f * Ec);
+    /* Track peak and trough for current cycle */
+    if (Vac > s_cycle_max_vac) s_cycle_max_vac = Vac;
+    if (Vac < s_cycle_min_vac) s_cycle_min_vac = Vac;
 
-    /* 1st-order DC Blocker to reject diode clamping DC offset so the orbit centers at (0, 0) */
-    if (s_flux_coast_counter == 0) {
-        s_flux_dc_alpha = E_alpha;
-        s_flux_dc_beta = E_beta;
-    } else {
-        float alpha_dc = 0.002f;
-        s_flux_dc_alpha += (E_alpha - s_flux_dc_alpha) * alpha_dc;
-        s_flux_dc_beta += (E_beta - s_flux_dc_beta) * alpha_dc;
+    /* Detect user motion */
+    if (fabsf(Vac) > ID_FLUX_MIN_VAC) {
+        s_spin_detected = 1;
     }
 
-    float E_alpha_clean = E_alpha - s_flux_dc_alpha;
-    float E_beta_clean = E_beta - s_flux_dc_beta;
+    /* Zero-Crossing Schmitt Trigger:
+     * Positive rising threshold: +ID_FLUX_MIN_VAC
+     * Negative re-arm threshold:  -ID_FLUX_MIN_VAC
+     * Eliminates ADC noise ripple around zero (~0.02V) completely. */
+    if (s_zc_state == 0) {
+        if (Vac > ID_FLUX_MIN_VAC) {
+            s_zc_state = 1;
+            s_zc_cycle_count++;
+            uint32_t now = s_flux_coast_counter;
 
-    float theta = cordic_atan2(-E_alpha_clean, E_beta_clean);
+            if (s_zc_cycle_count > 1) {
+                uint32_t cycle_samples = now - s_last_zc_sample;
+                /* Valid electrical frequency range: 5 Hz to 1000 Hz
+                 * At 48kHz: 48 samples (1000 Hz) to 9600 samples (5 Hz) */
+                if (cycle_samples >= 48 && cycle_samples <= 9600) {
+                    float Vac_peak = 0.5f * (s_cycle_max_vac - s_cycle_min_vac);
+                    if (Vac_peak >= ID_FLUX_MIN_VAC) {
+                        float f_elec = (float)g_foc.cfg.pwm_frequency / (float)cycle_samples;
+                        float omega_elec = TWO_PI * f_elec;
+                        float rpm = (f_elec * 60.0f) / g_foc.cfg.motor_poles;
 
-    if (s_flux_coast_counter == 10) {
-        s_flux_prev_theta = theta;
-        s_prev_vac = Vac;
-    }
+                        float cycle_flux = Vac_peak / (SQRT3 * omega_elec);
+                        float cycle_kv = rpm / Vac_peak;
 
-    /* delta_theta is in [-1, 1] for [-pi, pi] */
-    float delta_theta = 0.0f;
-    if (s_flux_coast_counter >= 10) {
-        delta_theta = normalize_angle_norm(theta - s_flux_prev_theta);
-        s_flux_prev_theta = theta;
-    }
+                        /* Direction detection: when Ea is crossing rising, if Ec < 0 then Phase A
+                         * leads (Forward) */
+                        if (s_valid_cycle_count == 0) {
+                            s_flux_direction = (Ec < 0.0f) ? 1 : -1;
+                        }
 
-    /* Ignore first 720 samples (~15ms) to allow DMA to stabilize and inductive spikes to decay */
-    if (s_flux_coast_counter > 720) {
-        /* Track differential peak-to-peak */
-        if (Vac > s_max_vac) s_max_vac = Vac;
-        if (Vac < s_min_vac) s_min_vac = Vac;
+                        s_accum_flux += cycle_flux;
+                        s_accum_kv += cycle_kv;
+                        s_valid_cycle_count++;
 
-        /* Zero-Crossing detection to align RMS accumulation window to exact integer half-cycles */
-        uint8_t is_zc = (s_prev_vac <= 0.0f && Vac > 0.0f) || (s_prev_vac >= 0.0f && Vac < 0.0f);
-        if (!s_zc_started && is_zc) {
-            s_zc_started = 1;
-            s_flux_theta_unwrapped = 0.0f;
-            s_flux_sample_count = 0;
-        }
-
-        if (s_zc_started) {
-            s_vac_sq_sum += Vac * Vac;
-            s_vac_samples++;
-            if (is_zc) {
-                s_last_zc_sum = s_vac_sq_sum;
-                s_last_zc_samples = s_vac_samples;
-                s_last_zc_theta_unwrapped = s_flux_theta_unwrapped;
-                s_last_zc_th_samples = s_flux_sample_count;
-                s_zc_count++;
+                        /* Real-time telemetry feedback */
+                        g_foc.data.omega_elec = omega_elec;
+                    }
+                }
             }
-        }
-        s_prev_vac = Vac;
 
-        s_flux_theta_unwrapped += delta_theta;
-        s_flux_sample_count++;
+            s_last_zc_sample = now;
+            s_cycle_max_vac = -100.0f;
+            s_cycle_min_vac = 100.0f;
+        }
+    } else {
+        if (Vac < -ID_FLUX_MIN_VAC) {
+            s_zc_state = 0;
+        }
     }
 
     s_flux_coast_counter++;
 
-    uint32_t target_samples = (uint32_t)(0.080f * (float)CONTROL_FREQUENCY);
-    if (s_flux_coast_counter >= target_samples) {
-        float measured_flux = 0.0f;
-        float measured_kv = 0.0f;
-        int8_t detected_dir = 1;
-
-        if (s_flux_sample_count > 0) {
-            float avg_delta_theta;
-            if (s_zc_count >= 2 && s_last_zc_th_samples > 0) {
-                avg_delta_theta = s_last_zc_theta_unwrapped / (float)s_last_zc_th_samples;
-            } else {
-                avg_delta_theta = s_flux_theta_unwrapped / (float)s_flux_sample_count;
-            }
-            float omega_avg = avg_delta_theta * PI * (float)CONTROL_FREQUENCY;
-
-            detected_dir = (omega_avg >= 0.0f) ? 1 : -1;
-
-            if (fabsf(omega_avg) > 10.0f) {
-                float Vac_peak = 0.0f;
-
-                /* Primary Engine: Integer Zero-Crossing RMS (Immune to ADC noise, gives >35dB SNR
-                 * gain) */
-                if (s_zc_count >= 2 && s_last_zc_samples > 0) {
-                    float vac_rms = sqrtf(s_last_zc_sum / (float)s_last_zc_samples);
-                    Vac_peak = 1.41421356f * vac_rms;
-                } else if (s_max_vac > s_min_vac) {
-                    /* Secondary Engine: Differential Peak-to-Peak Fallback */
-                    Vac_peak = 0.5f * (s_max_vac - s_min_vac);
-                }
-
-                if (Vac_peak > 0.01f) {
-                    /* Calculate KV directly from Line-to-Line Peak:
-                     * KV = RPM / V_L-L(peak)
-                     * RPM = (omega_avg_elec * 60) / (2 * PI * pole_pairs) */
-                    float rpm = (fabsf(omega_avg) * 60.0f) / (TWO_PI * g_foc.cfg.motor_poles);
-                    measured_kv = rpm / Vac_peak;
-
-                    /* Back-calculate Flux Linkage from KV:
-                     * Flux = 60 / (sqrt(3) * 2 * PI * KV * Poles)
-                     * Equivalent to: Flux = Vac_peak / (sqrt(3) * omega_elec) */
-                    measured_flux = 60.0f / (SQRT3 * TWO_PI * measured_kv * g_foc.cfg.motor_poles);
-                }
-            }
-        }
-
-        id_result.measured_flux = measured_flux;
-        id_result.measured_kv = measured_kv;
-        id_result.detected_direction = detected_dir;
+    /* Condition 1: Target valid cycles reached (6 cycles) */
+    if (s_valid_cycle_count >= 6) {
+        id_result.measured_flux = s_accum_flux / (float)s_valid_cycle_count;
+        id_result.measured_kv = s_accum_kv / (float)s_valid_cycle_count;
+        id_result.detected_direction = s_flux_direction;
         id_result.state = MOTOR_ID_STATE_COMPLETE;
 
         s_is_flux_measuring = 0;
         FOC_Stop();
+        return;
+    }
+
+    /* Condition 2: Motor stopped spinning after moving (no ZC for > 0.3s = 14400 samples) */
+    if (s_spin_detected && (s_flux_coast_counter - s_last_zc_sample > 14400)) {
+        if (s_valid_cycle_count >= 3) {
+            id_result.measured_flux = s_accum_flux / (float)s_valid_cycle_count;
+            id_result.measured_kv = s_accum_kv / (float)s_valid_cycle_count;
+            id_result.detected_direction = s_flux_direction;
+            id_result.state = MOTOR_ID_STATE_COMPLETE;
+
+            s_is_flux_measuring = 0;
+            FOC_Stop();
+            return;
+        } else {
+            /* Insufficient cycles before stopping: re-arm and wait for user to flick again */
+            s_spin_detected = 0;
+            s_zc_cycle_count = 0;
+            s_cycle_max_vac = -100.0f;
+            s_cycle_min_vac = 100.0f;
+        }
+    }
+
+    /* Condition 3: Total timeout (10.0 seconds) */
+    if (s_flux_coast_counter >= (uint32_t)(10.0f * g_foc.cfg.pwm_frequency)) {
+        if (s_valid_cycle_count >= 3) {
+            id_result.measured_flux = s_accum_flux / (float)s_valid_cycle_count;
+            id_result.measured_kv = s_accum_kv / (float)s_valid_cycle_count;
+            id_result.detected_direction = s_flux_direction;
+            id_result.state = MOTOR_ID_STATE_COMPLETE;
+        } else {
+            id_result.state = MOTOR_ID_STATE_ERROR;
+            id_result.error_code = 7;
+        }
+
+        s_is_flux_measuring = 0;
+        FOC_Stop();
+        return;
     }
 }
 
@@ -474,13 +468,11 @@ void MotorID_GetResults(MotorID_Result_t* results) {
 }
 
 /*===========================================================================*/
-/* Core State Machine Step (Called at 48 kHz PWM Interrupt)                  */
+/* 48 kHz Fast ISR Task (Zero-Wait State CCMRAM, Execution < 0.4 us)          */
 /*===========================================================================*/
 
-void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
-    (void)iq;
+void MotorID_FastTask(float id, float* vd, float* vq) {
     *vq = 0.0f;
-    float vd_out = 0.0f;
 
     if (id_result.state == MOTOR_ID_STATE_IDLE || id_result.state == MOTOR_ID_STATE_COMPLETE ||
         id_result.state == MOTOR_ID_STATE_ERROR) {
@@ -488,38 +480,170 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
         return;
     }
 
-    tick_counter++;
-    if (tick_counter >= (PWM_FREQUENCY / 1000U)) {
-        id_timer_ms++;
-        tick_counter = 0;
-    }
-
     /* Update current tracking filters (Fast and Slow) */
     id_filt += id_alpha_fast * (id - id_filt);
     id_filt_slow += id_alpha_slow * (id - id_filt_slow);
 
+    if (id_result.state == MOTOR_ID_STATE_ALIGN) {
+        float v_max = 0.35f * g_foc.data.Vbus;
+        if (id_filt < align_target_i && align_vd < v_max) {
+            align_vd += id_v_ramp_step;
+        }
+        *vd = align_vd;
+    } else if (id_result.state == MOTOR_ID_STATE_MEASURE_RS) {
+        if (rs_sub == 0 || rs_sub == 2) {
+            /* Settle states I1 and I2 */
+            if (s_rs_accum_en) {
+                float diff = fabsf(id_filt - id_filt_slow);
+                if (diff < is_flat_thr_base) {
+                    rs_vd_sum += rs_vd_out;
+                    rs_id_sum += id;
+                    debug_rs_id_sq_sum += id * id;
+                    rs_sum_count++;
+                    if (rs_sum_count >= ID_SETTLE_SAMPLES) {
+                        s_rs_accum_en = 0;
+                        s_rs_accum_done = 1;
+                    }
+                } else {
+                    /* Reset accumulation if not flat to ensure consecutive clean samples */
+                    rs_vd_sum = 0.0f;
+                    rs_id_sum = 0.0f;
+                    debug_rs_id_sq_sum = 0.0f;
+                    rs_sum_count = 0;
+                }
+            }
+            *vd = rs_vd_out;
+        } else if (rs_sub == 1) {
+            /* Smooth voltage ramp for RAMP_TO_I2 */
+            float v_max = 0.45f * g_foc.data.Vbus;
+            float cur_delta_i = id_filt - rs_id1;
+            float cur_delta_v = rs_vd_out - rs_vd1;
+
+            float min_req = (min_delta_i_req > 0.30f * rs_id1) ? min_delta_i_req : (0.30f * rs_id1);
+            bool enough_res = (cur_delta_i >= min_req) && (cur_delta_v >= ID_MIN_DELTA_VOLTAGE);
+            bool safety_hit = (id_filt >= 0.50f * id_motor_max_curr) || (rs_vd_out >= v_max);
+
+            if (enough_res || safety_hit) {
+                /* Sufficient resolution collected -> Stop ramping immediately! */
+                rs_sub = 2; /* Transition to SETTLE_I2 */
+                s_rs_accum_en = 0;
+                s_rs_accum_done = 0;
+                rs_vd_sum = 0.0f;
+                rs_id_sum = 0.0f;
+                debug_rs_id_sq_sum = 0.0f;
+                rs_sum_count = 0;
+            } else {
+                rs_vd_out += id_v_ramp_step;
+            }
+            *vd = rs_vd_out;
+        } else if (rs_sub == 3) {
+            /* FREQ_DETECT_PROBE at 1000 Hz */
+            float sin_cmd = sin_table_cmd[step_in_cycle];
+            *vd = rs_probe_vd_bias + rs_probe_v_inj * sin_cmd;
+
+            buf_s[buf_idx] = id * sin_table_demod[step_in_cycle];
+            buf_c[buf_idx] = id * cos_table_demod[step_in_cycle];
+
+            buf_idx = (buf_idx + 1) % N_DFT;
+            step_in_cycle = (step_in_cycle + 1) % N_DFT;
+            meas_cycles++;
+        } else {
+            /* rs_sub >= 4: Mute AC injection during frequency reconfiguration */
+            *vd = rs_probe_vd_bias;
+        }
+    } else if (id_result.state == MOTOR_ID_STATE_MEASURE_SAT_PROFILE) {
+        if (sat_sub == 0) {
+            /* Anti-windup non-negative clamp prevents wiping out Rs*target_i_bias below deadtime */
+            sat_vd_error_int += 0.002f * (sat_target_i_bias - id_filt);
+            float error_limit = 0.10f * g_foc.data.Vbus;
+            sat_vd_error_int = clampf(sat_vd_error_int, 0.0f, error_limit);
+
+            sat_vd_bias = id_result.measured_vdead + id_result.measured_rs * sat_target_i_bias +
+                          sat_vd_error_int;
+            if (sat_vd_bias < id_result.measured_vdead) sat_vd_bias = id_result.measured_vdead;
+            float v_max = 0.45f * g_foc.data.Vbus;
+            if (sat_vd_bias > v_max) sat_vd_bias = v_max;
+
+            *vd = sat_vd_bias;
+        } else if (sat_sub == 1) {
+            /* INJECT_SINE_ON_TOP_OF_DC: DC integrator frozen to prevent DFT drift */
+            float sin_cmd = sin_table_cmd[step_in_cycle];
+            *vd = sat_vd_bias + v_inj * sin_cmd;
+
+            float new_s = id * sin_table_demod[step_in_cycle];
+            float new_c = id * cos_table_demod[step_in_cycle];
+
+            run_sum_s += new_s - buf_s[buf_idx];
+            run_sum_c += new_c - buf_c[buf_idx];
+
+            buf_s[buf_idx] = new_s;
+            buf_c[buf_idx] = new_c;
+
+            buf_idx = (buf_idx + 1) % N_DFT;
+            step_in_cycle = (step_in_cycle + 1) % N_DFT;
+            meas_cycles++;
+
+            /* Synchronous ZOH extraction once per AC period at zero-crossing (step_in_cycle == 0)
+             */
+            if (step_in_cycle == 0 && meas_cycles > (uint32_t)(N_DFT * 2)) {
+                float i_real = 2.0f * (run_sum_s / (float)N_DFT);
+                float i_imag = 2.0f * (run_sum_c / (float)N_DFT);
+                float i_mag_sq = i_real * i_real + i_imag * i_imag;
+
+                if (i_mag_sq > 1e-10f) {
+                    float v_inj_eff = v_inj * sat_cos_half_phi;
+                    float Z_mag_sq = (v_inj_eff * v_inj_eff) / i_mag_sq;
+                    float rs_sq = id_result.measured_rs * id_result.measured_rs;
+                    float M = Z_mag_sq / rs_sq;
+                    float phi = sat_phase_inc;
+                    float cos_phi = cosf(phi);
+                    float ls_sample = 0.0f;
+
+                    /* Exact Discrete ZOH Analytical Formula */
+                    if (M > 1.0001f) {
+                        float p = (M - cos_phi) / (M - 1.0f);
+                        if (p > 1.0f) {
+                            float disc = p * p - 1.0f;
+                            float a_est = p - sqrtf(disc);
+                            if (a_est > 1e-7f && a_est < 0.999999f) {
+                                ls_sample = -id_result.measured_rs * g_foc.dt / logf(a_est);
+                            }
+                        }
+                    }
+                    if (ls_sample <= 1e-7f) {
+                        float x_react = (Z_mag_sq > rs_sq) ? sqrtf(Z_mag_sq - rs_sq) : 0.0f;
+                        ls_sample = x_react / sat_omega;
+                    }
+
+                    if (ls_sample > 1e-7f && meas_accum_count < 128) {
+                        meas_accum_L[meas_accum_count++] = ls_sample;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*===========================================================================*/
+/* 1 kHz Slow Task (Called from FOC_SlowTask in Flash)                       */
+/*===========================================================================*/
+
+void MotorID_SlowTask(void) {
+    if (id_result.state == MOTOR_ID_STATE_IDLE || id_result.state == MOTOR_ID_STATE_COMPLETE ||
+        id_result.state == MOTOR_ID_STATE_ERROR) {
+        return;
+    }
+
+    id_timer_ms++;
+
     float motor_max_curr = FlashConfig_Get()->motor_max_curr;
     if (motor_max_curr < 0.5f) motor_max_curr = 2.0f;
+    float vbus = g_foc.data.Vbus;
 
     /* ===================================================================== */
     /* 1. STATE_ALIGN (Safe Voltage Ramp to Align Rotor at I1)               */
     /* ===================================================================== */
     if (id_result.state == MOTOR_ID_STATE_ALIGN) {
-        float lsb_current = fabsf(ADC_TO_CURRENT) * ADC_Vref;
-        float target_i1 = 50.0f * lsb_current;
-        if (target_i1 < 5.0f * g_foc.noise_profile.noise_rms) {
-            target_i1 = 5.0f * g_foc.noise_profile.noise_rms;
-        }
-        if (target_i1 < 0.08f) target_i1 = 0.08f;
-        if (target_i1 > 0.20f * motor_max_curr) target_i1 = 0.20f * motor_max_curr;
-
-        float v_max = 0.35f * vbus;
-
-        if (id_filt < target_i1 && align_vd < v_max) {
-            align_vd += id_v_ramp_step;
-        }
-        vd_out = align_vd;
-
         if (id_timer_ms >= ID_ALIGN_DURATION_MS) {
             rs_sub = 0; /* SETTLE_I1 */
             rs_vd_out = align_vd;
@@ -528,6 +652,8 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
             debug_rs_id_sq_sum = 0.0f;
             rs_sum_count = 0;
             rs_settle_counter = 0;
+            s_rs_accum_en = 0;
+            s_rs_accum_done = 0;
             id_timer_ms = 0;
             id_result.state = MOTOR_ID_STATE_MEASURE_RS;
         }
@@ -537,125 +663,100 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
     /* 2. STATE_MEASURE_RS (2-Point DC: Settle I1 -> Ramp to I2 -> Settle I2)*/
     /* ===================================================================== */
     else if (id_result.state == MOTOR_ID_STATE_MEASURE_RS) {
-        float v_max = 0.45f * vbus;
-        float diff = fabsf(id_filt - id_filt_slow);
-        bool is_flat = (diff < is_flat_thr_base);
-
         if (rs_sub == 0) { /* SETTLE_I1 */
-            vd_out = rs_vd_out;
-            if (is_flat && id_timer_ms > ID_SETTLE_HOLD_TIME_MS) {
-                rs_settle_counter++;
-                rs_vd_sum += rs_vd_out;
-                rs_id_sum += id;
-                debug_rs_id_sq_sum += id * id;
-                rs_sum_count++;
-
-                if (rs_settle_counter >= ID_SETTLE_SAMPLES) {
-                    rs_vd1 = rs_vd_sum / (float)rs_sum_count;
-                    rs_id1 = rs_id_sum / (float)rs_sum_count;
-
-                    float var = (debug_rs_id_sq_sum / (float)rs_sum_count) - (rs_id1 * rs_id1);
-                    if (var > 0.0f) {
-                        debug_noise_rms_active = sqrtf(var);
-                    }
-
-                    rs_sub = 1; /* RAMP_TO_I2 */
-                    rs_settle_counter = 0;
-                    rs_vd_sum = 0.0f;
-                    rs_id_sum = 0.0f;
-                    rs_sum_count = 0;
-                    id_timer_ms = 0;
-                }
-            } else {
-                if (!is_flat) {
-                    rs_settle_counter = 0;
+            if (!s_rs_accum_en && !s_rs_accum_done) {
+                if (id_timer_ms > ID_SETTLE_HOLD_TIME_MS) {
                     rs_vd_sum = 0.0f;
                     rs_id_sum = 0.0f;
                     debug_rs_id_sq_sum = 0.0f;
                     rs_sum_count = 0;
+                    s_rs_accum_en = 1;
                 }
-            }
-        } else if (rs_sub == 1) { /* RAMP_TO_I2 (SMART AUTO-RESOLUTION GATE) */
-            float cur_delta_i = id_filt - rs_id1;
-            float cur_delta_v = rs_vd_out - rs_vd1;
+            } else if (s_rs_accum_done) {
+                s_rs_accum_done = 0;
+                s_rs_accum_en = 0;
+                rs_vd1 = rs_vd_sum / (float)rs_sum_count;
+                rs_id1 = rs_id_sum / (float)rs_sum_count;
 
-            float min_req = (min_delta_i_req > 0.30f * rs_id1) ? min_delta_i_req : (0.30f * rs_id1);
-            bool enough_res = (cur_delta_i >= min_req) && (cur_delta_v >= ID_MIN_DELTA_VOLTAGE);
-            bool safety_hit = (id_filt >= 0.50f * motor_max_curr) || (rs_vd_out >= v_max);
+                float var = (debug_rs_id_sq_sum / (float)rs_sum_count) - (rs_id1 * rs_id1);
+                if (var > 0.0f) {
+                    debug_noise_rms_active = sqrtf(var);
+                }
 
-            if (enough_res || safety_hit) {
-                /* Sufficient resolution collected -> Stop ramping immediately! */
-                rs_sub = 2; /* Transition to SETTLE_I2 */
-                rs_settle_counter = 0;
+                rs_sub = 1; /* RAMP_TO_I2 */
                 rs_vd_sum = 0.0f;
                 rs_id_sum = 0.0f;
+                debug_rs_id_sq_sum = 0.0f;
                 rs_sum_count = 0;
                 id_timer_ms = 0;
-            } else {
-                rs_vd_out += id_v_ramp_step;
             }
-            vd_out = rs_vd_out;
+
+            /* Safety timeout for Settle I1 (500 ms) */
+            if (id_timer_ms > 500) {
+                id_result.error_code = 1;
+                id_result.state = MOTOR_ID_STATE_ERROR;
+            }
+        } else if (rs_sub == 1) { /* RAMP_TO_I2 */
+            if (id_timer_ms > 1000) {
+                id_result.error_code = 1;
+                id_result.state = MOTOR_ID_STATE_ERROR;
+            }
         } else if (rs_sub == 2) { /* SETTLE_I2 */
-            vd_out = rs_vd_out;
-            if (is_flat && id_timer_ms > ID_SETTLE_HOLD_TIME_MS) {
-                rs_settle_counter++;
-                rs_vd_sum += rs_vd_out;
-                rs_id_sum += id;
-                rs_sum_count++;
-
-                if (rs_settle_counter >= ID_SETTLE_SAMPLES) {
-                    float vd2 = rs_vd_sum / (float)rs_sum_count;
-                    float id2 = rs_id_sum / (float)rs_sum_count;
-
-                    float delta_v = vd2 - rs_vd1;
-                    float delta_i = id2 - rs_id1;
-
-                    if (delta_i > 0.01f) {
-                        float rs = delta_v / delta_i;
-                        if (rs > 0.001f && rs < 100.0f) {
-                            id_result.measured_rs = rs;
-                            float vdead = rs_vd1 - rs * rs_id1;
-                            if (vdead < 0.0f) vdead = 0.0f;
-                            id_result.measured_vdead = vdead;
-                            id_result.identified_deadtime_ns =
-                                (vdead / vbus) * (1.0e9f / (float)PWM_FREQUENCY);
-
-                            /* Enter Quick FREQ_DETECT Probe at 1000 Hz (10 ms) */
-                            configure_freq(1000.0f);
-                            rs_sub = 3; /* FREQ_DETECT_PROBE */
-                            meas_cycles = 0;
-                            buf_idx = 0;
-                            id_timer_ms = 0;
-                        } else {
-                            id_result.error_code = 1;
-                            id_result.state = MOTOR_ID_STATE_ERROR;
-                        }
-                    } else {
-                        id_result.error_code = 7;
-                        id_result.state = MOTOR_ID_STATE_ERROR;
-                    }
-                }
-            } else {
-                if (!is_flat) {
-                    rs_settle_counter = 0;
+            if (!s_rs_accum_en && !s_rs_accum_done) {
+                if (id_timer_ms > ID_SETTLE_HOLD_TIME_MS) {
                     rs_vd_sum = 0.0f;
                     rs_id_sum = 0.0f;
+                    debug_rs_id_sq_sum = 0.0f;
                     rs_sum_count = 0;
+                    s_rs_accum_en = 1;
+                }
+            } else if (s_rs_accum_done) {
+                s_rs_accum_done = 0;
+                s_rs_accum_en = 0;
+                float vd2 = rs_vd_sum / (float)rs_sum_count;
+                float id2 = rs_id_sum / (float)rs_sum_count;
+
+                float delta_v = vd2 - rs_vd1;
+                float delta_i = id2 - rs_id1;
+
+                if (delta_i > 0.01f) {
+                    float rs = delta_v / delta_i;
+                    if (rs > 0.001f && rs < 100.0f) {
+                        id_result.measured_rs = rs;
+                        float vdead = rs_vd1 - rs * rs_id1;
+                        if (vdead < 0.0f) vdead = 0.0f;
+                        id_result.measured_vdead = vdead;
+                        id_result.identified_deadtime_ns =
+                            (vdead / vbus) * (1.0e9f / g_foc.cfg.pwm_frequency);
+
+                        rs_sub = 4; /* Mute AC injection during configuration */
+                        configure_freq(1000.0f);
+                        rs_probe_vd_bias = id_result.measured_vdead +
+                                           id_result.measured_rs * 0.15f * motor_max_curr;
+                        float v_max_bias = 0.40f * vbus;
+                        if (rs_probe_vd_bias > v_max_bias) rs_probe_vd_bias = v_max_bias;
+                        rs_probe_v_inj = 0.50f;
+                        rs_sub = 3; /* FREQ_DETECT_PROBE */
+                        meas_cycles = 0;
+                        buf_idx = 0;
+                        step_in_cycle = 0;
+                        id_timer_ms = 0;
+                    } else {
+                        id_result.error_code = 1;
+                        id_result.state = MOTOR_ID_STATE_ERROR;
+                    }
+                } else {
+                    id_result.error_code = 7;
+                    id_result.state = MOTOR_ID_STATE_ERROR;
                 }
             }
-        } else if (rs_sub == 3) { /* FREQ_DETECT_PROBE at 1000 Hz (10 ms) */
-            float v_probe = 0.50f;
-            float sin_cmd = sin_table_cmd[step_in_cycle];
-            vd_out = id_result.measured_vdead + id_result.measured_rs * 0.15f * motor_max_curr +
-                     v_probe * sin_cmd;
 
-            buf_s[buf_idx] = id * sin_table_demod[step_in_cycle];
-            buf_c[buf_idx] = id * cos_table_demod[step_in_cycle];
-
-            buf_idx = (buf_idx + 1) % N_DFT;
-            step_in_cycle = (step_in_cycle + 1) % N_DFT;
-            meas_cycles++;
-
+            /* Safety timeout for Settle I2 (500 ms) */
+            if (id_timer_ms > 500) {
+                id_result.error_code = 1;
+                id_result.state = MOTOR_ID_STATE_ERROR;
+            }
+        } else if (rs_sub == 3) {                        /* FREQ_DETECT_PROBE at 1000 Hz (10 ms) */
             if (meas_cycles >= (uint32_t)(N_DFT * 10)) { /* 10 cycles = 10 ms */
                 float sum_s = 0.0f, sum_c = 0.0f;
                 for (uint16_t k = 0; k < N_DFT; k++) {
@@ -665,22 +766,29 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                 float i_r = 2.0f * (sum_s / (float)N_DFT);
                 float i_i = 2.0f * (sum_c / (float)N_DFT);
                 float i_amp = sqrtf(i_r * i_r + i_i * i_i);
-                float z_1000 = (i_amp > 1e-4f) ? (v_probe / i_amp) : 100.0f;
+                float cos_half_1000 = cosf(0.5f * TWO_PI * 1000.0f * g_foc.dt);
+                float v_probe_eff = rs_probe_v_inj * cos_half_1000;
+                float z_1000 = (i_amp > 1e-4f) ? (v_probe_eff / i_amp) : 100.0f;
                 float rs_sq = id_result.measured_rs * id_result.measured_rs;
                 float x_sq = (z_1000 * z_1000 > rs_sq) ? (z_1000 * z_1000 - rs_sq) : 0.0f;
                 float l_est_probe = sqrtf(x_sq) / (TWO_PI * 1000.0f);
 
+                /* Safe frequency selection based on inductance L and electrical tau_e = L / Rs */
+                float tau_e_est =
+                    (id_result.measured_rs > 1e-4f) ? (l_est_probe / id_result.measured_rs) : 0.0f;
                 float f_chosen = 2400.0f;
-                if (l_est_probe > 0.0004f || z_1000 > 3.0f) {
+                if (l_est_probe > 0.0004f) {
                     f_chosen = 250.0f; /* High Inductance > 400 uH -> 250 Hz */
-                } else if (l_est_probe > 0.00008f || z_1000 > 1.0f) {
+                } else if (l_est_probe > 0.00008f) {
                     f_chosen = 1000.0f; /* Medium Inductance 80-400 uH -> 1000 Hz */
-                } else if (l_est_probe > 0.00001f || z_1000 > 0.15f) {
-                    f_chosen = 4800.0f; /* Low Inductance 10-80 uH -> 4800 Hz */
+                } else if (l_est_probe > 0.000020f && tau_e_est >= 0.00020f) {
+                    f_chosen = 4800.0f; /* Low Inductance (tau_e >= 200 us) -> 4800 Hz */
                 } else {
-                    f_chosen = 12000.0f; /* Ultra Low Inductance < 10 uH -> 12000 Hz */
+                    f_chosen =
+                        12000.0f; /* Ultra Low Inductance (< 20 uH or tau_e < 200 us) -> 12000 Hz */
                 }
 
+                rs_sub = 4; /* Mute AC injection so FastTask won't access tables */
                 configure_freq(f_chosen);
                 id_result.selected_freq_hz = f_chosen;
 
@@ -693,12 +801,15 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                 sat_i_anchor = clampf(3.0f * g_foc.noise_profile.noise_rms, min_anchor, max_anchor);
 
                 float noise_floor_delta = g_foc.noise_profile.i_inj_min;
-                float min_delta =
-                    clampf(0.02f * motor_max_curr, noise_floor_delta, noise_floor_delta * 2.0f);
-                float max_delta = clampf(0.06f * motor_max_curr, noise_floor_delta * 2.0f,
-                                         noise_floor_delta * 4.0f);
+                float min_delta_factor = (f_chosen >= 10000.0f) ? 0.008f : 0.02f;
+                float max_delta_factor = (f_chosen >= 10000.0f) ? 0.025f : 0.06f;
+                float min_delta = clampf(min_delta_factor * motor_max_curr, noise_floor_delta,
+                                         noise_floor_delta * 2.0f);
+                float max_delta = clampf(max_delta_factor * motor_max_curr,
+                                         noise_floor_delta * 2.0f, noise_floor_delta * 4.0f);
                 sat_delta_i = clampf(1.5f * g_foc.noise_profile.noise_rms, min_delta, max_delta);
-                sat_delta_i_max = 0.15f * motor_max_curr;
+                sat_delta_i_max =
+                    (f_chosen >= 10000.0f) ? (0.05f * motor_max_curr) : (0.15f * motor_max_curr);
                 sat_L0_val = 0.0f;
                 sat_backtrack_cnt = 0;
                 sat_last_i_bias = 0.0f;
@@ -722,28 +833,18 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
     /* ===================================================================== */
     else if (id_result.state == MOTOR_ID_STATE_MEASURE_SAT_PROFILE) {
         float target_i_bias = sat_target_i_bias;
-        float v_max = 0.45f * vbus;
-
-        /* Slow integrator to regulate DC bias current to target_i_bias */
-        sat_vd_error_int += 0.002f * (target_i_bias - id_filt);
-        float error_limit = 0.10f * vbus;
-        sat_vd_error_int = clampf(sat_vd_error_int, -error_limit, error_limit);
-
-        sat_vd_bias =
-            id_result.measured_vdead + id_result.measured_rs * target_i_bias + sat_vd_error_int;
-        if (sat_vd_bias > v_max) sat_vd_bias = v_max;
 
         float est_l_guess = (sat_lut_count > 0) ? sat_lut_l[sat_lut_count - 1]
                                                 : ((sat_freq <= 500.0f) ? 0.0020f : 20.0e-6f);
         float zhf = sqrtf(id_result.measured_rs * id_result.measured_rs +
                           (sat_omega * est_l_guess) * (sat_omega * est_l_guess));
+
         /* Calculate AC Injection Limits for Zero-Cross and Hardware Safety */
         float target_ac_curr = 20.0f * g_foc.noise_profile.noise_rms;
         if (target_ac_curr < g_foc.noise_profile.i_inj_min) {
             target_ac_curr = g_foc.noise_profile.i_inj_min;
         }
 
-        /* Limit AC current to what the current DC bias can support safely */
         float max_safe_ac = 0.40f * target_i_bias;
         if (target_ac_curr > max_safe_ac) {
             target_ac_curr = max_safe_ac;
@@ -759,23 +860,19 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
         if (v_inj > limit_max) v_inj = limit_max;
         if (v_inj > limit_zc) v_inj = limit_zc;
 
-        /* Lower bound safety */
         float min_vbus = 0.02f * vbus;
         if (v_inj < min_vbus && v_inj < limit_zc) {
             v_inj = (min_vbus < limit_zc) ? min_vbus : limit_zc;
         }
 
-        float sin_cmd = sin_table_cmd[step_in_cycle];
-
         if (sat_sub == 0) { /* SETTLE_AT_DC_BIAS */
-            vd_out = sat_vd_bias;
             sat_settle_cnt++;
-            uint16_t settle_target = (sat_freq == 250.0f) ? 960 : 360; /* ~7.5 - 20 ms */
-            if (sat_settle_cnt >= settle_target) {
-                sat_sub = 1;
+            uint16_t settle_target_ms = (sat_freq == 250.0f) ? 20 : 8; /* ~7.5 - 20 ms */
+            if (sat_settle_cnt >= settle_target_ms) {
                 meas_accum_count = 0;
                 meas_cycles = 0;
                 buf_idx = 0;
+                step_in_cycle = 0;
                 run_sum_s = 0.0f;
                 run_sum_c = 0.0f;
                 for (uint16_t k = 0; k < N_DFT; k++) {
@@ -783,98 +880,28 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                     buf_c[k] = 0.0f;
                 }
                 id_timer_ms = 0;
+                sat_sub = 1;
             }
         } else if (sat_sub == 1) { /* INJECT_SINE_ON_TOP_OF_DC */
-            vd_out = sat_vd_bias + v_inj * sin_cmd;
-
-            float new_s = id * sin_table_demod[step_in_cycle];
-            float new_c = id * cos_table_demod[step_in_cycle];
-
-            /* O(1) Sliding DFT: update running sum by adding new and subtracting oldest */
-            run_sum_s += new_s - buf_s[buf_idx];
-            run_sum_c += new_c - buf_c[buf_idx];
-
-            buf_s[buf_idx] = new_s;
-            buf_c[buf_idx] = new_c;
-
-            buf_idx = (buf_idx + 1) % N_DFT;
-            step_in_cycle = (step_in_cycle + 1) % N_DFT;
-            meas_cycles++;
-
-            /* Evaluate ZOH extraction once per AC period when step_in_cycle == 0 */
-            if (step_in_cycle == 0 && meas_cycles > (uint32_t)(N_DFT * 2)) {
-                float i_real = 2.0f * (run_sum_s / (float)N_DFT);
-                float i_imag = 2.0f * (run_sum_c / (float)N_DFT);
-                float i_mag_sq = i_real * i_real + i_imag * i_imag;
-
-                if (i_mag_sq > 1e-10f) {
-                    float Z_mag_sq = (v_inj * v_inj) / i_mag_sq;
-                    float M = Z_mag_sq / (id_result.measured_rs * id_result.measured_rs);
-                    float phi = sat_phase_inc;
-
-                    /* Exact Discrete ZOH Equation via Newton-Raphson
-                     * M = (1 - 2*x^2*cos(phi) + x^4) / ((1 - x)^2 * (1 + x^2 + 2*x*cos(phi)))
-                     * where x = exp(-0.5 * Rs * Ts / L) */
-                    float cos_phi = cosf(phi);
-
-                    /* Initial guess based on standard continuous L = Z / omega */
-                    float L_guess = 1e-6f;
-                    if (Z_mag_sq > id_result.measured_rs * id_result.measured_rs) {
-                        L_guess = sqrtf(Z_mag_sq - id_result.measured_rs * id_result.measured_rs) /
-                                  sat_omega;
-                    }
-
-                    float x_est = expf(-0.5f * id_result.measured_rs * CONTROL_PERIOD_F / L_guess);
-
-                    for (int iter = 0; iter < 3; iter++) {
-                        float x2 = x_est * x_est;
-                        float x3 = x2 * x_est;
-                        float x4 = x2 * x2;
-
-                        float num = 1.0f - 2.0f * x2 * cos_phi + x4;
-                        float term1 = 1.0f - x_est;
-                        float term2 = 1.0f + x2 + 2.0f * x_est * cos_phi;
-                        float den = term1 * term1 * term2;
-
-                        if (fabsf(den) < 1e-12f) break;
-
-                        float f_val = (num / den) - M;
-
-                        float dnum_dx = -4.0f * x_est * cos_phi + 4.0f * x3;
-                        float dden_dx =
-                            -2.0f * term1 * term2 + term1 * term1 * (2.0f * x_est + 2.0f * cos_phi);
-                        float df_dx = (dnum_dx * den - num * dden_dx) / (den * den);
-
-                        if (fabsf(df_dx) < 1e-12f) break;
-
-                        x_est = x_est - (f_val / df_dx);
-
-                        if (x_est < 0.001f) x_est = 0.001f;
-                        if (x_est > 0.999f) x_est = 0.999f;
-                    }
-
-                    float ls_sample =
-                        -id_result.measured_rs * 0.5f * CONTROL_PERIOD_F / logf(x_est);
-
-                    if (ls_sample > 1e-7f && meas_accum_count < 500) {
-                        meas_accum_L[meas_accum_count++] = ls_sample;
-                    }
-                }
-            }
-
             uint32_t target_cycles = (uint32_t)N_DFT * ((sat_freq <= 500.0f) ? 12 : 25);
-            if (meas_cycles >= target_cycles) {
+            if (meas_cycles >= target_cycles || id_timer_ms >= 120) {
                 float l_est_level = 0.0f;
                 bool valid_meas = false;
 
-                if (meas_accum_count >= 2) {
-                    l_est_level = quick_median(meas_accum_L, meas_accum_count);
+                uint8_t count = (meas_accum_count > 128) ? 128 : (uint8_t)meas_accum_count;
+                if (count >= 2) {
+                    float local_accum[128];
+                    __disable_irq();
+                    for (uint8_t i = 0; i < count; i++) {
+                        local_accum[i] = meas_accum_L[i];
+                    }
+                    __enable_irq();
+                    l_est_level = quick_median(local_accum, count);
                     valid_meas = true;
                 }
 
                 if (valid_meas) {
                     if (sat_lut_count == 0) {
-                        /* Establish nominal L0 */
                         sat_L0_val = l_est_level;
                         sat_lut_i[0] = id_filt;
                         sat_lut_l[0] = l_est_level;
@@ -891,7 +918,6 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                     } else {
                         float delta_L = sat_last_L_val - l_est_level;
 
-                        /* Backtracking check: drop on this single step exceeds 15% L0 */
                         if (delta_L > 0.15f * sat_L0_val && sat_backtrack_cnt < 2) {
                             sat_delta_i = sat_delta_i / 2.0f;
                             sat_target_i_bias = sat_last_i_bias + sat_delta_i;
@@ -900,7 +926,6 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                             sat_sub = 0;
                             sat_settle_cnt = 0;
                         } else {
-                            /* Accept point */
                             sat_lut_i[sat_lut_count] = id_filt;
                             sat_lut_l[sat_lut_count] = l_est_level;
                             sat_lut_count++;
@@ -909,7 +934,6 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                             sat_last_L_val = l_est_level;
                             sat_backtrack_cnt = 0;
 
-                            /* Proportional Step-Size Control based on local slope */
                             float delta_L_pct = delta_L / sat_L0_val;
                             if (delta_L_pct < 0.04f) {
                                 sat_delta_i = clampf(sat_delta_i * 1.3f, 0.10f, sat_delta_i_max);
@@ -917,7 +941,6 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                                 sat_delta_i = clampf(sat_delta_i * 0.8f, 0.05f, sat_delta_i_max);
                             }
 
-                            /* Evaluate Early Stopping criteria */
                             float next_i_bias = sat_last_i_bias + sat_delta_i;
                             float P_limit = clampf(
                                 0.5f * motor_max_curr * motor_max_curr * id_result.measured_rs,
@@ -925,24 +948,20 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                             bool stop_scanning = false;
 
                             if (l_est_level <= 0.70f * sat_L0_val) {
-                                stop_scanning = true; /* 1. Saturation target reached */
+                                stop_scanning = true;
                             } else if (sat_vd_bias + v_inj >= 0.40f * vbus) {
-                                stop_scanning = true; /* 2. Inverter voltage limit reached */
+                                stop_scanning = true;
                             } else if (next_i_bias * next_i_bias * id_result.measured_rs >=
                                        P_limit) {
-                                stop_scanning = true; /* 3. Adaptive thermal guard */
+                                stop_scanning = true;
                             } else if (next_i_bias >= 0.85f * motor_max_curr) {
-                                stop_scanning = true; /* 4. Safe current limit */
+                                stop_scanning = true;
                             } else if (sat_lut_count >= SAT_MAX_LUT_POINTS) {
-                                stop_scanning = true; /* 5. Array full */
+                                stop_scanning = true;
                             }
 
                             if (stop_scanning) {
                                 if (sat_lut_count >= 3) {
-                                    /* 3. Full 2-Variable Least Squares Fit for Inverse-Square
-                                     * Model: y = A + B * x where y = 1/L, x = I^2
-                                     *    --> A = 1/L0, B = alpha / L0 */
-
                                     float sum_x = 0.0f, sum_y = 0.0f;
                                     float sum_xy = 0.0f, sum_xx = 0.0f;
                                     float n = (float)sat_lut_count;
@@ -963,19 +982,16 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
                                         A = (sum_xx * sum_y - sum_x * sum_xy) / delta;
                                         B = (n * sum_xy - sum_x * sum_y) / delta;
                                     } else {
-                                        /* Fallback if points are completely identical */
                                         A = 1.0f / sat_lut_l[0];
                                         B = 0.0f;
                                     }
 
-                                    /* Fix physical anomalies: Inductance cannot increase with
-                                     * current */
                                     if (B < 0.0f) {
                                         B = 0.0f;
                                         A = sum_y / n;
                                     }
 
-                                    /* Extrapolate True L0 at 0 Amps */
+                                    /* Extrapolate True L0 at 0 Amps with physical constraint */
                                     float L0_true = (A > 1e-6f) ? (1.0f / A) : sat_lut_l[0];
 
                                     float max_meas_L = sat_lut_l[0];
@@ -1006,8 +1022,6 @@ void MotorID_RunStep(float id, float iq, float vbus, float* vd, float* vq) {
             }
         }
     }
-
-    *vd = vd_out;
 }
 
 /*===========================================================================*/
@@ -1028,8 +1042,6 @@ static float s_inertia_iq1 = 0.0f;
 static float s_inertia_iq2 = 0.0f;
 static float s_inertia_omega1_avg = 0.0f;
 static float s_inertia_omega2_avg = 0.0f;
-static float s_inertia_speed1_rpm = 0.0f;
-static float s_inertia_speed2_rpm = 0.0f;
 static float s_inertia_speed1_elec = 0.0f;
 static float s_inertia_speed2_elec = 0.0f;
 static float s_id_speed_lpf = 0.0f;
@@ -1085,48 +1097,48 @@ void MotorID_InertiaSlowTask(void) {
 
         /* Speed 1: Scale from auto-calibrated min_spd (1.5x) with 300 RPM floor and 30% max_spd
          * ceiling */
-        float sp1 = fmaxf(2.0f * g_foc.cfg.motor_min_spd, 300.0f);
+        float min_floor_elec = 300.0f * RPM_TO_RAD * g_foc.cfg.motor_poles;
+        float sp1 = fmaxf(2.0f * g_foc.cfg.motor_min_spd, min_floor_elec);
         if (sp1 > 0.30f * g_foc.cfg.motor_max_spd) {
             sp1 = 0.30f * g_foc.cfg.motor_max_spd;
         }
-        s_inertia_speed1_rpm = sp1;
+        s_inertia_speed1_elec = sp1;
 
         /* Speed 2: Step delta >= 600 RPM for high SNR acceleration, capped at 60% max_spd */
-        float delta_sp = fmaxf(600.0f, 0.6f * s_inertia_speed1_rpm);
-        float sp2 = s_inertia_speed1_rpm + delta_sp;
+        float min_delta_elec = 600.0f * RPM_TO_RAD * g_foc.cfg.motor_poles;
+        float delta_sp = fmaxf(min_delta_elec, 0.6f * s_inertia_speed1_elec);
+        float sp2 = s_inertia_speed1_elec + delta_sp;
         if (sp2 > 0.60f * g_foc.cfg.motor_max_spd) {
             sp2 = 0.60f * g_foc.cfg.motor_max_spd;
         }
-        s_inertia_speed2_rpm = sp2;
-
-        s_inertia_speed1_elec = s_inertia_speed1_rpm * RPM_TO_RAD * g_foc.cfg.motor_poles;
-        s_inertia_speed2_elec = s_inertia_speed2_rpm * RPM_TO_RAD * g_foc.cfg.motor_poles;
+        s_inertia_speed2_elec = sp2;
 
         g_foc.cmd.speed_ref_target = s_inertia_speed1_elec;
 
         s_saved_accel = g_foc.cfg.speed_ramp_accel;
         /* Moderate ramp rate: 0.5s ramp between speeds gives smooth acceleration for unknown J */
-        g_foc.cfg.speed_ramp_accel = (s_inertia_speed2_rpm - s_inertia_speed1_rpm) / 0.5f;
+        g_foc.cfg.speed_ramp_accel = (s_inertia_speed2_elec - s_inertia_speed1_elec) / 0.5f;
 
         s_inertia_sub = 1;
         s_inertia_timer = 0;
         s_inertia_settle_cnt = 0;
         s_inertia_iq1_sum = 0.0f;
         s_inertia_omega1_sum = 0.0f;
-        s_id_speed_lpf = g_foc.data.speed_rpm;
+        s_id_speed_lpf = g_foc.data.omega_elec;
     } else if (s_inertia_sub == 1) { /* SETTLE_SPEED_1 */
         g_foc.cmd.speed_ref_target = s_inertia_speed1_elec;
         s_inertia_timer++;
 
-        /* Update LPF */
-        s_id_speed_lpf += 0.05f * (g_foc.data.speed_rpm - s_id_speed_lpf);
+        s_id_speed_lpf += 0.05f * (g_foc.data.omega_elec - s_id_speed_lpf);
 
         /* Adaptive speed tolerance: 5% of target speed, bounded between [15, 50] RPM */
-        float tol_rpm = 0.05f * s_inertia_speed1_rpm;
-        if (tol_rpm < 15.0f) tol_rpm = 15.0f;
-        if (tol_rpm > 50.0f) tol_rpm = 50.0f;
+        float tol_min1 = 15.0f * RPM_TO_RAD * g_foc.cfg.motor_poles;
+        float tol_max1 = 50.0f * RPM_TO_RAD * g_foc.cfg.motor_poles;
+        float tol_elec1 = 0.05f * s_inertia_speed1_elec;
+        if (tol_elec1 < tol_min1) tol_elec1 = tol_min1;
+        if (tol_elec1 > tol_max1) tol_elec1 = tol_max1;
 
-        if (fabsf(s_id_speed_lpf - s_inertia_speed1_rpm) < tol_rpm &&
+        if (fabsf(s_id_speed_lpf - s_inertia_speed1_elec) < tol_elec1 &&
             g_foc.cmd.speed_ref == g_foc.cmd.speed_ref_target) {
             s_inertia_settle_cnt++;
         } else {
@@ -1162,20 +1174,21 @@ void MotorID_InertiaSlowTask(void) {
     } else if (s_inertia_sub == 2) { /* DYNAMIC_ACCELERATION */
         s_inertia_timer++;
 
-        /* Update LPF */
-        s_id_speed_lpf += 0.05f * (g_foc.data.speed_rpm - s_id_speed_lpf);
+        s_id_speed_lpf += 0.05f * (g_foc.data.omega_elec - s_id_speed_lpf);
 
         /* Accumulate actual motor current and speed delta during acceleration */
         s_inertia_sum_iq += g_foc.data.Iq;
         s_inertia_sum_domega += (g_foc.data.omega_elec - s_inertia_omega1_avg);
 
         /* Adaptive speed tolerance for Speed 2 */
-        float tol_rpm = 0.05f * s_inertia_speed2_rpm;
-        if (tol_rpm < 15.0f) tol_rpm = 15.0f;
-        if (tol_rpm > 50.0f) tol_rpm = 50.0f;
+        float tol_min2 = 15.0f * RPM_TO_RAD * g_foc.cfg.motor_poles;
+        float tol_max2 = 50.0f * RPM_TO_RAD * g_foc.cfg.motor_poles;
+        float tol_elec2 = 0.05f * s_inertia_speed2_elec;
+        if (tol_elec2 < tol_min2) tol_elec2 = tol_min2;
+        if (tol_elec2 > tol_max2) tol_elec2 = tol_max2;
 
         /* Check if motor has reached within tolerance of Speed 2 and reference ramp completed */
-        if (fabsf(s_id_speed_lpf - s_inertia_speed2_rpm) < tol_rpm &&
+        if (fabsf(s_id_speed_lpf - s_inertia_speed2_elec) < tol_elec2 &&
             g_foc.cmd.speed_ref == g_foc.cmd.speed_ref_target) {
             s_inertia_settle_cnt++;
         } else {

@@ -5,12 +5,12 @@
 
 #include "foc_startup.h"
 
+#include <math.h>
+
 #include "cordic_math.h"
 #include "foc.h"
 #include "foc_config.h"
 #include "foc_state_machine.h"
-#include "math.h"
-#include "motor_id.h"
 
 /* Transition blending state (open-loop → closed-loop) */
 static float s_blend_alpha = 0.0f; /* 0 = open-loop, 1 = closed-loop */
@@ -19,6 +19,7 @@ static uint32_t s_transition_samples = 0;
 static uint8_t s_in_transition = 0;
 static uint32_t s_handoff_converge_cnt = 0;
 static uint32_t s_startup_stall_cnt = 0;
+static uint32_t s_startup_timeout_cnt = 0;
 static float s_delta_theta_flt = 0.0f;
 static float s_delta_theta_variance = 1.0f;
 static float s_handoff_id = 0.0f;
@@ -45,8 +46,14 @@ void FOC_Startup_ForceComplete(void) {
     g_foc.status.in_transition = 0;
 }
 
-uint8_t FOC_IsInTransition(void) {
-    return s_in_transition;
+void FOC_Startup_StartTransition(float blend_duration_ms, float handoff_id) {
+    s_handoff_id = handoff_id;
+    s_blend_alpha = 0.0f;
+    s_transition_counter = 0;
+    s_transition_samples = (uint32_t)(blend_duration_ms * 0.001f * g_foc.cfg.pwm_frequency);
+    if (s_transition_samples < 1) s_transition_samples = 1;
+    s_in_transition = 1;
+    g_foc.status.in_transition = 1;
 }
 
 void FOC_StateAlign(void) {
@@ -58,12 +65,11 @@ void FOC_StateAlign(void) {
     }
     g_foc.startup.counter++;
     if (g_foc.startup.counter == 1) {
-        /* Ensure normal PI gains are used for crisp current tracking */
         PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
         PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
     }
 
-    float align_samples = (float)ALIGN_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY;
+    float align_samples = (float)ALIGN_DURATION_MS * 0.001f * g_foc.cfg.pwm_frequency;
     float progress = (float)g_foc.startup.counter / align_samples;
     if (progress > 1.0f) progress = 1.0f;
 
@@ -83,7 +89,6 @@ void FOC_StateAlign(void) {
     /* Fixed alignment angle at 0.0f (no artificial sweeping or snapping) */
     g_foc.data.theta_elec = 0.0f;
     g_foc.data.omega_elec = 0.0f;
-    g_foc.data.speed_rpm = 0.0f;
 
     float sin_th, cos_th;
     cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
@@ -99,6 +104,7 @@ void FOC_StateAlign(void) {
     svpwm_calculate(g_foc.data.theta_elec);
 
     if (g_foc.startup.counter > (uint32_t)align_samples) {
+        s_startup_timeout_cnt = 0;
         g_foc.startup.counter = 0;
         g_foc.startup.theta = 0.0f;
         g_foc.startup.omega = 0.0f;
@@ -112,23 +118,18 @@ void FOC_StateAlign(void) {
     }
 }
 
-void FOC_StateStartup(void) {
+CCMRAM_FUNC void FOC_StateStartup(void) {
     g_foc.startup.counter++;
 
-    float accel_rad = g_foc.cfg.startup_accel * RPM_TO_RAD * g_foc.cfg.motor_poles;
-    g_foc.startup.omega += accel_rad * CONTROL_PERIOD;
-
-    float handoff_omega = g_foc.cfg.startup_handoff_speed * RPM_TO_RAD * g_foc.cfg.motor_poles;
-    if (!MotorID_IsFluxMeasuring()) {
-        if (g_foc.startup.omega > handoff_omega) {
-            g_foc.startup.omega = handoff_omega;
-        }
+    float handoff_omega = g_foc.cfg.startup_handoff_speed;
+    g_foc.startup.omega += g_foc.cfg.startup_accel * g_foc.dt;
+    if (g_foc.startup.omega > handoff_omega) {
+        g_foc.startup.omega = handoff_omega;
     }
 
     g_foc.data.omega_elec = g_foc.startup.omega;
-    g_foc.data.speed_rpm = (g_foc.startup.omega / g_foc.cfg.motor_poles) * (60.0f / TWO_PI);
 
-    g_foc.startup.theta += (g_foc.startup.omega * CONTROL_PERIOD) / PI;
+    g_foc.startup.theta += (g_foc.startup.omega * g_foc.dt) / PI;
     g_foc.startup.theta = normalize_angle_norm(g_foc.startup.theta);
     g_foc.data.theta_elec = g_foc.startup.theta;
 
@@ -139,15 +140,9 @@ void FOC_StateStartup(void) {
 
     /* Universal Vector Steering for Smooth Propeller Startup & Pole-Slip Immunity:
      * Steer current vector angle gamma_norm smoothly from 0 (all Id) to 1/3 (60 deg: 50% Id, 86.6%
-     * Iq). For Motor ID: uses a fixed 50 rad/s (~8 Hz) threshold because KV is not yet known. For
-     * normal startup: uses 0.35 * handoff_omega bounded to [30, 80] rad/s (5-13 Hz electrical) to
+     * Iq). Uses 0.35 * handoff_omega bounded to [30, 80] rad/s (5-13 Hz electrical) to
      * ensure breakaway completes locally without keeping excessive Id at high handoff speeds. */
-    float steer_threshold;
-    if (MotorID_IsFluxMeasuring()) {
-        steer_threshold = 50.0f;
-    } else {
-        steer_threshold = clampf(0.35f * handoff_omega, 30.0f, 80.0f);
-    }
+    float steer_threshold = clampf(0.35f * handoff_omega, 30.0f, 80.0f);
     float steer_ratio = (steer_threshold > 1.0f) ? (g_foc.startup.omega / steer_threshold) : 1.0f;
     if (steer_ratio > 1.0f) steer_ratio = 1.0f;
 
@@ -169,11 +164,6 @@ void FOC_StateStartup(void) {
     float omega_Ls = omega_e * g_foc.cfg.motor_ls;
     float E_bemf = omega_e * g_foc.cfg.motor_flux;
 
-    if (MotorID_IsFluxMeasuring()) {
-        omega_Ls = 0.0f;
-        E_bemf = 0.0f;
-    }
-
     g_foc.data.Vd = PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq;
     g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + omega_Ls * g_foc.data.Id + E_bemf;
 
@@ -193,67 +183,22 @@ void FOC_StateStartup(void) {
                g_foc.data.Ibeta);
 
 #if ENABLE_CLOSED_LOOP_HANDOFF
-    if (MotorID_IsFluxMeasuring()) {
-        float ed = g_foc.data.Vd - g_foc.cfg.motor_rs * g_foc.data.Id +
-                   g_foc.startup.omega * g_foc.cfg.motor_ls * g_foc.data.Iq;
-        float eq = g_foc.data.Vq - g_foc.cfg.motor_rs * g_foc.data.Iq -
-                   g_foc.startup.omega * g_foc.cfg.motor_ls * g_foc.data.Id;
-        float E_bemf_est = sqrtf(ed * ed + eq * eq);
-        uint8_t freq_ok = g_foc.startup.omega >= 150.0f;
-        uint8_t bemf_ok = E_bemf_est >= 1.0f;
-        uint8_t v_limit_reached = g_foc.data.Vq >= 0.5f * g_foc.data.Vbus;
-        uint8_t speed_limit_reached = g_foc.data.speed_rpm >= 4000.0f;
-        if (freq_ok && (bemf_ok || v_limit_reached || speed_limit_reached)) {
-            g_foc.status.state = FOC_STATE_COAST_FLUX_ID;
-            return;
-        }
-        return;
-    }
-
     float smo_theta = SMO_GetParkAngle(&g_foc.ctrl.smo);
     float delta_theta = normalize_angle_norm(smo_theta - g_foc.startup.theta);
 
-    const float lpf_alpha = 50.0f * CONTROL_PERIOD;
+    const float lpf_alpha = 50.0f * g_foc.dt;
 
     float diff_theta = normalize_angle_norm(delta_theta - s_delta_theta_flt);
     s_delta_theta_flt = normalize_angle_norm(s_delta_theta_flt + lpf_alpha * diff_theta);
     s_delta_theta_variance += lpf_alpha * (fabsf(diff_theta) - s_delta_theta_variance);
-    float ed = g_foc.data.Vd - g_foc.ctrl.smo.Rs * g_foc.data.Id +
-               g_foc.startup.omega * g_foc.ctrl.smo.Ls * g_foc.data.Iq;
-    float eq = g_foc.data.Vq - g_foc.ctrl.smo.Rs * g_foc.data.Iq -
-               g_foc.startup.omega * g_foc.ctrl.smo.Ls * g_foc.data.Id;
-    float e_real = sqrtf(ed * ed + eq * eq);
-    float e_expect = (g_foc.cfg.motor_flux * g_foc.startup.omega);
-    const float e_lpf_alpha = 100.0f * CONTROL_PERIOD;
-    g_foc.data.e_real_flt += e_lpf_alpha * (e_real - g_foc.data.e_real_flt);
-    g_foc.plot.user_plot1 = g_foc.data.e_real_flt;
-    g_foc.plot.user_plot2 = e_expect;
-
-    if (g_foc.startup.omega >= handoff_omega * 0.9f) {
-        if (s_delta_theta_variance < 0.02f &&
-            (g_foc.data.e_real_flt >= STARTUP_STALL_BEMF_RATIO * e_expect)) {
+    if (g_foc.startup.omega >= handoff_omega * 0.8f) {
+        if (s_delta_theta_variance < 0.05f) {
             s_handoff_converge_cnt++;
         } else {
-            if (s_handoff_converge_cnt >= 5) {
-                s_handoff_converge_cnt -= 5;
+            if (s_handoff_converge_cnt >= 2) {
+                s_handoff_converge_cnt -= 2;
             }
         }
-    }
-
-    if (g_foc.startup.omega >= handoff_omega * STARTUP_STALL_SPEED_RATIO) {
-        if ((g_foc.data.e_real_flt < STARTUP_STALL_BEMF_RATIO * e_expect) ||
-            (s_delta_theta_variance > 0.15f)) {
-            s_startup_stall_cnt++;
-            if (s_startup_stall_cnt >= STARTUP_STALL_SAMPLES) {
-                g_foc.status.fault = FOC_FAULT_STARTUP_FAIL;
-                g_foc.status.state = FOC_STATE_FAULT;
-                return;
-            }
-        } else {
-            s_startup_stall_cnt = 0;
-        }
-    } else {
-        s_startup_stall_cnt = 0;
     }
 
     if (s_handoff_converge_cnt > HANDOFF_LOCK_SAMPLES) {
@@ -289,29 +234,26 @@ void FOC_StateStartup(void) {
             g_foc.cmd.Vq_ref = Vq_norm;
             g_foc.cmd.Vq_ref_target = Vq_norm;
         }
-        s_handoff_id = g_foc.cmd.Id_ref; /* Save Id for seamless transition blending */
-        s_blend_alpha = 0.0f;
-        s_transition_counter = 0;
-        s_transition_samples = (uint32_t)(TRANSITION_BLEND_MS * 0.001f * (float)CONTROL_FREQUENCY);
-        if (s_transition_samples < 1) s_transition_samples = 1;
-        s_in_transition = 1;
-        g_foc.status.in_transition = 1;
+        FOC_Startup_StartTransition(TRANSITION_BLEND_MS, g_foc.cmd.Id_ref);
 
         g_foc.status.state = FOC_STATE_RUN;
     }
 #endif
 
-    /* Timeout check (only if enabled) */
 #if STARTUP_TIMEOUT_MS > 0
-    if (g_foc.startup.counter > (uint32_t)((STARTUP_TIMEOUT_MS * CONTROL_FREQUENCY) / 1000)) {
+    if (s_startup_timeout_cnt >
+        (uint32_t)((STARTUP_TIMEOUT_MS * 0.001f * g_foc.cfg.pwm_frequency))) {
         g_foc.status.fault = FOC_FAULT_STARTUP_FAIL;
         g_foc.status.state = FOC_STATE_FAULT;
+    } else {
+        if (g_foc.startup.omega >= handoff_omega * 0.8f) {
+            s_startup_timeout_cnt++;
+        }
     }
 #endif
 }
 
-CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega,
-                                       float smo_speed_rpm) {
+CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega) {
     if (!s_in_transition) {
         return;
     }
@@ -332,7 +274,7 @@ CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm
     /* Smoothly blend Id_ref from handoff value down to 0 */
     g_foc.cmd.Id_ref = (1.0f - s_blend_alpha) * s_handoff_id;
 
-    g_foc.startup.theta += (g_foc.startup.omega * CONTROL_PERIOD) / PI;
+    g_foc.startup.theta += (g_foc.startup.omega * g_foc.dt) / PI;
     g_foc.startup.theta = normalize_angle_norm(g_foc.startup.theta);
 
     float delta_park = normalize_angle_norm(smo_theta_park - g_foc.startup.theta);
@@ -343,7 +285,4 @@ CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm
 
     g_foc.data.omega_elec =
         (1.0f - s_blend_alpha) * g_foc.startup.omega + s_blend_alpha * smo_omega;
-    g_foc.data.speed_rpm =
-        (1.0f - s_blend_alpha) * (g_foc.startup.omega / g_foc.cfg.motor_poles * (60.0f / TWO_PI)) +
-        s_blend_alpha * smo_speed_rpm;
 }

@@ -12,7 +12,7 @@ from ui.connection_panel import ConnectionPanel
 from ui.control_panel import ControlPanel
 from ui.param_editor import ParamEditor
 from ui.plot_panel import PlotPanel
-from ui.bist_panel import BISTPanel
+from ui.profiler_panel import ProfilerPanel
 
 
 class MainWindow(QMainWindow):
@@ -52,8 +52,8 @@ class MainWindow(QMainWindow):
         self.ctrl_panel = ControlPanel(self._serial)
         left_layout.addWidget(self.ctrl_panel)
 
-        self.bist_panel = BISTPanel(self._serial)
-        left_layout.addWidget(self.bist_panel)
+        self.profiler_panel = ProfilerPanel(self._serial)
+        left_layout.addWidget(self.profiler_panel)
         
         left_layout.addStretch()
         left_scroll.setWidget(left_widget)
@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
     def _on_connection_changed(self, connected: bool):
         self.param_editor.set_enabled_state(connected)
         self.ctrl_panel.set_enabled_state(connected)
-        self.bist_panel.set_enabled_state(connected)
+        self.profiler_panel.set_enabled_state(connected)
         
         if connected:
             self.status_bar.showMessage("Connected")

@@ -20,7 +20,7 @@
 #define FLASH_CONFIG_PAGE 63
 #define FLASH_CONFIG_ADDR 0x0801F800UL
 #define FLASH_CONFIG_MAGIC 0xC0F1A500UL
-#define FLASH_CONFIG_VERSION 11
+#define FLASH_CONFIG_VERSION 12
 
 /*===========================================================================*/
 /* Configuration Structure                                                   */
@@ -35,6 +35,9 @@ typedef struct {
     /* Auto-generate struct fields from X-Macro table */
 #define PARAM_DEF(id, type, name, default_val) type name;
 #include "param_table.def"
+
+    /* Dynamic runtime motor parameters (not stored in Flash / param_table) */
+    float motor_min_spd;
 
     /* Reserved for future parameters */
     uint8_t _reserved[4];

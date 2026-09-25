@@ -10,25 +10,49 @@ from PySide6.QtCore import Qt, QTimer
 
 from core.serial_comm import SerialThread
 from core import protocol
-from core.param_defs import PARAM_DEFS, PARAM_GROUPS, get_params_by_group, CHOICE_PARAMS
+from core.param_defs import (
+    PARAM_DEFS, PARAM_GROUPS, get_params_by_group, CHOICE_PARAMS,
+    mcu_to_gui, gui_to_mcu
+)
 from ui.widgets import WheelDoubleSpinBox
 
 class ParamComboBox(QComboBox):
     """Dropdown parameter selector that behaves like a spinbox for get/set."""
-    def __init__(self, items: list[str], parent=None):
+    def __init__(self, items, parent=None):
         super().__init__(parent)
-        self.addItems(items)
+        self._values = []
+        if isinstance(items, dict):
+            for label, val in items.items():
+                self.addItem(str(label))
+                self._values.append(float(val))
+        elif items and isinstance(items[0], (tuple, list)):
+            for label, val in items:
+                self.addItem(str(label))
+                self._values.append(float(val))
+        else:
+            for idx, item in enumerate(items):
+                self.addItem(str(item))
+                self._values.append(float(idx))
 
     def wheelEvent(self, event):
         event.ignore()
 
     def value(self) -> float:
-        return float(self.currentIndex())
+        idx = self.currentIndex()
+        if 0 <= idx < len(self._values):
+            return self._values[idx]
+        return float(idx)
 
     def setValue(self, val: float):
-        idx = int(round(val))
-        if 0 <= idx < self.count():
-            self.setCurrentIndex(idx)
+        best_idx = 0
+        min_diff = 1e9
+        for idx, v in enumerate(self._values):
+            diff = abs(v - val)
+            if diff < min_diff:
+                min_diff = diff
+                best_idx = idx
+        if min_diff < 1e9 and 0 <= best_idx < self.count():
+            self.setCurrentIndex(best_idx)
 
     def setReadOnly(self, ro: bool):
         self.setEnabled(not ro)
@@ -257,7 +281,8 @@ class ParamEditor(QWidget):
         self._serial.send(protocol.build_simple(protocol.CmdType.IDENT_FLUX))
         if hasattr(self, 'btn_measure_flux'):
             self.btn_measure_flux.setEnabled(False)
-            self.btn_measure_flux.setText("Measuring Flux...")
+            self.btn_measure_flux.setText("Spin Motor by Hand...")
+            QTimer.singleShot(12000, self._reset_measure_state) # Fallback timeout
         if hasattr(self, 'btn_measure'):
             self.btn_measure.setEnabled(False)
         if hasattr(self, 'btn_measure_inertia'):
@@ -391,17 +416,36 @@ class ParamEditor(QWidget):
     def _set_param(self, pid: int):
         spin = self._spinboxes.get(pid)
         if spin:
-            self._serial.send(protocol.build_set(pid, spin.value()))
+            if pid == protocol.ParamId.M_POLES:
+                protocol.set_pole_pairs(spin.value())
+            mcu_val = gui_to_mcu(pid, spin.value(), protocol.get_pole_pairs())
+            self._serial.send(protocol.build_set(pid, mcu_val))
 
     def _read_all(self):
         self._serial.send(protocol.build_simple(protocol.CmdType.PARAM_ALL))
 
     def _write_all(self):
+        poles_spin = self._spinboxes.get(protocol.ParamId.M_POLES)
+        if poles_spin:
+            protocol.set_pole_pairs(poles_spin.value())
         for pid, spin in self._spinboxes.items():
             if pid < protocol.ParamId.SPD_REF:
-                self._serial.send(protocol.build_set(pid, spin.value()))
+                mcu_val = gui_to_mcu(pid, spin.value(), protocol.get_pole_pairs())
+                self._serial.send(protocol.build_set(pid, mcu_val))
 
     def _save(self):
+        freq_spin = self._spinboxes.get(protocol.ParamId.PWM_FREQ)
+        if freq_spin:
+            new_freq = freq_spin.value()
+            if hasattr(self, '_last_saved_pwm_freq') and self._last_saved_pwm_freq is not None:
+                if abs(new_freq - self._last_saved_pwm_freq) > 1.0:
+                    QMessageBox.information(
+                        self, "PWM Frequency Changed",
+                        f"PWM frequency has been changed to {new_freq:.0f} Hz.\n"
+                        "Saving to Flash will restart the MCU to reconfigure hardware timers.\n"
+                        "Please wait a few seconds for the device to reboot."
+                    )
+            self._last_saved_pwm_freq = new_freq
         self._serial.send(protocol.build_simple(protocol.CmdType.SAVE))
 
     def _load(self):
@@ -456,7 +500,10 @@ class ParamEditor(QWidget):
                     spin = self._spinboxes.get(pid)
                     if spin:
                         spin.setValue(val)
-                        self._serial.send(protocol.build_set(pid, val))
+                        if pid == protocol.ParamId.M_POLES:
+                            protocol.set_pole_pairs(val)
+                        mcu_val = gui_to_mcu(pid, val, protocol.get_pole_pairs())
+                        self._serial.send(protocol.build_set(pid, mcu_val))
                         count += 1
 
             QMessageBox.information(self, "Import", f"Loaded {count} parameters from:\n{path}")
@@ -464,14 +511,19 @@ class ParamEditor(QWidget):
             QMessageBox.critical(self, "Import Error", f"Failed to import:\n{e}")
 
     def _on_params_received(self, params: dict):
+        if protocol.ParamId.M_POLES in params:
+            protocol.set_pole_pairs(params[protocol.ParamId.M_POLES])
         for pid, val in params.items():
             spin = self._spinboxes.get(pid)
             if spin:
+                gui_val = mcu_to_gui(pid, val, protocol.get_pole_pairs())
                 spin.blockSignals(True)
-                spin.setValue(val)
+                spin.setValue(gui_val)
                 spin.blockSignals(False)
 
     def _on_value_received(self, pid: int, val: float):
+        if pid == protocol.ParamId.M_POLES:
+            protocol.set_pole_pairs(val)
         if pid == protocol.ParamId.ID_RS_MEAS:
             self._measured_rs = val
             return
@@ -499,9 +551,12 @@ class ParamEditor(QWidget):
 
         spin = self._spinboxes.get(pid)
         if spin:
+            gui_val = mcu_to_gui(pid, val, protocol.get_pole_pairs())
             spin.blockSignals(True)
-            spin.setValue(val)
+            spin.setValue(gui_val)
             spin.blockSignals(False)
+            if pid == protocol.ParamId.PWM_FREQ:
+                self._last_saved_pwm_freq = val
 
     def _on_status_received(self, status: dict):
         if not self._is_measuring:
@@ -577,7 +632,7 @@ class ParamEditor(QWidget):
 
         elif getattr(self, '_is_measuring_flux', False):
             if self._measured_flux is not None and self._measured_kv is not None:
-                msg = (f"Offline Flux Identification Complete!\n\n"
+                msg = (f"Hand Spin Flux Identification Complete!\n\n"
                        f"Measured Parameters:\n"
                        f"• Permanent Magnet Flux: {self._measured_flux:.6f} Wb\n"
                        f"• Estimated Motor KV: {self._measured_kv:.2f} RPM/V\n\n"
