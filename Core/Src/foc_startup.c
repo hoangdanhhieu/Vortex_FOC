@@ -33,7 +33,6 @@ void FOC_Startup_Reset(void) {
     s_startup_stall_cnt = 0;
     s_delta_theta_flt = 0.0f;
     s_delta_theta_variance = 1.0f;
-    g_foc.data.e_real_flt = 0.0f;
     s_handoff_id = 0.0f;
     g_foc.status.in_transition = 0;
 }

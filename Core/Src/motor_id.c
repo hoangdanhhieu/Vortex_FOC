@@ -136,8 +136,9 @@ MotorID_Result_t id_result;
 
 static uint8_t s_is_flux_measuring = 0;
 static uint32_t s_flux_coast_counter = 0;
-static float s_cycle_max_vac = -100.0f;
-static float s_cycle_min_vac = 100.0f;
+static float s_cycle_vac_sum = 0.0f;
+static float s_cycle_vac_sq_sum = 0.0f;
+static uint32_t s_cycle_sample_count = 0;
 static uint8_t s_zc_state = 0;
 static uint32_t s_zc_cycle_count = 0;
 static uint32_t s_last_zc_sample = 0;
@@ -323,8 +324,9 @@ void MotorID_MeasureFluxOffline(void) {
     id_result.state = MOTOR_ID_STATE_MEASURE_FLUX;
     id_result.error_code = 0;
     s_flux_coast_counter = 0;
-    s_cycle_max_vac = -100.0f;
-    s_cycle_min_vac = 100.0f;
+    s_cycle_vac_sum = 0.0f;
+    s_cycle_vac_sq_sum = 0.0f;
+    s_cycle_sample_count = 0;
     s_zc_state = 0;
     s_zc_cycle_count = 0;
     s_last_zc_sample = 0;
@@ -350,9 +352,10 @@ void FOC_StateCoastFluxID(void) {
      * and 3rd harmonics 100%, leaving a pure, clean, zero-centered sinusoid Vac. */
     float Vac = Ea - Ec;
 
-    /* Track peak and trough for current cycle */
-    if (Vac > s_cycle_max_vac) s_cycle_max_vac = Vac;
-    if (Vac < s_cycle_min_vac) s_cycle_min_vac = Vac;
+    /* Accumulate RMS statistics for current cycle (DC-rejecting variance method) */
+    s_cycle_vac_sum += Vac;
+    s_cycle_vac_sq_sum += Vac * Vac;
+    s_cycle_sample_count++;
 
     /* Detect user motion */
     if (fabsf(Vac) > ID_FLUX_MIN_VAC) {
@@ -374,7 +377,11 @@ void FOC_StateCoastFluxID(void) {
                 /* Valid electrical frequency range: 5 Hz to 1000 Hz
                  * At 48kHz: 48 samples (1000 Hz) to 9600 samples (5 Hz) */
                 if (cycle_samples >= 48 && cycle_samples <= 9600) {
-                    float Vac_peak = 0.5f * (s_cycle_max_vac - s_cycle_min_vac);
+                    float n_samp = (float)s_cycle_sample_count;
+                    float mean_vac = s_cycle_vac_sum / n_samp;
+                    float variance = (s_cycle_vac_sq_sum / n_samp) - (mean_vac * mean_vac);
+                    if (variance < 0.0f) variance = 0.0f;
+                    float Vac_peak = SQRT2 * sqrtf(variance);
                     if (Vac_peak >= ID_FLUX_MIN_VAC) {
                         float f_elec = (float)g_foc.cfg.pwm_frequency / (float)cycle_samples;
                         float omega_elec = TWO_PI * f_elec;
@@ -400,8 +407,9 @@ void FOC_StateCoastFluxID(void) {
             }
 
             s_last_zc_sample = now;
-            s_cycle_max_vac = -100.0f;
-            s_cycle_min_vac = 100.0f;
+            s_cycle_vac_sum = 0.0f;
+            s_cycle_vac_sq_sum = 0.0f;
+            s_cycle_sample_count = 0;
         }
     } else {
         if (Vac < -ID_FLUX_MIN_VAC) {
@@ -438,8 +446,9 @@ void FOC_StateCoastFluxID(void) {
             /* Insufficient cycles before stopping: re-arm and wait for user to flick again */
             s_spin_detected = 0;
             s_zc_cycle_count = 0;
-            s_cycle_max_vac = -100.0f;
-            s_cycle_min_vac = 100.0f;
+            s_cycle_vac_sum = 0.0f;
+            s_cycle_vac_sq_sum = 0.0f;
+            s_cycle_sample_count = 0;
         }
     }
 

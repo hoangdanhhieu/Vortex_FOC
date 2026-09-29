@@ -71,8 +71,6 @@ void FOC_Init(void) {
     g_foc.cmd.speed_ref = 0.0f;
     g_foc.data.theta_elec = 0.0f;
     g_foc.data.omega_elec = 0.0f;
-    g_foc.data.e_real_flt = 0.0f;
-    g_foc.data.e_expect_flt = 0.0f;
     g_foc.status.in_transition = 0;
 
     g_foc.startup.theta = 0.0f;
@@ -169,8 +167,6 @@ void FOC_Start(void) {
         PI_SetIntLimits(&g_foc.ctrl.id, -v_limit, v_limit);
         PI_SetLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
         PI_SetIntLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
-        g_foc.data.e_real_flt = 0.0f;
-        g_foc.data.e_expect_flt = 0.0f;
     }
 }
 

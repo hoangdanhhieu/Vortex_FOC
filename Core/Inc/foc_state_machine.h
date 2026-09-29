@@ -83,8 +83,6 @@ typedef struct {
     float duty_a, duty_b, duty_c; /**< Inverter phase PWM duty cycles [dimensionless: 0.0 to 1.0] */
     float i_scale;                /**< ADC raw count to phase current conversion factor [A/count] */
     float v_scale;                /**< ADC raw count to phase voltage conversion factor [V/count] */
-    float e_real_flt;             /**< Filtered real Back-EMF vector magnitude [V] */
-    float e_expect_flt;           /**< Filtered expected Back-EMF vector magnitude [V] */
     float inv_i_th;               /**< Precomputed inverse deadtime threshold [1/A] */
     float stall_risk;             /**< Real-time leaky stall risk accumulator [0.0 to 1.0] */
     float eta_em;                 /**< Scale-free electromechanical power conversion ratio */
