@@ -88,10 +88,12 @@ static float align_target_i;
 static float id_motor_max_curr;
 
 /* Measure Rs */
-static uint8_t rs_sub;
+volatile static uint8_t rs_sub;
 static float rs_vd_out;
 static float rs_vd_sum;
 static float rs_id_sum;
+static float rs_probe_accum_s;
+static float rs_probe_accum_c;
 static uint32_t rs_sum_count;
 static float rs_vd1;
 static float rs_id1;
@@ -102,9 +104,9 @@ static uint16_t rs_settle_counter;
 
 static uint8_t sat_level_idx;
 static float sat_vd_bias;
-static uint8_t sat_sub;
+volatile static uint8_t sat_sub;
 static uint16_t sat_settle_cnt;
-static uint32_t meas_cycles;
+volatile static uint32_t meas_cycles;
 static float v_inj;
 
 static float sat_lut_i[SAT_MAX_LUT_POINTS];
@@ -122,8 +124,8 @@ static uint8_t sat_backtrack_cnt;  // Counter for backtrack steps (limit to 2)
 static float sat_target_i_bias;    // Dynamic DC bias current target
 static float sat_vd_error_int;     // Slow DC bias voltage integrator
 
-static float meas_accum_L[128];
-static uint16_t meas_accum_count;
+static float meas_accum_i_sq[128];
+volatile static uint16_t meas_accum_count;
 
 /* Shared variables between FastTask (48kHz) and SlowTask (1kHz) */
 static volatile uint8_t s_rs_accum_en = 0;
@@ -198,6 +200,35 @@ static float quick_median(float* arr, int n) {
     } else {
         return 0.5f * (arr[(n - 1) / 2] + arr[n / 2]);
     }
+}
+
+static float calculate_zoh_ls(float i_mag_sq) {
+    if (i_mag_sq <= 1e-10f) return 0.0f;
+
+    float v_inj_eff = v_inj * sat_cos_half_phi;
+    float Z_mag_sq = (v_inj_eff * v_inj_eff) / i_mag_sq;
+    float rs_sq = id_result.measured_rs * id_result.measured_rs;
+    float M = Z_mag_sq / rs_sq;
+    float phi = sat_phase_inc;
+    float cos_phi = cosf(phi);
+    float ls_sample = 0.0f;
+
+    /* Exact Discrete ZOH Analytical Formula */
+    if (M > 1.0001f) {
+        float p = (M - cos_phi) / (M - 1.0f);
+        if (p > 1.0f) {
+            float disc = p * p - 1.0f;
+            float a_est = p - sqrtf(disc);
+            if (a_est > 1e-7f && a_est < 0.999999f) {
+                ls_sample = -id_result.measured_rs * g_foc.dt / logf(a_est);
+            }
+        }
+    }
+    if (ls_sample <= 1e-7f) {
+        float x_react = (Z_mag_sq > rs_sq) ? sqrtf(Z_mag_sq - rs_sq) : 0.0f;
+        ls_sample = x_react / sat_omega;
+    }
+    return ls_sample;
 }
 
 /*===========================================================================*/
@@ -550,10 +581,10 @@ void MotorID_FastTask(float id, float* vd, float* vq) {
             float sin_cmd = sin_table_cmd[step_in_cycle];
             *vd = rs_probe_vd_bias + rs_probe_v_inj * sin_cmd;
 
-            buf_s[buf_idx] = id * sin_table_demod[step_in_cycle];
-            buf_c[buf_idx] = id * cos_table_demod[step_in_cycle];
-
-            buf_idx = (buf_idx + 1) % N_DFT;
+            if (meas_cycles >= (uint32_t)(N_DFT * 5) && meas_cycles < (uint32_t)(N_DFT * 10)) {
+                rs_probe_accum_s += id * sin_table_demod[step_in_cycle];
+                rs_probe_accum_c += id * cos_table_demod[step_in_cycle];
+            }
             step_in_cycle = (step_in_cycle + 1) % N_DFT;
             meas_cycles++;
         } else {
@@ -564,8 +595,8 @@ void MotorID_FastTask(float id, float* vd, float* vq) {
         if (sat_sub == 0) {
             /* Anti-windup non-negative clamp prevents wiping out Rs*target_i_bias below deadtime */
             sat_vd_error_int += 0.002f * (sat_target_i_bias - id_filt);
-            float error_limit = 0.10f * g_foc.data.Vbus;
-            sat_vd_error_int = clampf(sat_vd_error_int, 0.0f, error_limit);
+            sat_vd_error_int =
+                clampf(sat_vd_error_int, -0.05f * g_foc.data.Vbus, 0.10f * g_foc.data.Vbus);
 
             sat_vd_bias = id_result.measured_vdead + id_result.measured_rs * sat_target_i_bias +
                           sat_vd_error_int;
@@ -592,41 +623,14 @@ void MotorID_FastTask(float id, float* vd, float* vq) {
             step_in_cycle = (step_in_cycle + 1) % N_DFT;
             meas_cycles++;
 
-            /* Synchronous ZOH extraction once per AC period at zero-crossing (step_in_cycle == 0)
-             */
+            /* Synchronous extraction once per AC period at zero-crossing (step_in_cycle == 0) */
             if (step_in_cycle == 0 && meas_cycles > (uint32_t)(N_DFT * 2)) {
                 float i_real = 2.0f * (run_sum_s / (float)N_DFT);
                 float i_imag = 2.0f * (run_sum_c / (float)N_DFT);
                 float i_mag_sq = i_real * i_real + i_imag * i_imag;
 
-                if (i_mag_sq > 1e-10f) {
-                    float v_inj_eff = v_inj * sat_cos_half_phi;
-                    float Z_mag_sq = (v_inj_eff * v_inj_eff) / i_mag_sq;
-                    float rs_sq = id_result.measured_rs * id_result.measured_rs;
-                    float M = Z_mag_sq / rs_sq;
-                    float phi = sat_phase_inc;
-                    float cos_phi = cosf(phi);
-                    float ls_sample = 0.0f;
-
-                    /* Exact Discrete ZOH Analytical Formula */
-                    if (M > 1.0001f) {
-                        float p = (M - cos_phi) / (M - 1.0f);
-                        if (p > 1.0f) {
-                            float disc = p * p - 1.0f;
-                            float a_est = p - sqrtf(disc);
-                            if (a_est > 1e-7f && a_est < 0.999999f) {
-                                ls_sample = -id_result.measured_rs * g_foc.dt / logf(a_est);
-                            }
-                        }
-                    }
-                    if (ls_sample <= 1e-7f) {
-                        float x_react = (Z_mag_sq > rs_sq) ? sqrtf(Z_mag_sq - rs_sq) : 0.0f;
-                        ls_sample = x_react / sat_omega;
-                    }
-
-                    if (ls_sample > 1e-7f && meas_accum_count < 128) {
-                        meas_accum_L[meas_accum_count++] = ls_sample;
-                    }
+                if (i_mag_sq > 1e-10f && meas_accum_count < 128) {
+                    meas_accum_i_sq[meas_accum_count++] = i_mag_sq;
                 }
             }
         }
@@ -745,11 +749,13 @@ void MotorID_SlowTask(void) {
                         float v_max_bias = 0.40f * vbus;
                         if (rs_probe_vd_bias > v_max_bias) rs_probe_vd_bias = v_max_bias;
                         rs_probe_v_inj = 0.50f;
-                        rs_sub = 3; /* FREQ_DETECT_PROBE */
+                        rs_probe_accum_s = 0.0f;
+                        rs_probe_accum_c = 0.0f;
                         meas_cycles = 0;
                         buf_idx = 0;
                         step_in_cycle = 0;
                         id_timer_ms = 0;
+                        rs_sub = 3; /* FREQ_DETECT_PROBE */
                     } else {
                         id_result.error_code = 1;
                         id_result.state = MOTOR_ID_STATE_ERROR;
@@ -765,16 +771,13 @@ void MotorID_SlowTask(void) {
                 id_result.error_code = 1;
                 id_result.state = MOTOR_ID_STATE_ERROR;
             }
-        } else if (rs_sub == 3) {                        /* FREQ_DETECT_PROBE at 1000 Hz (10 ms) */
-            if (meas_cycles >= (uint32_t)(N_DFT * 10)) { /* 10 cycles = 10 ms */
-                float sum_s = 0.0f, sum_c = 0.0f;
-                for (uint16_t k = 0; k < N_DFT; k++) {
-                    sum_s += buf_s[k];
-                    sum_c += buf_c[k];
-                }
-                float i_r = 2.0f * (sum_s / (float)N_DFT);
-                float i_i = 2.0f * (sum_c / (float)N_DFT);
+        } else if (rs_sub == 3) { /* FREQ_DETECT_PROBE at 1000 Hz (10 ms) */
+            if (meas_cycles >= (uint32_t)(N_DFT * 10)) {
+                float total_samples = 5.0f * (float)N_DFT;
+                float i_r = 2.0f * (rs_probe_accum_s / total_samples);
+                float i_i = 2.0f * (rs_probe_accum_c / total_samples);
                 float i_amp = sqrtf(i_r * i_r + i_i * i_i);
+
                 float cos_half_1000 = cosf(0.5f * TWO_PI * 1000.0f * g_foc.dt);
                 float v_probe_eff = rs_probe_v_inj * cos_half_1000;
                 float z_1000 = (i_amp > 1e-4f) ? (v_probe_eff / i_amp) : 100.0f;
@@ -864,15 +867,16 @@ void MotorID_SlowTask(void) {
         float limit_zc = 0.80f * target_i_bias * zhf;
         float limit_max = (motor_max_curr - target_i_bias) * zhf;
 
-        v_inj = v_target;
-        if (v_inj > limit_bus) v_inj = limit_bus;
-        if (v_inj > limit_max) v_inj = limit_max;
-        if (v_inj > limit_zc) v_inj = limit_zc;
+        float v_safe = v_target;
+        if (v_safe > limit_bus) v_safe = limit_bus;
+        if (v_safe > limit_max) v_safe = limit_max;
+        if (v_safe > limit_zc) v_safe = limit_zc;
 
         float min_vbus = 0.02f * vbus;
-        if (v_inj < min_vbus && v_inj < limit_zc) {
-            v_inj = (min_vbus < limit_zc) ? min_vbus : limit_zc;
+        if (v_safe < min_vbus && v_safe < limit_zc) {
+            v_safe = (min_vbus < limit_zc) ? min_vbus : limit_zc;
         }
+        v_inj = v_safe;
 
         if (sat_sub == 0) { /* SETTLE_AT_DC_BIAS */
             sat_settle_cnt++;
@@ -897,16 +901,20 @@ void MotorID_SlowTask(void) {
                 float l_est_level = 0.0f;
                 bool valid_meas = false;
 
+                __disable_irq();
                 uint8_t count = (meas_accum_count > 128) ? 128 : (uint8_t)meas_accum_count;
+                float local_accum[128];
+                for (uint8_t i = 0; i < count; i++) {
+                    local_accum[i] = meas_accum_i_sq[i];
+                }
+                __enable_irq();
+
                 if (count >= 2) {
-                    float local_accum[128];
-                    __disable_irq();
-                    for (uint8_t i = 0; i < count; i++) {
-                        local_accum[i] = meas_accum_L[i];
+                    float i_mag_sq_median = quick_median(local_accum, count);
+                    l_est_level = calculate_zoh_ls(i_mag_sq_median);
+                    if (l_est_level > 1e-7f) {
+                        valid_meas = true;
                     }
-                    __enable_irq();
-                    l_est_level = quick_median(local_accum, count);
-                    valid_meas = true;
                 }
 
                 if (valid_meas) {
