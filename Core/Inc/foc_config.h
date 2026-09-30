@@ -108,7 +108,7 @@ extern volatile float ADC_Vref;
 #define ADC_CLK_HZ ((float)SYSCLK_FREQ / (float)ADC_PRESCALER) /* 42.5 MHz */
 
 /** ADC cycles per channel: sampling + 12.5 conversion cycles (12-bit) */
-#define ADC_SAMPLE_CYCLES 2.5f
+#define ADC_SAMPLE_CYCLES 24.5f
 #define ADC_CONV_CYCLES 12.5f
 #define ADC_CYCLES_PER_CH (ADC_SAMPLE_CYCLES + ADC_CONV_CYCLES)
 
@@ -281,7 +281,7 @@ extern volatile float ADC_Vref;
 #define TRANSITION_BLEND_MS 20.0f
 
 /** Startup timeout [ms] - set to 0 to disable */
-#define STARTUP_TIMEOUT_MS 500
+#define STARTUP_TIMEOUT_MS 1000
 
 /*===========================================================================*/
 /* Safety / Fault Protection                                                 */

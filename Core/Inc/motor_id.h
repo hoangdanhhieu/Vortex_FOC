@@ -48,8 +48,16 @@ typedef struct {
     float measured_inertia;       /* Identified rotor inertia J       [kg*m^2] */
     int8_t detected_direction;    /* Detected rotation: +1 = Forward, -1 = Reverse */
     MotorID_State_t state;
-    uint32_t error_code; /* 0 = OK, 1=Rs invalid, 2=Ls invalid, 3=Fit error, 7=No delta */
+    uint32_t error_code; /* 0 = OK, 1=Rs invalid, 2=Ls invalid, 3=Fit error, 7=No delta, 8=Invalid PWM freq */
 } MotorID_Result_t;
+
+/* Error codes for Motor ID */
+#define MOTOR_ID_ERR_NONE             0
+#define MOTOR_ID_ERR_RS_INVALID       1
+#define MOTOR_ID_ERR_LS_INVALID       2
+#define MOTOR_ID_ERR_FIT_ERROR        3
+#define MOTOR_ID_ERR_NO_DELTA         7
+#define MOTOR_ID_ERR_INVALID_PWM_FREQ 8
 
 extern MotorID_Result_t id_result;
 

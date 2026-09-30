@@ -271,6 +271,17 @@ class ParamEditor(QWidget):
         return scroll
 
     def _measure_flux(self):
+        pwm_freq = protocol.get_pwm_frequency()
+        if abs(pwm_freq - 48000.0) > 1.0:
+            QMessageBox.warning(
+                self,
+                "PWM Frequency Mismatch",
+                f"Flux Identification requires a 48 kHz PWM frequency for accurate zero-crossing BEMF windowing.\n\n"
+                f"Current configured frequency: {pwm_freq:.0f} Hz.\n\n"
+                f"Please set 'pwm_frequency' to 48000 Hz in the Configuration tab and Save to Flash before identifying.",
+            )
+            return
+
         self._measured_flux = None
         self._measured_kv = None
         self._is_measuring = True
@@ -371,6 +382,17 @@ class ParamEditor(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to compute Alpha: {e}")
 
     def _measure_rl(self):
+        pwm_freq = protocol.get_pwm_frequency()
+        if abs(pwm_freq - 48000.0) > 1.0:
+            QMessageBox.warning(
+                self,
+                "PWM Frequency Mismatch",
+                f"Motor Identification requires a 48 kHz PWM frequency for high-precision Lock-in DFT demodulation.\n\n"
+                f"Current configured frequency: {pwm_freq:.0f} Hz.\n\n"
+                f"Please set 'pwm_frequency' to 48000 Hz in the Configuration tab and Save to Flash before identifying.",
+            )
+            return
+
         self._measured_rs = None
         self._measured_ls = None
         self._measured_isat = None

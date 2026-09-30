@@ -331,6 +331,11 @@ void MotorID_Init(void) {
 }
 
 void MotorID_Start(void) {
+    if (fabsf(g_foc.cfg.pwm_frequency - 48000.0f) > 1.0f) {
+        id_result.state = MOTOR_ID_STATE_ERROR;
+        id_result.error_code = MOTOR_ID_ERR_INVALID_PWM_FREQ;
+        return;
+    }
     MotorID_Init();
     id_result.state = MOTOR_ID_STATE_ALIGN;
 }
@@ -349,6 +354,11 @@ uint8_t MotorID_IsFluxMeasuring(void) {
 
 void MotorID_MeasureFluxOffline(void) {
     if (g_foc.status.state != FOC_STATE_IDLE) {
+        return;
+    }
+    if (fabsf(g_foc.cfg.pwm_frequency - 48000.0f) > 1.0f) {
+        id_result.state = MOTOR_ID_STATE_ERROR;
+        id_result.error_code = MOTOR_ID_ERR_INVALID_PWM_FREQ;
         return;
     }
     s_is_flux_measuring = 1;

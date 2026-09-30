@@ -268,7 +268,6 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         }
 
         Comm_StreamPush();
-
         FOC_TriggerRegularADC();
         return;
     }
@@ -282,6 +281,8 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         g_foc.data.Vphase_b = vb;
         g_foc.data.Vphase_c = vc;
     }
+
+    FOC_TriggerRegularADC();
 
     switch (g_foc.status.state) {
         case FOC_STATE_IDLE:
@@ -319,12 +320,10 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
 
         case FOC_STATE_STOP:
             FOC_StateStop();
-            FOC_TriggerRegularADC();
             return;
 
         case FOC_STATE_FAULT:
             FOC_StateFault();
-            FOC_TriggerRegularADC();
             return;
 
         case FOC_STATE_SELF_COMMISSION:
@@ -334,7 +333,6 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         case FOC_STATE_COAST_FLUX_ID:
             FOC_StateCoastFluxID();
             Comm_StreamPush();
-            FOC_TriggerRegularADC();
             return;
     }
 
@@ -394,7 +392,6 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     } else {
         FOC_HW_SetPWMDuty(out_a, out_c, out_b);
     }
-    FOC_TriggerRegularADC();
 }
 
 /*===========================================================================*/

@@ -523,12 +523,20 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 send_ack(type, 1);
                 break;
             }
+            if (fabsf(FlashConfig_Get()->pwm_frequency - 48000.0f) > 1.0f) {
+                send_ack(type, 1);
+                break;
+            }
             FOC_StartSelfCommission();
             send_ack(type, 0);
             break;
 
         case CMD_IDENT_FLUX:
             if (FOC_GetState() != FOC_STATE_IDLE) {
+                send_ack(type, 1);
+                break;
+            }
+            if (fabsf(FlashConfig_Get()->pwm_frequency - 48000.0f) > 1.0f) {
                 send_ack(type, 1);
                 break;
             }

@@ -177,8 +177,8 @@ void FOC_ConfigureAWD(void) {
 
 void FOC_StateCalibration(void) {
     if (g_foc.adc_cal.cal_samples >= CAL_SAMPLES) {
-        float n_ab = (float)(CAL_SAMPLES * 2 / 3);
-        float n_c = (float)(CAL_SAMPLES / 3);
+        float n_ab = CAL_SAMPLES * 2.0f / 3.0f;
+        float n_c = CAL_SAMPLES / 3.0f;
 
         float mean_a = (float)g_foc.adc_cal.offset_a / n_ab;
         float mean_b = (float)g_foc.adc_cal.offset_b / n_ab;
@@ -194,7 +194,8 @@ void FOC_StateCalibration(void) {
         float var_a = ((float)s_adc1_sq_accum / n_ab) - (mean_a * mean_a);
         float var_b = ((float)s_adc2_b_sq_accum / n_ab) - (mean_b * mean_b);
         float var_c_pb1 = ((float)s_adc1_c_pb1_sq_accum / n_c) - (mean_c_pb1 * mean_c_pb1);
-        float var_c_opamp3 = ((float)s_adc2_c_opamp3_sq_accum / n_c) - (mean_c_opamp3 * mean_c_opamp3);
+        float var_c_opamp3 =
+            ((float)s_adc2_c_opamp3_sq_accum / n_c) - (mean_c_opamp3 * mean_c_opamp3);
         if (var_a < 0.0f) var_a = 0.0f;
         if (var_b < 0.0f) var_b = 0.0f;
         if (var_c_pb1 < 0.0f) var_c_pb1 = 0.0f;
@@ -297,7 +298,8 @@ float FOC_CalculateObserverMinSpeed(void) {
     if (g_foc.cfg.motor_flux > 1e-6f) {
         rec_handoff_omega = e_bemf_target / g_foc.cfg.motor_flux;
     } else {
-        float flux_fallback = 60.0f / (1.732f * g_foc.cfg.motor_kv * TWO_PI * (float)g_foc.cfg.motor_poles);
+        float flux_fallback =
+            60.0f / (1.732f * g_foc.cfg.motor_kv * TWO_PI * (float)g_foc.cfg.motor_poles);
         rec_handoff_omega = (flux_fallback > 1e-6f) ? (e_bemf_target / flux_fallback) : 700.0f;
     }
     /* 7. Safety constraints:
