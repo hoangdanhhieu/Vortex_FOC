@@ -2,6 +2,7 @@
 #define FOC_INPUT_H
 
 #include <stdint.h>
+#include "foc_config.h"
 
 /*===========================================================================*/
 /* Input Data Structures                                                     */
@@ -29,8 +30,12 @@ typedef struct {
  */
 typedef struct {
     const char* name;
+    uint8_t is_high_speed;  /**< 1 if driver supports high-speed streaming / ISR ingestion */
+    uint8_t manages_arming; /**< 1 if driver owns the arming state (e.g. DShot protocol arming);
+                                 0 => core applies the zero-throttle arming interlock */
     void (*init)(void);
     void (*read)(FOC_InputCmd_t* cmd);
+    float (*read_fast)(void); /**< Optional fast hook returning normalized throttle (0.0f to 1.0f) */
 } FOC_InputDriver_t;
 
 /*===========================================================================*/
@@ -39,6 +44,7 @@ typedef struct {
 
 void FOC_Input_Init(void);
 void FOC_Input_Update(void);
+CCMRAM_FUNC void FOC_Input_ApplyFastTarget_HF(void);
 void FOC_Input_SelectSource(FOC_InputSource_t source);
 void FOC_Input_RegisterCustomDriver(const FOC_InputDriver_t* driver);
 void FOC_Input_SetMinVq(float vq_min);

@@ -10,6 +10,7 @@
 #include "cordic_math.h"
 #include "foc.h"
 #include "foc_config.h"
+#include "foc_input.h"
 #include "foc_state_machine.h"
 
 /* Transition blending state (open-loop → closed-loop) */
@@ -227,7 +228,6 @@ CCMRAM_FUNC void FOC_StateStartup(void) {
             Vq_norm = clampf(Vq_norm, 0.0f, 1.0f);
 
             float vq_min = (Vq_norm < 0.05f) ? 0.05f : Vq_norm;
-            extern void FOC_Input_SetMinVq(float vq_min);
             FOC_Input_SetMinVq(vq_min);
 
             g_foc.cmd.Vq_ref = Vq_norm;

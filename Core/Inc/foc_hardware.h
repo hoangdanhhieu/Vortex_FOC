@@ -150,5 +150,13 @@ static inline void FOC_TriggerRegularADC(void) {
     if (LL_ADC_REG_IsConversionOngoing(ADC1) == 0) {
         LL_ADC_REG_StartConversion(ADC1);
     }
+
+    static uint8_t s_pot_prescaler = 0;
+    if (++s_pot_prescaler >= 48) {
+        s_pot_prescaler = 0;
+        if (LL_ADC_REG_IsConversionOngoing(ADC2) == 0) {
+            LL_ADC_REG_StartConversion(ADC2);
+        }
+    }
 }
 #endif /* FOC_HARDWARE_H */

@@ -248,6 +248,9 @@ extern volatile float ADC_Vref;
 /** ADC channel switching hysteresis (duty difference threshold to prevent jitter) */
 #define SKIP_HYSTERESIS 0.03f
 
+#define OMEGA_STF_CUTOFF 500.0f * TWO_PI
+#define OMEGA_OUT_CUTOFF 300.0f * TWO_PI
+
 /*===========================================================================*/
 /* Startup Configuration                                                     */
 /*===========================================================================*/

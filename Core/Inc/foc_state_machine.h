@@ -282,6 +282,12 @@ void FOC_SetSpeedRef(float speed_rad);
 void FOC_SetTorqueRef(float torque_percent);
 
 /**
+ * @brief Set torque reference directly in Amperes
+ * @param iq_target_amp Target quadrature current [A]
+ */
+void FOC_SetTorqueCurrent(float iq_target_amp);
+
+/**
  * @brief Set voltage reference (Vq)
  * @param voltage_percent Voltage as percentage of Vbus / sqrt(3) (0 to 100)
  */
@@ -292,6 +298,17 @@ void FOC_SetVoltageRef(float voltage_percent);
  * @param mode FOC_MODE_SPEED or FOC_MODE_TORQUE
  */
 void FOC_SetControlMode(FOC_ControlMode_t mode);
+
+FOC_ControlMode_t FOC_GetControlMode(void);
+float FOC_GetMaxCurrent(void);
+float FOC_GetMaxSpeed(void);
+float FOC_GetMinSpeed(void);
+float FOC_GetInputMinSpd(void);
+float FOC_GetInputMinCur(void);
+float FOC_GetInputMinVq(void);
+uint8_t FOC_GetConfigInputSource(void);
+uint8_t FOC_GetConfigInputMode(void);
+float FOC_GetConfigInputDeadband(void);
 
 /**
  * @brief Clear fault and return to IDLE

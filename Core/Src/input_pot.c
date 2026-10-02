@@ -7,24 +7,24 @@
 
 #include "foc_config.h"
 #include "foc_state_machine.h"
-#include "peripheral_init.h"
+#include "stm32g4xx_ll_adc.h"
 
 static uint16_t s_pot_raw = 0;
 static float s_pot_raw_filt = 0.0f;
 
 static void Input_Pot_Init(void) {
-    s_pot_raw = ADC_ReadPot_SingleShot();
+    s_pot_raw = LL_ADC_REG_ReadConversionData12(ADC2);
     s_pot_raw_filt = (float)s_pot_raw;
 }
 
 static void Input_Pot_Read(FOC_InputCmd_t* cmd) {
-    s_pot_raw = ADC_ReadPot_SingleShot();
+    s_pot_raw = LL_ADC_REG_ReadConversionData12(ADC2);
     s_pot_raw_filt = POT_LPF_ALPHA * s_pot_raw_filt + (1.0f - POT_LPF_ALPHA) * (float)s_pot_raw;
 
     float norm = s_pot_raw_filt / (float)POT_ADC_MAX;
     norm = clampf(norm, 0.0f, 1.0f);
 
-    float deadband = clampf(g_foc.cfg.input_deadband, 0.01f, 0.40f);
+    float deadband = clampf(FOC_GetConfigInputDeadband(), 0.01f, 0.40f);
     if (norm <= deadband) {
         cmd->throttle = 0.0f;
         cmd->arm_req = 0;
@@ -41,6 +41,8 @@ static void Input_Pot_Read(FOC_InputCmd_t* cmd) {
 
 const FOC_InputDriver_t g_driver_pot = {
     .name = "Potentiometer",
+    .is_high_speed = 0,
+    .manages_arming = 0,
     .init = Input_Pot_Init,
     .read = Input_Pot_Read
 };

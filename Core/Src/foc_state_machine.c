@@ -430,6 +430,8 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
         g_foc.cmd.Id_ref = 0.0f;
     }
 
+    FOC_Input_ApplyFastTarget_HF();
+
     if (g_foc.status.control_mode == FOC_MODE_TORQUE) {
         float ramp_rate =
             (g_foc.cfg.current_ramp_rate > 0.0f) ? g_foc.cfg.current_ramp_rate : 1000.0f;
@@ -530,6 +532,12 @@ void FOC_SetTorqueRef(float torque_percent) {
     g_foc.cmd.Iq_ref_target = (pct / 100.0f) * g_foc.cfg.motor_max_curr;
 }
 
+void FOC_SetTorqueCurrent(float iq_target_amp) {
+    if (g_foc.status.state == FOC_STATE_STOP) return;
+    g_foc.cmd.Iq_ref_target =
+        clampf(iq_target_amp, -g_foc.cfg.motor_max_curr, g_foc.cfg.motor_max_curr);
+}
+
 void FOC_SetVoltageRef(float voltage_percent) {
     if (g_foc.status.state == FOC_STATE_STOP) return;
     float pct = clampf(voltage_percent, 0.0f, 100.0f);
@@ -538,6 +546,46 @@ void FOC_SetVoltageRef(float voltage_percent) {
 
 void FOC_SetControlMode(FOC_ControlMode_t mode) {
     g_foc.status.control_mode = mode;
+}
+
+FOC_ControlMode_t FOC_GetControlMode(void) {
+    return g_foc.status.control_mode;
+}
+
+float FOC_GetMaxCurrent(void) {
+    return g_foc.cfg.motor_max_curr;
+}
+
+float FOC_GetMaxSpeed(void) {
+    return g_foc.cfg.motor_max_spd;
+}
+
+float FOC_GetMinSpeed(void) {
+    return g_foc.cfg.motor_min_spd;
+}
+
+float FOC_GetInputMinSpd(void) {
+    return g_foc.cfg.input_min_spd;
+}
+
+float FOC_GetInputMinCur(void) {
+    return g_foc.cfg.input_min_cur;
+}
+
+float FOC_GetInputMinVq(void) {
+    return g_foc.cfg.input_min_vq;
+}
+
+uint8_t FOC_GetConfigInputSource(void) {
+    return (uint8_t)(g_foc.cfg.input_source + 0.5f);
+}
+
+uint8_t FOC_GetConfigInputMode(void) {
+    return (uint8_t)(g_foc.cfg.input_mode + 0.5f);
+}
+
+float FOC_GetConfigInputDeadband(void) {
+    return g_foc.cfg.input_deadband;
 }
 
 void FOC_ClearFault(void) {

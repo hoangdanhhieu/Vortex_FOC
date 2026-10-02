@@ -10,6 +10,7 @@ extern USBD_HandleTypeDef hUsbDeviceFS;
 
 static FOC_InputSource_t s_input_source = FOC_INPUT_SOURCE_NONE;
 static const FOC_InputDriver_t* s_custom_driver = NULL;
+static const FOC_InputDriver_t* s_active_driver = &g_driver_pot;
 
 static float s_throttle_active = 0.0f;
 static float s_dynamic_min_vq = 0.0f;
@@ -22,6 +23,7 @@ void FOC_Input_Init(void) {
     s_throttle_active = 0.0f;
     s_dynamic_min_vq = 0.0f;
     s_input_source = FOC_INPUT_SOURCE_POT;
+    s_active_driver = &g_driver_pot;
     if (g_driver_pot.init) {
         g_driver_pot.init();
     }
@@ -54,52 +56,105 @@ uint8_t FOC_Input_IsArmed(void) {
     return s_armed;
 }
 
-void FOC_Input_Update(void) {
-    /* 1. USB Override: Top Priority for Tuning / Debugging */
+/**
+ * @brief Map a normalized throttle [0..1] onto the active control-mode target.
+ *
+ * Single source of truth for throttle-to-target mapping, shared by the 1 kHz
+ * slow-path dispatch and the 48 kHz high-speed driver fast path.
+ */
+static void FOC_Input_MapThrottle(float thr) {
+    switch (FOC_GetControlMode()) {
+        case FOC_MODE_SPEED: {
+            float min_spd = FOC_GetInputMinSpd();
+            float max_spd = FOC_GetMaxSpeed();
+            FOC_SetSpeedRef(min_spd + thr * (max_spd - min_spd));
+            break;
+        }
+        case FOC_MODE_TORQUE: {
+            float min_cur = FOC_GetInputMinCur();
+            float max_cur = FOC_GetMaxCurrent();
+            FOC_SetTorqueCurrent(min_cur + thr * (max_cur - min_cur));
+            break;
+        }
+        case FOC_MODE_VOLTAGE: {
+            float min_vq = FOC_GetInputMinVq();
+            if (s_dynamic_min_vq > min_vq) {
+                min_vq = s_dynamic_min_vq;
+            }
+            FOC_SetVoltageRef((min_vq + thr * (1.0f - min_vq)) * 100.0f);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief Resolve the USB override and select the active physical driver.
+ * @param cmd On return, holds the latest driver command when a physical driver is active.
+ * @return 1 when input is disabled or handed over to the host (caller must stop),
+ *         0 when a physical driver is active.
+ */
+static uint8_t FOC_Input_SelectActiveDriver(FOC_InputCmd_t* cmd) {
+    /* USB Override: Top Priority for Tuning / Debugging */
     if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
         s_input_source = FOC_INPUT_SOURCE_UART_USB;
+        s_active_driver = NULL;
         s_armed = 0;
         s_zero_count = 0;
         s_throttle_active = 0.0f;
-        return;
+        return 1;
     }
 
-    /* 2. Select Active Physical Driver based on Config */
-    uint8_t src_cfg = (uint8_t)(g_foc.cfg.input_source + 0.5f);
-    if (src_cfg == 0) {
+    /* Select Active Physical Driver based on Config */
+    uint8_t src_cfg = FOC_GetConfigInputSource();
+    if (src_cfg == FOC_INPUT_SOURCE_NONE) {
         s_input_source = FOC_INPUT_SOURCE_NONE;
+        s_active_driver = NULL;
         s_armed = 0;
         s_zero_count = 0;
         s_throttle_active = 0.0f;
-        return;
+        return 1;
     }
 
-    const FOC_InputDriver_t* driver = NULL;
-    if (src_cfg == 2 && s_custom_driver != NULL) {
-        driver = s_custom_driver;
+    if (src_cfg == FOC_INPUT_SOURCE_CUSTOM && s_custom_driver != NULL) {
+        s_active_driver = s_custom_driver;
         s_input_source = FOC_INPUT_SOURCE_CUSTOM;
     } else {
-        driver = &g_driver_pot;
+        s_active_driver = &g_driver_pot;
         s_input_source = FOC_INPUT_SOURCE_POT;
     }
 
-    /* 3. Read Hardware */
-    FOC_InputCmd_t cmd = {0};
-    if (driver->read) {
-        driver->read(&cmd);
+    /* Read Hardware */
+    FOC_InputCmd_t zero = {0};
+    *cmd = zero;
+    if (s_active_driver && s_active_driver->read) {
+        s_active_driver->read(cmd);
     }
-    s_throttle_active = cmd.throttle;
+    s_throttle_active = cmd->throttle;
+    return 0;
+}
 
-    FOC_State_t state = FOC_GetState();
+/**
+ * @brief Update the arming state (1 kHz).
+ *
+ * Drivers with manages_arming=1 are the source of truth for arming
+ * (e.g. DShot protocol arming). All other drivers use the pot-style
+ * zero-throttle lock: hold throttle at 0 for 100 ms to arm.
+ */
+static void FOC_Input_UpdateArming(const FOC_InputCmd_t* cmd, FOC_State_t state) {
+    if (s_active_driver && s_active_driver->manages_arming) {
+        s_armed = ((state == FOC_STATE_IDLE || state == FOC_STATE_FAULT) ? 0u : cmd->arm_req);
+        return;
+    }
 
-    /* 4. Safety Arming Interlock (Zero-Throttle Lock) */
     if (state == FOC_STATE_IDLE || state == FOC_STATE_FAULT) {
         if (state == FOC_STATE_FAULT) {
             s_armed = 0;
             s_zero_count = 0;
         }
         if (!s_armed) {
-            if (cmd.throttle <= 0.001f) {
+            if (cmd->throttle <= 0.001f) {
                 if (++s_zero_count >= 100) { /* 100ms at zero throttle */
                     s_armed = 1;
                 }
@@ -108,57 +163,57 @@ void FOC_Input_Update(void) {
             }
         }
     }
+}
 
-    /* 5. Start Trigger: apply configured input_mode and start motor */
-    if (state == FOC_STATE_IDLE && s_armed && cmd.arm_req && cmd.is_active) {
-        uint8_t mode_val = (uint8_t)(g_foc.cfg.input_mode + 0.5f);
+/**
+ * @brief Evaluate the start trigger and the stop/failsafe triggers (1 kHz).
+ */
+static void FOC_Input_CheckStartStop(const FOC_InputCmd_t* cmd, FOC_State_t state) {
+    /* Start Trigger: apply configured input_mode and start motor */
+    if (state == FOC_STATE_IDLE && s_armed && cmd->arm_req && cmd->is_active) {
+        uint8_t mode_val = FOC_GetConfigInputMode();
         if (mode_val > 2) mode_val = 2;
         FOC_SetControlMode((FOC_ControlMode_t)mode_val);
         FOC_Start();
     }
 
-    /* 6. Stop Trigger & Failsafe */
+    /* Stop Trigger & Failsafe */
     if (state != FOC_STATE_IDLE && state != FOC_STATE_FAULT && state != FOC_STATE_STOP) {
-        if (!cmd.arm_req || !cmd.is_active) {
+        if (!cmd->arm_req || !cmd->is_active) {
             FOC_SetVoltageRef(0.0f);
             FOC_SetSpeedRef(0.0f);
-            FOC_SetTorqueRef(0.0f);
+            FOC_SetTorqueCurrent(0.0f);
             FOC_Stop();
             s_armed = 0;
             s_zero_count = 0;
             s_dynamic_min_vq = 0.0f;
         }
     }
+}
 
-    /* 7. Target Dispatcher when Running */
-    if (state == FOC_STATE_RUN && cmd.is_active) {
-        switch (g_foc.status.control_mode) {
-            case FOC_MODE_SPEED: {
-                float min_spd = g_foc.cfg.input_min_spd;
-                float max_spd = g_foc.cfg.motor_max_spd;
-                float target_spd = min_spd + cmd.throttle * (max_spd - min_spd);
-                FOC_SetSpeedRef(target_spd);
-                break;
-            }
-            case FOC_MODE_TORQUE: {
-                float min_cur = g_foc.cfg.input_min_cur;
-                float max_cur = g_foc.cfg.motor_max_curr;
-                float target_cur = min_cur + cmd.throttle * (max_cur - min_cur);
-                float target_pct = (max_cur > 0.001f) ? ((target_cur / max_cur) * 100.0f) : 0.0f;
-                FOC_SetTorqueRef(target_pct);
-                break;
-            }
-            case FOC_MODE_VOLTAGE: {
-                float min_vq = g_foc.cfg.input_min_vq;
-                if (s_dynamic_min_vq > min_vq) {
-                    min_vq = s_dynamic_min_vq;
-                }
-                float target_vq_pct = (min_vq + cmd.throttle * (1.0f - min_vq)) * 100.0f;
-                FOC_SetVoltageRef(target_vq_pct);
-                break;
-            }
-            default:
-                break;
-        }
+void FOC_Input_Update(void) {
+    FOC_InputCmd_t cmd;
+    if (FOC_Input_SelectActiveDriver(&cmd)) {
+        return;
     }
+
+    FOC_State_t state = FOC_GetState();
+    FOC_Input_UpdateArming(&cmd, state);
+    FOC_Input_CheckStartStop(&cmd, state);
+
+    /* Target Dispatcher when running (slow drivers only; high-speed drivers
+     * are dispatched at 48 kHz via FOC_Input_ApplyFastTarget_HF). */
+    if (state == FOC_STATE_RUN && cmd.is_active &&
+        !(s_active_driver && s_active_driver->is_high_speed)) {
+        FOC_Input_MapThrottle(cmd.throttle);
+    }
+}
+
+CCMRAM_FUNC void FOC_Input_ApplyFastTarget_HF(void) {
+    if (!s_armed || s_active_driver == NULL || !s_active_driver->is_high_speed ||
+        s_active_driver->read_fast == NULL) {
+        return;
+    }
+    s_throttle_active = s_active_driver->read_fast();
+    FOC_Input_MapThrottle(s_throttle_active);
 }

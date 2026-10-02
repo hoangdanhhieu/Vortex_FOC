@@ -172,7 +172,13 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha
                         float flux_linkage, float poles, float max_speed_elec_rad);
 
 /**
- * @brief Feed external BEMF directly into PLL (bypass current observer)
+ * @brief Feed external BEMF directly into the shared STF + PLL track loop
+ *        (bypasses the current observer). Used during Flying Start.
+ *
+ *        The BEMF is passed through the same Self-Tuning Filter as the
+ *        internal SMO path, then tracked by SMO_PLL_Track with the
+ *        0.3 dt ADC sampling delay compensation and without the 6th
+ *        harmonic compensation blocks.
  * @param smo Pointer to SMO structure
  * @param Ealpha Alpha-axis BEMF voltage [V]
  * @param Ebeta Beta-axis BEMF voltage [V]
