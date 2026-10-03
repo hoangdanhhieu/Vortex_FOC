@@ -1,16 +1,16 @@
 /**
  * @file motor_params.h
- * @brief Motor parameters for RS2205 2300KV BLDC motor
+ * @brief Motor reference profile for RS2205 2300KV BLDC motor.
  *
- * NOTE: These are estimated values. For best performance,
- * measure Rs, Ls, and Ke on your actual motor.
+ * NOTE: Vortex FOC identifies motor parameters online via Motor ID
+ * or loads them from Flash. This file serves as an offline reference profile.
  */
 
 #ifndef MOTOR_PARAMS_H
 #define MOTOR_PARAMS_H
 
 /*===========================================================================*/
-/* Motor Electrical Parameters (RS2205 2300KV - Estimated)                   */
+/* Motor Physical Parameters (Reference Profile: RS2205 2300KV)              */
 /*===========================================================================*/
 
 /** Number of pole pairs (14 poles = 7 pole pairs) */
@@ -19,27 +19,24 @@
 /** KV rating [RPM/V] */
 #define MOTOR_KV 2300
 
-/** Phase resistance [Ohm] - MEASURE THIS ON YOUR MOTOR */
+/** Phase resistance [Ohm] */
 #define MOTOR_RS 0.088252f
 
-/** Phase inductance [H] - MEASURE THIS ON YOUR MOTOR */
+/** Phase inductance [H] */
 #define MOTOR_LS 1.2e-5f
 
-/** BEMF constant [V/(rad/s)] = 60 / (Sqrt3 * 2PI * KV * PP) */
-#define MOTOR_KE (60.0f / (MOTOR_KV * 1.732 * 2 * 3.14159265f * MOTOR_POLE_PAIRS))
+/** BEMF constant Ke [V/(rad/s)] = 60 / (sqrt(3) * 2 * PI * KV * PP) */
+#define MOTOR_KE (60.0f / ((float)MOTOR_KV * 1.7320508f * 2.0f * 3.14159265f * (float)MOTOR_POLE_PAIRS))
 
 /** Flux linkage [Wb] = Ke (for PMSM) */
 #define MOTOR_FLUX_LINKAGE MOTOR_KE
 
 /*===========================================================================*/
-/* Motor Mechanical/Operating Limits                                         */
+/* Motor Operating & Mechanical Limits                                       */
 /*===========================================================================*/
 
 /** Maximum phase current [A] */
 #define MOTOR_MAX_CURRENT 30.0f
-
-/** Continuous phase current [A] */
-#define MOTOR_CONT_CURRENT 15.0f
 
 /** Saturation current [A] (current where Ls drops to 50%) */
 #define MOTOR_ISAT 25.0f
@@ -47,42 +44,10 @@
 /** Saturation coefficient alpha [1/A^2] = 1 / (Isat^2) */
 #define MOTOR_ALPHA (1.0f / (MOTOR_ISAT * MOTOR_ISAT))
 
-/** Maximum speed [RPM] */
+/** Maximum mechanical speed [RPM] */
 #define MOTOR_MAX_SPEED_RPM 30000.0f
-
-/** Minimum speed for sensorless operation [RPM] */
-#define MOTOR_MIN_SPEED_RPM 1000.0f
-
-/** Operating voltage range [V] */
-#define MOTOR_VBUS_MIN 10.0f
-#define MOTOR_VBUS_MAX 16.8f
-
-/*===========================================================================*/
-/* Derived Constants (calculated at compile time)                            */
-/*===========================================================================*/
-
-/** Maximum electrical speed [rad/s] */
-#define MOTOR_MAX_SPEED_ELEC_RAD \
-    ((MOTOR_MAX_SPEED_RPM / 60.0f) * 2.0f * 3.14159265f * MOTOR_POLE_PAIRS)
-
-/** Minimum electrical speed for sensorless operation [rad/s] */
-#define MOTOR_MIN_SPEED_ELEC_RAD \
-    ((MOTOR_MIN_SPEED_RPM / 60.0f) * 2.0f * 3.14159265f * MOTOR_POLE_PAIRS)
-
-/** Electrical time constant [s] = Ls / Rs */
-#define MOTOR_ELEC_TIME_CONST (MOTOR_LS / MOTOR_RS)
 
 /** Rotor + Propeller moment of inertia [kg*m^2] */
 #define MOTOR_INERTIA 1.5e-6f
-
-/** Default LADRC Controller Bandwidth [rad/s] */
-#define LADRC_OMEGA_C_DEFAULT 35.0f
-
-/** Default LADRC Observer Bandwidth [rad/s] */
-#define LADRC_OMEGA_O_DEFAULT 122.0f
-
-/** Default LADRC Control Gain b0 = 1.5 * p^2 * psi / J */
-#define LADRC_B0_DEFAULT \
-    (1.5f * (float)(MOTOR_POLE_PAIRS * MOTOR_POLE_PAIRS) * MOTOR_FLUX_LINKAGE / MOTOR_INERTIA)
 
 #endif /* MOTOR_PARAMS_H */

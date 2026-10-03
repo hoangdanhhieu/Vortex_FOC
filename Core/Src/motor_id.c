@@ -1120,7 +1120,7 @@ void MotorID_InertiaSlowTask(void) {
            that was carefully seeded during the Handoff process! */
         LADRC_SetGains(&g_foc.ctrl.speed, g_foc.cfg.ladrc_omega_c, g_foc.cfg.ladrc_omega_o,
                        b0_init);
-        LADRC_SetLimits(&g_foc.ctrl.speed, PI_SPEED_OUT_MIN, motor_max_curr);
+        LADRC_SetLimits(&g_foc.ctrl.speed, SPEED_LOOP_OUT_MIN, motor_max_curr);
 
         /* Speed 1: Scale from auto-calibrated min_spd (1.5x) with 300 RPM floor and 30% max_spd
          * ceiling */

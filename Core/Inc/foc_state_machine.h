@@ -30,7 +30,8 @@ typedef enum {
     FOC_STATE_FAULT,           /**< Fault condition */
     FOC_STATE_SELF_COMMISSION, /**< Motor parameter identification */
     FOC_STATE_COAST_FLUX_ID,   /**< Freewheeling BEMF measurement */
-    FOC_STATE_BRAKE            /**< Active dynamic braking for reverse flying start recovery */
+    FOC_STATE_BRAKE,           /**< Active dynamic braking for reverse flying start recovery */
+    FOC_STATE_BEEP             /**< Power-on beep sequence (ESC-style) */
 } FOC_State_t;
 
 typedef enum {
@@ -61,6 +62,10 @@ typedef struct {
     float reverse;         /**< Motor rotation direction [dimensionless: 1.0 = FWD, -1.0 = REV] */
     uint8_t in_transition; /**< Open-loop to closed-loop handoff flag [0 = Normal, 1 = Blending] */
     uint32_t run_counter;  /**< Control loop execution tick counter */
+    /*--- Power-on beep sequencer ---*/
+    uint8_t beep_seg;      /**< Beep sequence segment index [0..6] */
+    uint32_t beep_tick;    /**< Ticks elapsed within the current beep segment */
+    uint32_t beep_total;   /**< Total ticks since beep start (hard-timeout watchdog) */
 } FOC_Status_t;
 
 typedef struct {
@@ -97,8 +102,10 @@ typedef struct {
     float Iq_ref_target;    /**< Commanded quadrature current target from user/host [A] */
     float Id_ref;           /**< Direct axis current reference (0A or field weakening) [A] */
     float Id_ref_target;    /**< Commanded direct axis current target [A] */
-    float Vq_ref;        /**< Ramp-filtered normalized voltage command [normalized: -1.0 to 1.0] */
-    float Vq_ref_target; /**< Commanded normalized voltage target [normalized: -1.0 to 1.0] */
+    float Vq_ref; /**< Ramp-filtered normalized voltage command [normalized: 0.0 to 1.0, 1.0 = SVPWM
+                     circle limit] */
+    float Vq_ref_target; /**< Commanded normalized voltage target [normalized: 0.0 to 1.0, 1.0 =
+                            SVPWM circle limit] */
 } FOC_Cmd_t;
 
 /*===========================================================================*/
@@ -198,6 +205,26 @@ static inline const FOC_Data_t* FOC_GetData(void) {
     return &g_foc.data;
 }
 
+/**
+ * @brief Resolved overcurrent trip threshold [A].
+ *
+ *        fault_oc_threshold <= 0.0f -> AUTO: 1.25 x motor_max_curr
+ *        fault_oc_threshold  > 0.0f -> exact value; may intentionally be set
+ *        below motor_max_curr (test mode: current commands above the
+ *        threshold will trip FAULT_OVERCURRENT).
+ *
+ *        Single source of truth shared by the HW AWD configuration
+ *        (FOC_ConfigureAWD) and the SW fast-OC in the 48 kHz ISR.
+ */
+static inline float FOC_GetOCThreshold(void) {
+    float thr = g_foc.cfg.fault_oc_threshold;
+    if (thr <= 1.0f) {
+        thr = 1.25f * g_foc.cfg.motor_max_curr;
+        if (thr < 1.0f) thr = 1.0f;
+    }
+    return thr;
+}
+
 static inline const FOC_Status_t* FOC_GetStatus(void) {
     return &g_foc.status;
 }
@@ -246,6 +273,12 @@ static inline float FOC_GetVq(void) {
  * @brief Check if FOC system is initialized
  */
 uint8_t FOC_IsInitialized(void);
+
+/**
+ * @brief Check if motor configuration parameters are valid for closed-loop operation.
+ * @return 1 if fully configured and valid, 0 if unconfigured/invalid.
+ */
+uint8_t FOC_IsConfigValid(void);
 
 /**
  * @brief Initialize FOC control structure
@@ -344,8 +377,14 @@ int8_t FOC_GetDirection(void);
 float FOC_GetDt(void);
 
 /**
- * @brief Play a tune on motor phases
+ * @brief Start the ESC-style power-on beep sequence
+ *
+ * No-ops unless the motor is IDLE/STOP with no active fault. The sequence
+ * (3 short beeps, pause, 1 long beep, ~1.3 s) excites the motor with a small
+ * open-loop voltage, then returns to IDLE. A start command, fault,
+ * overvoltage, software overcurrent, or the hard timeout aborts it
+ * immediately.
  */
-void playTune(void);
+void FOC_PlayBeep(void);
 
 #endif /* FOC_STATE_MACHINE_H */

@@ -79,21 +79,15 @@ int main(void) {
     TAMP->BKP13R = 0;
     TAMP->BKP14R = 0;
 
-    /* Initialize Flash config (load from Flash or defaults) */
     FlashConfig_Init();
-
-    /* Initialize all hardware peripherals & calibrate ADC/OPAMP */
     Peripheral_Init();
-
-    /* Initialize FOC controller & apply parameters */
     FOC_Init();
     FlashConfig_Apply();
 
-    /* Initialize Communication Protocol */
+    FOC_PlayBeep();
     Comm_Init();
     LL_DAC_Enable(DAC1, LL_DAC_CHANNEL_1);  // Enable DAC for plotting
 
-    /* Start Independent Watchdog */
     MX_IWDG_Init();
 
     g_adc_ticks = 0;

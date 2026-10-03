@@ -148,7 +148,7 @@ static void FOC_Input_UpdateArming(const FOC_InputCmd_t* cmd, FOC_State_t state)
         return;
     }
 
-    if (state == FOC_STATE_IDLE || state == FOC_STATE_FAULT) {
+    if (state == FOC_STATE_IDLE || state == FOC_STATE_FAULT || state == FOC_STATE_BEEP) {
         if (state == FOC_STATE_FAULT) {
             s_armed = 0;
             s_zero_count = 0;
@@ -169,16 +169,20 @@ static void FOC_Input_UpdateArming(const FOC_InputCmd_t* cmd, FOC_State_t state)
  * @brief Evaluate the start trigger and the stop/failsafe triggers (1 kHz).
  */
 static void FOC_Input_CheckStartStop(const FOC_InputCmd_t* cmd, FOC_State_t state) {
-    /* Start Trigger: apply configured input_mode and start motor */
-    if (state == FOC_STATE_IDLE && s_armed && cmd->arm_req && cmd->is_active) {
+    /* Start Trigger: apply configured input_mode and start motor.
+     * A start during the power-on beep preempts it (FOC_Start aborts it). */
+    if ((state == FOC_STATE_IDLE || state == FOC_STATE_BEEP) && s_armed && cmd->arm_req &&
+        cmd->is_active) {
         uint8_t mode_val = FOC_GetConfigInputMode();
         if (mode_val > 2) mode_val = 2;
         FOC_SetControlMode((FOC_ControlMode_t)mode_val);
         FOC_Start();
     }
 
-    /* Stop Trigger & Failsafe */
-    if (state != FOC_STATE_IDLE && state != FOC_STATE_FAULT && state != FOC_STATE_STOP) {
+    /* Stop Trigger & Failsafe. The beep is a parked state: a missing arm
+     * signal (e.g. pot at zero during the power-on beep) must NOT abort it. */
+    if (state != FOC_STATE_IDLE && state != FOC_STATE_FAULT && state != FOC_STATE_STOP &&
+        state != FOC_STATE_BEEP) {
         if (!cmd->arm_req || !cmd->is_active) {
             FOC_SetVoltageRef(0.0f);
             FOC_SetSpeedRef(0.0f);

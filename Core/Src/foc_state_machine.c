@@ -38,12 +38,25 @@ static uint8_t s_cal_phase = 2;  /* Phase skip index during calibration */
 extern volatile uint32_t adc_isr_us;
 extern volatile uint16_t adc_regular_buffer[3];
 extern volatile float ADC_Vref;
-
+static float s_beep_phase = 0.0f;
 static void FOC_StateRun(void);
 static void FOC_StateSelfCommission(void);
+void FOC_StateBeep(void);
 
 uint8_t FOC_IsInitialized(void) {
     return foc_initialized;
+}
+
+uint8_t FOC_IsConfigValid(void) {
+    if (g_foc.cfg.motor_rs <= 1e-3f) return 0;
+    if (g_foc.cfg.motor_ls <= 1e-7f) return 0;
+    if (g_foc.cfg.motor_poles < 1.0f) return 0;
+    if (g_foc.cfg.motor_flux <= 1e-7f) return 0;
+    if (g_foc.cfg.motor_max_curr <= 1e-7f) return 0;
+    if (g_foc.cfg.motor_max_spd <= 10.0f) return 0;
+    if (g_foc.cfg.kp_iq <= 1e-7f || g_foc.cfg.ki_iq <= 1e-7f) return 0;
+    if (g_foc.cfg.kp_id <= 1e-7f || g_foc.cfg.ki_id <= 1e-7f) return 0;
+    return 1;
 }
 
 void FOC_Init(void) {
@@ -61,6 +74,7 @@ void FOC_Init(void) {
     g_foc.data.Iq_ref_cmd = 0.0f;
     g_foc.data.Valpha = g_foc.data.Vbeta = 0.0f;
     g_foc.data.Vbus = 12.0f;
+    g_foc.data.Vbus_inv = 1.0f / 12.0f;
     g_foc.data.Ibus = 0.0f;
     g_foc.data.inv_i_th = 20.0f;
 
@@ -81,14 +95,13 @@ void FOC_Init(void) {
 
     g_foc.dt = (g_foc.cfg.pwm_frequency > 0.0f) ? (1.0f / g_foc.cfg.pwm_frequency) : CONTROL_PERIOD;
 
-    PI_Init(&g_foc.ctrl.id, PI_ID_KP, PI_ID_KI, -12.0f, 12.0f, g_foc.dt);
+    PI_Init(&g_foc.ctrl.id, 0.0f, 0.0f, -0.0f, 0.0f, g_foc.dt);
     PI_SetIntLimits(&g_foc.ctrl.id, -12.0f, 12.0f);
 
-    PI_Init(&g_foc.ctrl.iq, PI_IQ_KP, PI_IQ_KI, -12.0f, 12.0f, g_foc.dt);
-    PI_SetIntLimits(&g_foc.ctrl.iq, -12.0f, 12.0f);
+    PI_Init(&g_foc.ctrl.iq, 0.0f, 0.0f, -0.0f, 0.0f, g_foc.dt);
+    PI_SetIntLimits(&g_foc.ctrl.iq, -0.0f, 0.0f);
 
-    LADRC_Init(&g_foc.ctrl.speed, LADRC_OMEGA_C_DEFAULT, LADRC_OMEGA_O_DEFAULT, LADRC_B0_DEFAULT,
-               PI_SPEED_OUT_MIN, PI_SPEED_OUT_MAX, 0.001f);
+    LADRC_Init(&g_foc.ctrl.speed, 0.0f, 0.0f, 1.0f, SPEED_LOOP_OUT_MIN, SPEED_LOOP_OUT_MAX, 0.001f);
 
     SMO_Init(&g_foc.ctrl.smo);
 
@@ -103,7 +116,6 @@ void FOC_Init(void) {
     g_foc.adc_cal.offset_vphase_c = 323;
     g_foc.adc_cal.cal_samples = 0;
     g_foc.noise_profile.noise_rms = 0.100f;
-    g_foc.cfg.motor_min_spd = FOC_CalculateObserverMinSpeed();
 
     g_foc.status.run_counter = 0;
     g_foc.isr_time_cycles = 0;
@@ -114,32 +126,22 @@ void FOC_Init(void) {
 
     g_foc.status.reverse = 1.0f;
 
-    g_foc.cfg.startup_current = STARTUP_CURRENT;
-    g_foc.cfg.align_current = ALIGN_CURRENT;
-    g_foc.cfg.startup_accel = STARTUP_ACCEL;
-    g_foc.cfg.startup_handoff_speed = STARTUP_HANDOFF_SPEED;
-    g_foc.cfg.speed_ramp_accel = SPEED_RAMP_ACCEL;
-    g_foc.cfg.speed_ramp_decel = SPEED_RAMP_DECEL;
-    g_foc.cfg.ladrc_omega_c = LADRC_OMEGA_C_DEFAULT;
-    g_foc.cfg.ladrc_omega_o = LADRC_OMEGA_O_DEFAULT;
-    g_foc.cfg.ladrc_b0 = LADRC_B0_DEFAULT;
-    g_foc.cfg.motor_inertia = MOTOR_INERTIA;
-    g_foc.cfg.fault_oc_threshold = FAULT_OVERCURRENT_THRESHOLD;
-    g_foc.cfg.fault_oc_count = (uint8_t)FAULT_OVERCURRENT_COUNT;
-    g_foc.cfg.fault_ov_threshold = FAULT_OVERVOLTAGE_THRESHOLD;
-    g_foc.cfg.fault_uv_threshold = FAULT_UNDERVOLTAGE_THRESHOLD;
-    g_foc.cfg.fault_stall_enable = (uint8_t)FAULT_STALL_ENABLE;
-    g_foc.cfg.fault_stall_speed = FAULT_STALL_SPEED_RPM;
-    g_foc.cfg.fault_stall_current = FAULT_STALL_CURRENT_A;
-    g_foc.cfg.fault_stall_time_ms = FAULT_STALL_TIME_MS;
-
     foc_initialized = 1;
     FOC_ResetStallDetector();
     FOC_Input_Init();
 }
 
 void FOC_Start(void) {
-    if (g_foc.status.state == FOC_STATE_IDLE) {
+    if (!FOC_IsConfigValid() && !MotorID_IsRunning()) {
+        return;
+    }
+    if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_BEEP) {
+        if (g_foc.status.state == FOC_STATE_BEEP) {
+            FOC_EnableDrivers(0);
+            g_foc.data.duty_a = 0.5f;
+            g_foc.data.duty_b = 0.5f;
+            g_foc.data.duty_c = 0.5f;
+        }
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
         LADRC_Reset(&g_foc.ctrl.speed);
@@ -318,6 +320,13 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
             FOC_StateRun();
             break;
 
+        case FOC_STATE_BEEP:
+            FOC_StateBeep();
+            if (g_foc.status.state != FOC_STATE_BEEP) {
+                return;
+            }
+            break;
+
         case FOC_STATE_STOP:
             FOC_StateStop();
             return;
@@ -349,7 +358,7 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     /* ADC Channel Switching for NEXT trigger (duty-based + hysteresis)      */
     /*=======================================================================*/
     if (g_foc.status.state != FOC_STATE_CALIBRATION &&
-        g_foc.status.state != FOC_STATE_SELF_COMMISSION) {
+        g_foc.status.state != FOC_STATE_SELF_COMMISSION && g_foc.status.state != FOC_STATE_BEEP) {
         /* Map duties to physical inverter bridges A, B, C (accounts for reverse direction) */
         float phys_duties[3];
         phys_duties[0] = out_a;
@@ -382,10 +391,11 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
             s_skip_phase = 2;
             FOC_HW_SwitchCurrentSensing(2);
         }
-    } else {
+    } else if (g_foc.status.state == FOC_STATE_CALIBRATION) {
         s_cal_phase = (s_cal_phase == 2) ? 0 : (s_cal_phase + 1);
         FOC_HW_SwitchCurrentSensing(s_cal_phase);
     }
+    /* FOC_STATE_BEEP: keep the current-sensing phase fixed */
 
     if (g_foc.status.reverse > 0) {
         FOC_HW_SetPWMDuty(out_a, out_b, out_c);
@@ -613,8 +623,8 @@ void FOC_EnableDriver(uint8_t phase, uint8_t enable) {
 
 void FOC_StartSelfCommission(void) {
     if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_STOP) {
-        FOC_Start();
         MotorID_Start();
+        FOC_Start();
         FOC_EnableDrivers(0);
     }
 }
@@ -634,26 +644,129 @@ float FOC_GetDt(void) {
     return g_foc.dt;
 }
 
-void playTune(void) {
-    uint32_t cycle_tick = g_foc.status.run_counter % BEEP_PERIOD_TICKS;
-    uint32_t b1_end = BEEP_DURATION_TICKS;
-    uint32_t b2_start = BEEP_DURATION_TICKS * 2;
-    uint32_t b2_end = BEEP_DURATION_TICKS * 3;
+/*===========================================================================*/
+/* Power-On Beep                                */
+/*===========================================================================*/
+static void FOC_Beep_Finish(void) {
+    FOC_EnableDrivers(0);
+    g_foc.data.duty_a = 0.5f;
+    g_foc.data.duty_b = 0.5f;
+    g_foc.data.duty_c = 0.5f;
+    g_foc.data.Vd = 0.0f;
+    g_foc.data.Vq = 0.0f;
+    g_foc.status.beep_seg = 0;
+    g_foc.status.beep_tick = 0;
+    g_foc.status.state = FOC_STATE_IDLE;
+}
 
-    if ((cycle_tick < b1_end) || (cycle_tick >= b2_start && cycle_tick < b2_end)) {
-        static float tune_phase = 0.0f;
-        tune_phase += BEEP_STEP_FREQ;
-        if (tune_phase >= 1.0f) tune_phase -= 2.0f;
+void FOC_StateBeep(void) {
+    g_foc.status.beep_tick++;
+    g_foc.status.beep_total++;
+
+    float dt = g_foc.dt;
+
+    if (g_foc.status.beep_total > (uint32_t)(BEEP_MAX_TOTAL_MS * 0.001f / dt)) {
+        FOC_Beep_Finish();
+        return;
+    }
+
+    uint8_t seg = g_foc.status.beep_seg;
+
+    /* Segment duration in ISR ticks */
+    float seg_ms;
+    switch (seg) {
+        case 0u:
+        case 2u:
+        case 4u:
+            seg_ms = BEEP_SHORT_MS;
+            break;
+        case 1u:
+        case 3u:
+            seg_ms = BEEP_GAP_MS;
+            break;
+        case 5u:
+            seg_ms = BEEP_PAUSE_MS;
+            break;
+        case 6u:
+            seg_ms = BEEP_LONG_MS;
+            break;
+        default:
+            FOC_Beep_Finish();
+            return;
+    }
+
+    if (g_foc.status.beep_tick > (uint32_t)(seg_ms * 0.001f / dt)) {
+        if (seg == 6u) {
+            FOC_Beep_Finish();
+            return;
+        }
+        g_foc.status.beep_seg = (uint8_t)(seg + 1u);
+        g_foc.status.beep_tick = 0;
+        seg++;
+        s_beep_phase = 0.0f;
+    }
+
+    float beep_freq_hz = 0.0f;
+    switch (seg) {
+        case 0u:
+            beep_freq_hz = BEEP_FREQ_TONE1_HZ;
+            break;
+        case 2u:
+            beep_freq_hz = BEEP_FREQ_TONE2_HZ;
+            break;
+        case 4u:
+            beep_freq_hz = BEEP_FREQ_TONE3_HZ;
+            break;
+        case 6u:
+            beep_freq_hz = BEEP_FREQ_READY_HZ;
+            break;
+        default:
+            beep_freq_hz = 0.0f;
+            break;
+    }
+
+    if (beep_freq_hz > 0.0f) {
+        s_beep_phase += beep_freq_hz * 2.0f * dt;
+        if (s_beep_phase >= 1.0f) {
+            s_beep_phase -= 2.0f;
+        }
 
         float cos_out, sin_out;
-        cordic_sincos(tune_phase, &cos_out, &sin_out);
-
-        g_foc.data.duty_a = 0.5f + sin_out * 0.05f;
-        g_foc.data.duty_b = 0.5f - sin_out * 0.05f;
-        g_foc.data.duty_c = 0.5f;
+        cordic_sincos(s_beep_phase, &cos_out, &sin_out);
+        g_foc.data.Vd = BEEP_V_AMP * sin_out;
+        g_foc.data.Vq = 0.0f;
+        svpwm_calculate(0.0f);
     } else {
+        s_beep_phase = 0.0f;
+        g_foc.data.Vd = 0.0f;
+        g_foc.data.Vq = 0.0f;
         g_foc.data.duty_a = 0.5f;
         g_foc.data.duty_b = 0.5f;
         g_foc.data.duty_c = 0.5f;
     }
+}
+
+void FOC_PlayBeep(void) {
+#if BEEP_ENABLE
+    if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP) {
+        return;
+    }
+    if (g_foc.status.fault != FOC_FAULT_NONE) {
+        return;
+    }
+
+    s_beep_phase = 0.0f;
+    g_foc.status.beep_seg = 0;
+    g_foc.status.beep_tick = 0;
+    g_foc.status.beep_total = 0;
+    g_foc.status.state = FOC_STATE_BEEP;
+
+    g_foc.data.Vd = 0.0f;
+    g_foc.data.Vq = 0.0f;
+    g_foc.data.duty_a = 0.5f;
+    g_foc.data.duty_b = 0.5f;
+    g_foc.data.duty_c = 0.5f;
+    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
+    FOC_EnableDrivers(1);
+#endif
 }

@@ -352,35 +352,6 @@ class ParamEditor(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to compute PI gains: {e}")
 
-
-    def _compute_alpha(self):
-        try:
-            bw_spin = self._spinboxes.get(protocol.ParamId.BW_CUR)
-            alpha_spin = self._spinboxes.get(protocol.ParamId.DQ_FILT_A)
-
-            if bw_spin is None or alpha_spin is None:
-                raise ValueError("Current BW or LPF Alpha fields are not available.")
-
-            bw_rad = bw_spin.value()
-            mult = self.spin_alpha_mult.value()
-            
-            # Formula: Alpha = (BW_CUR * Multiplier) * Ts
-            ts = 1.0 / 48000.0
-            alpha = (bw_rad * mult) * ts
-
-            # Clamp to safe range [0.001, 1.0]
-            alpha = max(0.001, min(1.0, alpha))
-
-            alpha_spin.setValue(alpha)
-            self._serial.send(protocol.build_set(protocol.ParamId.DQ_FILT_A, alpha))
-            
-            QMessageBox.information(self, "Success", 
-                                  f"DQ Filter Alpha computed and sent!\n"
-                                  f"Formula: ({bw_rad:.1f} * {mult:.1f}) * {ts:.6f} = {alpha:.5f}")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to compute Alpha: {e}")
-
     def _measure_rl(self):
         pwm_freq = protocol.get_pwm_frequency()
         if abs(pwm_freq - 48000.0) > 1.0:

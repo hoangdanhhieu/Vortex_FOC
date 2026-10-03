@@ -70,6 +70,15 @@ void MotorID_Start(void);
 void MotorID_Stop(void);
 
 /**
+ * @brief Check if Motor ID sequence is currently active
+ */
+static inline uint8_t MotorID_IsRunning(void) {
+    return (id_result.state != MOTOR_ID_STATE_IDLE &&
+            id_result.state != MOTOR_ID_STATE_COMPLETE &&
+            id_result.state != MOTOR_ID_STATE_ERROR);
+}
+
+/**
  * @brief Initiate Offline Flux Measurement (Hand Spin)
  */
 void MotorID_MeasureFluxOffline(void);

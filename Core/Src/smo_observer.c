@@ -14,7 +14,6 @@
 #include "foc.h"
 #include "foc_config.h"
 #include "foc_state_machine.h"
-#include "motor_params.h"
 
 static float omega_stf_alpha;
 static float omega_out_alpha;
@@ -66,32 +65,11 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->max_comp_norm = 0.02778f; /* +/- 5 degrees normalized */
     smo->enable_harmonic_comp = 0;
 
-    /* Cache motor parameters */
-    smo->Rs = MOTOR_RS;
-    smo->Ls = MOTOR_LS;
-    smo->psi = MOTOR_FLUX_LINKAGE;
-    smo->Ls_inv = 1.0f / MOTOR_LS;
-    smo->sat_alpha = MOTOR_ALPHA;
-
-    /* Sample time */
-    smo->dt = (g_foc.dt > 0.0f) ? g_foc.dt : CONTROL_PERIOD;
-
-    /* Pre-calculated current observer time constant and coefficients */
-    smo->dt_over_Ls = smo->dt * smo->Ls_inv;
-    smo->denom_inv = 1.0f / (1.0f + smo->Rs * smo->dt_over_Ls);
     smo->I_mag = 0.0f;
     smo->l_ratio = 1.0f;
-
-    smo->dt_over_pi = smo->dt * (1.0f / PI);
-    smo->gamma_6th_dt = smo->gamma_6th * smo->dt;
-    smo->pll_ki_dt = smo->pll_ki * smo->dt;
-
-    float f_bw_min = clampf(0.5f * (smo->Rs * smo->Ls_inv * (1.0f / TWO_PI)), 20.0f, 200.0f);
-    smo->wc_base = TWO_PI * f_bw_min;
-
-    omega_stf_alpha = (OMEGA_STF_CUTOFF * smo->dt);
-    omega_out_alpha = (OMEGA_OUT_CUTOFF * smo->dt);
-    dt_over_pi = smo->dt_over_pi;
+    smo->current_err_sq = 0.0f;
+    smo->theta_err = 0.0f;
+    smo->bemf_mag = 0.0f;
 }
 
 void SMO_Reset(SMO_Observer_t* smo) {
@@ -256,13 +234,14 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha
     smo->Rs = Rs;
     smo->Ls = Ls;
     smo->psi = flux_linkage;
-    smo->Ls_inv = 1.0f / Ls;
+    smo->Ls_inv = (Ls > 1e-7f) ? (1.0f / Ls) : 0.0f;
     smo->sat_alpha = (sat_alpha >= 0.0f) ? sat_alpha : 0.0f;
     smo->poles = poles;
 
     /* Dynamically calculate PLL integral limits (max electrical speed rad/s) */
-    smo->pll_int_max = max_speed_elec_rad;
-    smo->pll_int_min = -max_speed_elec_rad;
+    float max_spd = (max_speed_elec_rad > 100.0f) ? max_speed_elec_rad : 5000.0f;
+    smo->pll_int_max = max_spd;
+    smo->pll_int_min = -max_spd;
 
     /* Update Euler coefficients */
     smo->dt_over_Ls = smo->dt * smo->Ls_inv;

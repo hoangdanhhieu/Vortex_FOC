@@ -9,7 +9,6 @@ from core.protocol import ParamId
 SPEED_RPM_PIDS = {
     ParamId.M_MAX_SPD,
     ParamId.HANDOFF,
-    ParamId.STALL_SPD,
     ParamId.IN_MIN_SPD,
 }
 
@@ -68,9 +67,7 @@ PARAM_DEFS = [
     (ParamId.OC_THR,   "OC Threshold*",  "A",     "Safety",      0, 100, 0.1,  False),
     (ParamId.OV_THR,   "OV Threshold*",  "V",     "Safety",      0, 100, 0.1, False),
     (ParamId.UV_THR,   "UV Threshold*",  "V",     "Safety",      0, 100, 0.1, False),
-    (ParamId.STALL_SPD,"Stall Speed*",   "RPM",   "Safety",      0, 10000, 10,  False),
-    (ParamId.STALL_I,  "Stall Current*", "A",     "Safety",      0, 100, 0.1,  False),
-    (ParamId.STALL_MS, "Stall Time*",    "ms",    "Safety",      0, 10000, 10, False),
+    (ParamId.STALL_EN, "Stall Detect*",  "on/off", "Safety",      0, 1, 1,      False),
     # Input
     (ParamId.IN_SOURCE,   "Input Source*", "",      "Input",       0, 2,     1,    False),
     (ParamId.IN_MODE,     "Control Mode*", "",      "Input",       0, 2,     1,    False),
@@ -85,6 +82,7 @@ PARAM_DEFS = [
 # Parameters that should be rendered as dropdown choice boxes instead of spinboxes
 # Mapping: ParamId -> list of option labels (index corresponds to float value) or list of (label, float_val)
 CHOICE_PARAMS = {
+    ParamId.STALL_EN: ["0: Disabled", "1: Enabled"],
     ParamId.IN_SOURCE: ["0: Disabled", "1: Potentiometer (PC4)", "2: Custom Driver"],
     ParamId.IN_MODE: ["0: Speed (RPM)", "1: Torque (Current)", "2: Voltage (Duty %)"],
     ParamId.PWM_FREQ: [

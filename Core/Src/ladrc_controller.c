@@ -28,7 +28,7 @@ void LADRC_SetGains(LADRC_Controller_t* ctrl, float omega_c, float omega_o, floa
     } else {
         ctrl->b0 = LADRC_B0_DEFAULT;
     }
-    ctrl->b0_inv = 1.0f / ctrl->b0;
+    ctrl->b0_inv = (fabsf(ctrl->b0) > 1e-4f) ? (1.0f / ctrl->b0) : 0.0f;
 
     ctrl->beta1 = 2.0f * ctrl->omega_o;
     ctrl->beta2 = ctrl->omega_o * ctrl->omega_o;

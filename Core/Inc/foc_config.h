@@ -6,8 +6,6 @@
 #ifndef FOC_CONFIG_H
 #define FOC_CONFIG_H
 
-#include "motor_params.h"
-
 /* Place function in CCM SRAM for zero wait-state execution */
 #define CCMRAM_FUNC __attribute__((section(".ccmram")))
 
@@ -26,8 +24,6 @@
 #define SQRT3 1.7320508075688772f
 #define SQRT2 1.4142135623730951f
 #define SQRT3_INV 0.5773502691896257f
-#define TWO_THIRDS 0.6666666666666666f
-#define ONE_THIRD 0.3333333333333333f
 
 /**
  * @brief Fast float clamp helper to range [min_val, max_val]
@@ -48,18 +44,6 @@ CCMRAM_FUNC static inline float saturatef(float val, float max_val) {
 }
 
 extern volatile float ADC_Vref;
-/*===========================================================================*/
-/* Feature Toggles                                                           */
-/*===========================================================================*/
-
-/** Enable field weakening (set to 1 to enable) */
-#define ENABLE_FIELD_WEAKENING 0
-
-#define LOG_MODE_NONE 0
-#define LOG_MODE_UART 1
-#define LOG_MODE_SWO 2
-#define LOG_MODE_USB 3
-#define LOG_OUTPUT_MODE LOG_MODE_USB
 
 /*===========================================================================*/
 /* System Clock and PWM Configuration                                        */
@@ -76,13 +60,6 @@ extern volatile float ADC_Vref;
 
 /** Control loop period [s] */
 #define CONTROL_PERIOD (1.0f / (float)CONTROL_FREQUENCY)
-#define CONTROL_PERIOD_F CONTROL_PERIOD
-
-/** TIM1 Auto-reload value */
-#define TIM1_ARR 1770
-
-/** TIM1 counter max */
-#define TIM1_COUNTER_MAX TIM1_ARR
 
 /** Dead-time duration in nanoseconds */
 #define DEAD_TIME_NS 400.0f
@@ -93,8 +70,6 @@ extern volatile float ADC_Vref;
                : ((ns) <= 5929.0f) ? (0xE0 | ((uint32_t)((ns) * 170.0f / 16000.0f + 0.5f) - 32)) \
                                    : 0xFF))
 #define TIM1_DEADTIME_TICKS DEADTIME_NS_TO_TICKS(DEAD_TIME_NS)
-
-#define DEAD_TIME_DUTY (DEAD_TIME_NS * 1e-9f * (float)PWM_FREQUENCY)
 
 /*===========================================================================*/
 /* ADC Trigger Timing → MAX_DUTY derivation                                  */
@@ -108,7 +83,7 @@ extern volatile float ADC_Vref;
 #define ADC_CLK_HZ ((float)SYSCLK_FREQ / (float)ADC_PRESCALER) /* 42.5 MHz */
 
 /** ADC cycles per channel: sampling + 12.5 conversion cycles (12-bit) */
-#define ADC_SAMPLE_CYCLES 24.5f
+#define ADC_SAMPLE_CYCLES 6.5f
 #define ADC_CONV_CYCLES 12.5f
 #define ADC_CYCLES_PER_CH (ADC_SAMPLE_CYCLES + ADC_CONV_CYCLES)
 
@@ -126,7 +101,7 @@ extern volatile float ADC_Vref;
 #define ADC_TICKS ((uint32_t)(ADC_TOTAL_TIME_S * (float)SYSCLK_FREQ + 0.5f))
 
 /** Safety margin [ticks] for ringing / settling / propagation */
-#define ADC_MARGIN_DEFAULT 10.0f
+#define ADC_MARGIN_DEFAULT 1.0f
 
 #define MAX_DUTY_HIGH 0.95
 
@@ -145,9 +120,6 @@ extern volatile float ADC_Vref;
 
 /** ADC resolution (12-bit) */
 #define ADC_RESOLUTION 4096
-
-/** Current offset (bias point) at 0A [ADC counts] ~= Vref/2 */
-#define ADC_CURRENT_OFFSET 0
 
 /** Current conversion factor: I = (ADC - offset) * factor */
 /** factor = Vref / (ADC_res * Gain * R_shunt) */
@@ -181,11 +153,11 @@ extern volatile float ADC_Vref;
 /* Speed Ramp Configuration                                                  */
 /*===========================================================================*/
 
-/** Maximum acceleration rate [rad/s^2 elec] (equivalent to 20000 RPM/s mech @ 7PP) */
-#define SPEED_RAMP_ACCEL ((20000.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
+/** Maximum acceleration rate [rad/s^2 elec] */
+#define SPEED_RAMP_ACCEL 15000.0f
 
 /** Maximum deceleration rate [rad/s^2 elec] (positive value) */
-#define SPEED_RAMP_DECEL ((20000.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
+#define SPEED_RAMP_DECEL 15000.0f
 
 /** Current reference ramp rate [A/s] */
 #define CURRENT_RAMP_RATE 50.0f
@@ -203,24 +175,25 @@ extern volatile float ADC_Vref;
 /** Voltage mode regenerative braking current limit [A] */
 #define VOLTAGE_MODE_REGEN_CURRENT_MAX 1.5f
 
-/** Current PI controller gains (Kp = Ls * BW, Ki = Rs * BW) */
-#define PI_ID_KP (MOTOR_LS * CURRENT_LOOP_BW)
-#define PI_ID_KI (MOTOR_RS * CURRENT_LOOP_BW)
-#define PI_IQ_KP PI_ID_KP
-#define PI_IQ_KI PI_ID_KI
+/** Current PI controller default gains (0.0f = unconfigured, loaded from FlashConfig/GUI) */
+#define PI_ID_KP 0.0f
+#define PI_ID_KI 0.0f
+#define PI_IQ_KP 0.0f
+#define PI_IQ_KI 0.0f
 
-/** Speed PI controller gains */
-#define PI_SPEED_KP 0.0008f
-#define PI_SPEED_KI 0.002f
-
-/** Speed PI output limits [A] (Iq reference) */
-#define PI_SPEED_OUT_MAX MOTOR_CONT_CURRENT
+/** Speed loop output limits [A] (0.0f = unconfigured, set dynamically by FlashConfig) */
+#define SPEED_LOOP_OUT_MAX 0.0f
 /* Limit regenerative braking to -1.0A to prevent Overvoltage trips on power supplies */
-#define PI_SPEED_OUT_MIN (-1.0f)
+#define SPEED_LOOP_OUT_MIN (-1.0f)
 
-/** Speed PI integral limits [A] - smaller than output to reduce overshoot */
-#define PI_SPEED_INT_MAX (PI_SPEED_OUT_MAX * 0.5f) /* 50% of output max */
-#define PI_SPEED_INT_MIN (-PI_SPEED_INT_MAX)
+/** Default LADRC Controller Bandwidth [rad/s] */
+#define LADRC_OMEGA_C_DEFAULT 35.0f
+
+/** Default LADRC Observer Bandwidth [rad/s] */
+#define LADRC_OMEGA_O_DEFAULT 120.0f
+
+/** Default LADRC Control Gain b0 (0.0f = unconfigured, calculated after Motor ID) */
+#define LADRC_B0_DEFAULT 0.0f
 
 /*===========================================================================*/
 /* SMO Observer Configuration                                                */
@@ -235,10 +208,9 @@ extern volatile float ADC_Vref;
 /** SMO PLL bandwidth Hz */
 #define SMO_PPL_CUTOFF 500.0f
 
-/** SMO PLL integral limits [rad/s] - based on max expected electrical speed */
-/** Max mech RPM * pole_pairs * 2*PI/60 = max electrical rad/s */
-#define SMO_PLL_INT_MAX (MOTOR_MAX_SPEED_RPM * (TWO_PI / 60.0f) * (float)MOTOR_POLE_PAIRS)
-#define SMO_PLL_INT_MIN (-SMO_PLL_INT_MAX)
+/** SMO PLL integral limits [rad/s elec] - ceiling electrical speed clamp */
+#define SMO_PLL_INT_MAX 25000.0f
+#define SMO_PLL_INT_MIN (-25000.0f)
 
 #define COMP_DELAY_SAMPLES 0.0f
 
@@ -248,7 +220,7 @@ extern volatile float ADC_Vref;
 /** ADC channel switching hysteresis (duty difference threshold to prevent jitter) */
 #define SKIP_HYSTERESIS 0.03f
 
-#define OMEGA_STF_CUTOFF 500.0f * TWO_PI
+#define OMEGA_STF_CUTOFF 800.0f * TWO_PI
 #define OMEGA_OUT_CUTOFF 300.0f * TWO_PI
 
 /*===========================================================================*/
@@ -269,16 +241,11 @@ extern volatile float ADC_Vref;
 #define HANDOFF_LOCK_SAMPLES \
     ((uint32_t)(HANDOFF_LOCK_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY))
 
-/** Open-loop startup voltage [V] */
-#define STARTUP_VOLTAGE_MIN 0.5f
-#define STARTUP_VOLTAGE_MAX 1.0f
+/** Startup acceleration [rad/s^2 elec] */
+#define STARTUP_ACCEL 350.0f
 
-/** Startup acceleration [rad/s^2 elec] (equivalent to 500 RPM/s mech @ 7PP) */
-#define STARTUP_ACCEL ((500.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
-
-/** Minimum speed before switching to closed-loop [rad/s elec] (equivalent to 1000 RPM mech @ 7PP)
- */
-#define STARTUP_HANDOFF_SPEED ((1000.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
+/** Minimum speed before switching to closed-loop [rad/s elec] */
+#define STARTUP_HANDOFF_SPEED 750.0f
 
 /** Transition blend duration from open-loop to closed-loop [ms] */
 #define TRANSITION_BLEND_MS 20.0f
@@ -291,8 +258,12 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 
 /*--- Overcurrent protection ---*/
-/** Software overcurrent threshold [A]**/
-#define FAULT_OVERCURRENT_THRESHOLD 10.0f
+/** Overcurrent trip threshold [A].
+ *  0.0f = AUTO: resolved at runtime to 1.25 x motor_max_curr
+ *  (see FOC_GetOCThreshold()). Any positive value is used exactly as-is and
+ *  may intentionally be set below motor_max_curr (test mode: current
+ *  commands above the threshold will trip FAULT_OVERCURRENT). */
+#define FAULT_OVERCURRENT_THRESHOLD 0.0f
 
 /** Overcurrent deglitch: require N consecutive samples above threshold
  *  to avoid false trips from ADC noise. 1 = instant trip. */
@@ -309,18 +280,12 @@ extern volatile float ADC_Vref;
 /** Enable stall detection (0 = disable) */
 #define FAULT_STALL_ENABLE 1
 
-/** Stall is detected when |speed| < SPEED_THRESHOLD AND |Iq| > CURRENT_THRESHOLD
- *  persists for longer than TIME_MS. */
-#define FAULT_STALL_SPEED_RPM ((700.0f / 60.0f) * TWO_PI * (float)MOTOR_POLE_PAIRS)
-#define FAULT_STALL_CURRENT_A 35.0f
-#define FAULT_STALL_TIME_MS 100
-
-/*--- Stop ramp-down ---*/
-/** Maximum time for controlled stop ramp-down before forced shutdown [ms] */
-#define STOP_TIMEOUT_MS 3000
-
-/** Current threshold as percentage of motor max current */
-#define STOP_CURRENT_PERCENT 2.0f
+/** The stall detector is a 4-layer auto-scaled system (see FOC_Safety in
+ *  foc_slow_task.c): a leaky risk accumulator driven by the electromechanical
+ *  power conversion ratio (eta_em), vector desynchronization (d_desync),
+ *  back-EMF residual (r_bemf) and a high stall-current condition (auto
+ *  0.2 x motor_max_curr, min 0.8 A). All thresholds scale with motor_max_curr,
+ *  Vbus and the startup handoff speed. */
 
 /*===========================================================================*/
 /* Debug/Safety Configuration                                                */
@@ -333,9 +298,33 @@ extern volatile float ADC_Vref;
 /** Maximum runtime before auto-stop [ms] - set to 0 to disable */
 #define DEBUG_RUN_TIMEOUT_MS 0
 
-#define BEEP_PERIOD_TICKS (2 * CONTROL_FREQUENCY)
-#define BEEP_DURATION_TICKS (CONTROL_FREQUENCY / 16)
-#define BEEP_STEP_FREQ 4500.0f * CONTROL_PERIOD
+/*===========================================================================*/
+/* Power-On Beep (ESC-style)                                                 */
+/*===========================================================================*/
+
+/** Enable the power-on beep sequence (0 = disabled: no beep at boot) */
+#define BEEP_ENABLE 1
+
+/** Beep tone frequencies [Hz] (ESC-style rising chime: 3 ascending tones + ready chime) */
+#define BEEP_FREQ_TONE1_HZ 1480.0f /**< Tone 1 (low: ~D6/F#6) */
+#define BEEP_FREQ_TONE2_HZ 1980.0f /**< Tone 2 (mid: ~B6) */
+#define BEEP_FREQ_TONE3_HZ 2640.0f /**< Tone 3 (high: ~E7) */
+#define BEEP_FREQ_READY_HZ 3520.0f /**< Tone 4 (final ready chime: ~A7) */
+
+/** Beep excitation amplitude: peak d-axis voltage [V], open-loop (no current loop).
+ *  The resulting peak phase current is
+ *  I_pk ~= 1.5*V_AMP / (2*sqrt(Rs^2 + (2*pi*f*Ls)^2))
+ *  ~= 0.5..2 A across the project motor set at 0.5 V / 1.5..3.5 kHz. */
+#define BEEP_V_AMP 0.5f
+
+/** Beep pattern timing [ms] (ESC-style: 3 ascending beeps, pause, 1 long ready beep) */
+#define BEEP_SHORT_MS 100.0f /**< Duration of each short beep */
+#define BEEP_GAP_MS 100.0f   /**< Gap between the short beeps */
+#define BEEP_PAUSE_MS 250.0f /**< Pause before the final long beep */
+#define BEEP_LONG_MS 400.0f  /**< Duration of the final "ready" beep */
+
+/** Hard safety timeout for the whole beep sequence [ms] */
+#define BEEP_MAX_TOTAL_MS 5000.0f
 
 /*===========================================================================*/
 /* Motor ID Configuration — Dual-LPF & Smart Auto-Resolution                */
@@ -385,9 +374,7 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 #define INPUT_SOURCE_DEFAULT 1.0f /**< Default hardware: 0=NONE, 1=POT, 2=CUSTOM */
 #define INPUT_MODE_DEFAULT 2.0f   /**< Default input control mode: 0=SPEED, 1=TORQUE, 2=VOLTAGE */
-#define INPUT_MIN_SPEED_DEFAULT  \
-    ((800.0f / 60.0f) * TWO_PI * \
-     (float)MOTOR_POLE_PAIRS)          /**< Minimum speed for throttle setpoint [rad/s elec] */
+#define INPUT_MIN_SPEED_DEFAULT 600.0f /**< Minimum speed for throttle setpoint [rad/s elec] */
 #define INPUT_MIN_CURRENT_DEFAULT 0.5f /**< Minimum current for throttle setpoint [A] */
 #define INPUT_MIN_VQ_DEFAULT 0.05f     /**< Minimum voltage ratio [0.0 to 1.0] */
 #define INPUT_DEADBAND_DEFAULT 0.05f   /**< Throttle deadband ratio [0.0 to 1.0] */

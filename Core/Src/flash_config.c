@@ -148,8 +148,12 @@ void FlashConfig_Apply(void) {
     g_foc.dt = 1.0f / g_foc.cfg.pwm_frequency;
     g_foc.deadtime_duty = DEAD_TIME_NS * 1e-9f * g_foc.cfg.pwm_frequency;
 
-    float f_bw = (g_foc.cfg.kp_iq / g_foc.cfg.motor_ls) * (1.0f / TWO_PI);
-    g_foc.wc_current_stf = TWO_PI * clampf(3.0f * f_bw, 1000.0f, 4000.0f);
+    if (g_foc.cfg.motor_ls > 1e-7f) {
+        float f_bw = (g_foc.cfg.kp_iq / g_foc.cfg.motor_ls) * (1.0f / TWO_PI);
+        g_foc.wc_current_stf = TWO_PI * clampf(3.0f * f_bw, 1000.0f, 4000.0f);
+    } else {
+        g_foc.wc_current_stf = TWO_PI * 1500.0f;
+    }
 
     FOC_SetDirection(g_foc.cfg.direction);
 

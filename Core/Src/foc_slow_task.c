@@ -7,8 +7,6 @@
 
 #include <math.h>
 
-#include "comm_protocol.h"
-#include "cordic_math.h"
 #include "foc_config.h"
 #include "foc_input.h"
 #include "foc_state_machine.h"
@@ -16,22 +14,24 @@
 #include "motor_id.h"
 #include "peripheral_init.h"
 
-static uint32_t stall_counter = 0;       /* Stall timer (ticks) */
-static uint32_t ground_fault_count = 0;  /* Ground fault deglitch counter */
 static uint32_t current_sat_counter = 0; /* Sustained current saturation overload timer */
+static uint32_t ov_count = 0;            /* OV debounce counter (1 ms ticks) */
+static uint32_t uv_count = 0;            /* UV debounce counter (1 ms ticks) */
+static uint32_t overspeed_count = 0;     /* Overspeed/NaN debounce counter (1 ms ticks) */
 
 /* Multi-layer stall detector filter states */
 static float s_p_em_flt = 0.0f;         /* Filtered electromechanical power [W] */
 static float s_s_app_flt = 0.0f;        /* Filtered apparent power [VA] */
 static float s_stall_risk_accum = 0.0f; /* Leaky stall risk accumulator [0.0 to 1.0] */
+static float s_omega_prev = 0.0f;       /* Previous electrical speed (stall dynamics gate) */
 
 extern volatile float ADC_Vref;
 
 void FOC_ResetStallDetector(void) {
-    stall_counter = 0;
     s_p_em_flt = 0.0f;
     s_s_app_flt = 0.0f;
     s_stall_risk_accum = 0.0f;
+    s_omega_prev = 0.0f;
     g_foc.data.stall_risk = 0.0f;
     g_foc.data.eta_em = 1.0f;
     g_foc.data.d_desync = 0.0f;
@@ -39,17 +39,36 @@ void FOC_ResetStallDetector(void) {
 }
 
 void FOC_Safety() {
-    /* Software OV/UV protection (replaces hardware AWD2) */
-    if (g_foc.status.state == FOC_STATE_RUN || g_foc.status.state == FOC_STATE_STARTUP) {
+    /* Software OV/UV protection (replaces hardware AWD2).
+     * 10 ms debounce: the 16 Hz Vbus IIR already smooths single-sample
+     * glitches; the window rejects load-sag / connector transients.
+     * BRAKE/ALIGN included: regenerative braking is where OV actually
+     * happens. */
+    if (g_foc.status.state == FOC_STATE_RUN || g_foc.status.state == FOC_STATE_STARTUP ||
+        g_foc.status.state == FOC_STATE_BRAKE || g_foc.status.state == FOC_STATE_ALIGN) {
         if (g_foc.data.Vbus > g_foc.cfg.fault_ov_threshold) {
-            FOC_EnableDrivers(0);
-            g_foc.status.fault = FOC_FAULT_OVERVOLTAGE;
-            g_foc.status.state = FOC_STATE_FAULT;
-        } else if (g_foc.data.Vbus < g_foc.cfg.fault_uv_threshold) {
-            FOC_EnableDrivers(0);
-            g_foc.status.fault = FOC_FAULT_UNDERVOLTAGE;
-            g_foc.status.state = FOC_STATE_FAULT;
+            if (ov_count < 10) ov_count++;
+            if (ov_count >= 10) {
+                FOC_EnableDrivers(0);
+                g_foc.status.fault = FOC_FAULT_OVERVOLTAGE;
+                g_foc.status.state = FOC_STATE_FAULT;
+            }
+        } else if (ov_count > 0) {
+            ov_count--;
         }
+        if (g_foc.data.Vbus < g_foc.cfg.fault_uv_threshold) {
+            if (uv_count < 10) uv_count++;
+            if (uv_count >= 10) {
+                FOC_EnableDrivers(0);
+                g_foc.status.fault = FOC_FAULT_UNDERVOLTAGE;
+                g_foc.status.state = FOC_STATE_FAULT;
+            }
+        } else if (uv_count > 0) {
+            uv_count--;
+        }
+    } else {
+        ov_count = 0;
+        uv_count = 0;
     }
 
     /* Motor Identification 1kHz Slow Task */
@@ -58,33 +77,28 @@ void FOC_Safety() {
     }
 
     if (g_foc.status.state == FOC_STATE_RUN) {
-        /* 1. Ground fault protection */
-        if (g_foc.data.duty_a < 0.85f && g_foc.data.duty_b < 0.85f && g_foc.data.duty_c < 0.85f &&
-            g_foc.data.duty_a > 0.15f && g_foc.data.duty_b > 0.15f && g_foc.data.duty_c > 0.15f) {
-            float current_sum = g_foc.data.Ia + g_foc.data.Ib + g_foc.data.Ic;
-            float gf_threshold = 0.40f * g_foc.cfg.motor_max_curr;
-            if (gf_threshold < 1.0f) gf_threshold = 1.0f;
+        /* 1. Ground fault protection: intentionally NOT implemented.
+         * With 2-shunt sensing the third phase is reconstructed as
+         * Ic = -(Ia + Ib), so (Ia + Ib + Ic) is identically zero and a
+         * sum-of-phases check can never fire; a real ground-fault current
+         * also bypasses the phase shunts. (Layer removed, kept as a note
+         * for protection-inventory traceability.) */
 
-            if (fabsf(current_sum) > gf_threshold) {
-                if (++ground_fault_count >= 2) {
+        /* 2. Observer Integrity & Overspeed Protection (NaN/Inf + 5 ms debounce) */
+        {
+            float omega_abs = fabsf(g_foc.data.omega_elec);
+            if (!isfinite(omega_abs) ||
+                (g_foc.cfg.motor_max_spd > 0.0f && omega_abs > g_foc.cfg.motor_max_spd * 1.25f)) {
+                if (overspeed_count < 5) overspeed_count++;
+                if (overspeed_count >= 5) {
                     FOC_EnableDrivers(0);
-                    g_foc.status.fault = FOC_FAULT_GROUND;
+                    g_foc.status.fault = FOC_FAULT_OBSERVER_FAIL;
                     g_foc.status.state = FOC_STATE_FAULT;
                     return;
                 }
-            } else {
-                if (ground_fault_count > 0) ground_fault_count--;
+            } else if (overspeed_count > 0) {
+                overspeed_count--;
             }
-        } else {
-            if (ground_fault_count > 0) ground_fault_count--;
-        }
-
-        /* 2. Observer Integrity & Overspeed Protection (Layer 2) */
-        if (fabsf(g_foc.data.omega_elec) > g_foc.cfg.motor_max_spd * 1.25f) {
-            FOC_EnableDrivers(0);
-            g_foc.status.fault = FOC_FAULT_OBSERVER_FAIL;
-            g_foc.status.state = FOC_STATE_FAULT;
-            return;
         }
 
         /* 3. Advanced 4-Layer Stall & Desynchronization Protection */
@@ -101,10 +115,6 @@ void FOC_Safety() {
 
             float i_stall_thr = 0.20f * i_max;
             if (i_stall_thr < 0.80f) i_stall_thr = 0.80f;
-            if (g_foc.cfg.fault_stall_current >= 0.5f &&
-                g_foc.cfg.fault_stall_current < i_stall_thr) {
-                i_stall_thr = g_foc.cfg.fault_stall_current;
-            }
 
             float s_floor = 0.03f * v_bus * i_max;
             float e_floor = 0.35f * (omega_stall_min_elec * flux);
@@ -209,8 +219,6 @@ void FOC_Safety() {
             if (current_sat_counter > 0) current_sat_counter--;
         }
     } else {
-        ground_fault_count = 0;
-        stall_counter = 0;
         current_sat_counter = 0;
         FOC_ResetStallDetector();
     }
@@ -233,7 +241,10 @@ void FOC_SlowTask(void) {
         g_foc.data.Vbus_inv = 1.0f / g_foc.data.Vbus;
 
         float i_th_noise = g_foc.noise_profile.noise_pk_pk * 1.5f;
-        float i_th_ripple = g_foc.data.Vbus / (4.0f * g_foc.cfg.pwm_frequency * g_foc.cfg.motor_ls);
+        float i_th_ripple = 0.0f;
+        if (g_foc.cfg.motor_ls > 1e-7f) {
+            i_th_ripple = g_foc.data.Vbus / (4.0f * g_foc.cfg.pwm_frequency * g_foc.cfg.motor_ls);
+        }
         float i_th_min = g_foc.cfg.motor_max_curr * 0.03f;
         float i_th = i_th_noise;
         if (i_th_ripple > i_th) i_th = i_th_ripple;

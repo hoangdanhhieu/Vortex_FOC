@@ -119,8 +119,35 @@ void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t 
 }
 
 void FOC_ConfigureAWD(void) {
-    if (g_foc.adc_cal.offset_a < 200 || g_foc.adc_cal.offset_b < 200 ||
-        g_foc.adc_cal.offset_c_pb1 < 200 || g_foc.adc_cal.offset_c_opamp3 < 200) {
+    float vref = ADC_Vref;
+    if (vref < 1.0f) vref = 3.3f;
+
+    // 1. Resolve the overcurrent threshold in LSB counts
+    //    (0 = auto 1.25 x Imax; positive = exact value, may be < Imax for tests)
+    const float gain = ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE;
+    float current_to_adc = gain / vref;
+    int32_t adc_step = (int32_t)(FOC_GetOCThreshold() * current_to_adc + 0.5f);
+
+    int32_t hw_max_ac = g_foc.adc_cal.offset_a;
+    int32_t headroom = 4095 - g_foc.adc_cal.offset_a;
+    if (headroom < hw_max_ac) hw_max_ac = headroom;
+
+    int32_t lim_c_pb1 = g_foc.adc_cal.offset_c_pb1;
+    headroom = 4095 - g_foc.adc_cal.offset_c_pb1;
+    if (headroom < lim_c_pb1) lim_c_pb1 = headroom;
+    if (lim_c_pb1 < hw_max_ac) hw_max_ac = lim_c_pb1;
+
+    int32_t hw_max_bc = g_foc.adc_cal.offset_b;
+    headroom = 4095 - g_foc.adc_cal.offset_b;
+    if (headroom < hw_max_bc) hw_max_bc = headroom;
+    int32_t lim_c_op3 = g_foc.adc_cal.offset_c_opamp3;
+
+    headroom = 4095 - g_foc.adc_cal.offset_c_opamp3;
+    if (headroom < lim_c_op3) lim_c_op3 = headroom;
+    if (lim_c_op3 < hw_max_bc) hw_max_bc = lim_c_op3;
+
+    if (adc_step < 1 || adc_step > (int32_t)(0.95f * (float)hw_max_ac) ||
+        adc_step > (int32_t)(0.95f * (float)hw_max_bc)) {
         LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD1, 4095, 0);
         LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD2, 4095, 0);
         LL_ADC_ConfigAnalogWDThresholds(ADC2, LL_ADC_AWD1, 4095, 0);
@@ -128,34 +155,27 @@ void FOC_ConfigureAWD(void) {
         LL_ADC_DisableIT_AWD1(ADC1);
         LL_ADC_DisableIT_AWD2(ADC1);
         LL_ADC_DisableIT_AWD1(ADC2);
+        g_foc.plot.user_plot3 = 1.0f; /* AWD inactive -> SW fast-OC active */
         return;
     }
 
-    float vref = ADC_Vref;
-    if (vref < 1.0f) vref = 3.3f;
-
-    // 1. Calculate Overcurrent thresholds in LSB counts
-    const float gain = ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE;
-    float current_to_adc = gain / vref;
-    float adc_step = g_foc.cfg.fault_oc_threshold * current_to_adc;
-
     // Phase A and Phase C (ADC1 AWD1 - monitors all injected channels: VOPAMP1 and CH12)
     int32_t avg_offset_ac = (g_foc.adc_cal.offset_a + g_foc.adc_cal.offset_c_pb1) / 2;
-    int32_t high_ac = avg_offset_ac + (int32_t)adc_step;
-    int32_t low_ac = avg_offset_ac - (int32_t)adc_step;
+    int32_t high_ac = avg_offset_ac + adc_step;
+    int32_t low_ac = avg_offset_ac - adc_step;
     if (high_ac > 4095) high_ac = 4095;
     if (low_ac < 0) low_ac = 0;
 
     // Phase B and C (ADC2 AWD1 - monitors all injected channels: VOPAMP2 and VOPAMP3)
     int32_t avg_offset_bc = (g_foc.adc_cal.offset_b + g_foc.adc_cal.offset_c_opamp3) / 2;
-    int32_t high_bc = avg_offset_bc + (int32_t)adc_step;
-    int32_t low_bc = avg_offset_bc - (int32_t)adc_step;
+    int32_t high_bc = avg_offset_bc + adc_step;
+    int32_t low_bc = avg_offset_bc - adc_step;
     if (high_bc > 4095) high_bc = 4095;
     if (low_bc < 0) low_bc = 0;
 
-    // 2. Vbus protection is now handled in software (FOC_SlowTask at 1kHz)
+    // 4. Vbus protection is now handled in software (FOC_SlowTask at 1kHz)
 
-    // 3. Program hardware registers using LL driver
+    // 5. Program hardware registers using LL driver
     // ADC1: AWD1 for all Injected Channels (Phase A and Phase C via PB1)
     LL_ADC_SetAnalogWDMonitChannels(ADC1, LL_ADC_AWD1, LL_ADC_AWD_ALL_CHANNELS_INJ);
     LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD1, high_ac, low_ac);
@@ -173,6 +193,8 @@ void FOC_ConfigureAWD(void) {
     // Now safely enable the AWD interrupts
     LL_ADC_EnableIT_AWD1(ADC1);
     LL_ADC_EnableIT_AWD1(ADC2);
+
+    g_foc.plot.user_plot3 = 0.0f; /* HW AWD armed at the resolved threshold */
 }
 
 void FOC_StateCalibration(void) {
@@ -297,10 +319,12 @@ float FOC_CalculateObserverMinSpeed(void) {
     float rec_handoff_omega = 0.0f;
     if (g_foc.cfg.motor_flux > 1e-6f) {
         rec_handoff_omega = e_bemf_target / g_foc.cfg.motor_flux;
-    } else {
+    } else if (g_foc.cfg.motor_kv > 1.0f && g_foc.cfg.motor_poles >= 1.0f) {
         float flux_fallback =
             60.0f / (1.732f * g_foc.cfg.motor_kv * TWO_PI * (float)g_foc.cfg.motor_poles);
         rec_handoff_omega = (flux_fallback > 1e-6f) ? (e_bemf_target / flux_fallback) : 700.0f;
+    } else {
+        rec_handoff_omega = 700.0f;
     }
     /* 7. Safety constraints:
      * - Minimum 15 Hz electrical frequency for clean STF/PLL tracking (~94.25 rad/s elec)
@@ -309,9 +333,11 @@ float FOC_CalculateObserverMinSpeed(void) {
     if (rec_handoff_omega < min_elec_omega) {
         rec_handoff_omega = min_elec_omega;
     }
-    float max_handoff_limit = 0.25f * g_foc.cfg.motor_max_spd;
-    if (rec_handoff_omega > max_handoff_limit) {
-        rec_handoff_omega = max_handoff_limit;
+    if (g_foc.cfg.motor_max_spd > 0.0f) {
+        float max_handoff_limit = 0.25f * g_foc.cfg.motor_max_spd;
+        if (rec_handoff_omega > max_handoff_limit) {
+            rec_handoff_omega = max_handoff_limit;
+        }
     }
     return rec_handoff_omega;
 }

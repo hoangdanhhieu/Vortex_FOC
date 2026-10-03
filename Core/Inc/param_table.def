@@ -38,17 +38,17 @@ PARAM_DEF(PID_RAMP_ACC,   float,     speed_ramp_accel,     SPEED_RAMP_ACCEL)
 PARAM_DEF(PID_RAMP_DEC,   float,     speed_ramp_decel,     SPEED_RAMP_DECEL)
 PARAM_DEF(PID_I_RAMP,     float,     current_ramp_rate,    CURRENT_RAMP_RATE)
 
-/* Motor */
-PARAM_DEF(PID_M_RS,       float,     motor_rs,             MOTOR_RS)
-PARAM_DEF(PID_M_LS,       float,     motor_ls,             MOTOR_LS)
-PARAM_DEF(PID_M_KV,       float,     motor_kv,             MOTOR_KV)
-PARAM_DEF(PID_M_FLUX,     float,     motor_flux,           MOTOR_FLUX_LINKAGE)
-PARAM_DEF(PID_M_POLES,    float,     motor_poles,          (float)MOTOR_POLE_PAIRS)
-PARAM_DEF(PID_M_J,        float,     motor_inertia,        MOTOR_INERTIA)
-PARAM_DEF(PID_M_MAX_SPD,  float,     motor_max_spd,        MOTOR_MAX_SPEED_ELEC_RAD)
-PARAM_DEF(PID_M_MAX_I,    float,     motor_max_curr,       MOTOR_MAX_CURRENT)
-PARAM_DEF(PID_M_ISAT,     float,     motor_isat,           MOTOR_ISAT)
-PARAM_DEF(PID_M_ALPHA,    float,     motor_alpha,          MOTOR_ALPHA)
+/* Motor (0.0f = unconfigured, identified via Motor ID or loaded from Flash) */
+PARAM_DEF(PID_M_RS,       float,     motor_rs,             0.0f)
+PARAM_DEF(PID_M_LS,       float,     motor_ls,             0.0f)
+PARAM_DEF(PID_M_KV,       float,     motor_kv,             0.0f)
+PARAM_DEF(PID_M_FLUX,     float,     motor_flux,           0.0f)
+PARAM_DEF(PID_M_POLES,    float,     motor_poles,          0.0f)
+PARAM_DEF(PID_M_J,        float,     motor_inertia,        0.0f)
+PARAM_DEF(PID_M_MAX_SPD,  float,     motor_max_spd,        0.0f)
+PARAM_DEF(PID_M_MAX_I,    float,     motor_max_curr,       0.0f)
+PARAM_DEF(PID_M_ISAT,     float,     motor_isat,           0.0f)
+PARAM_DEF(PID_M_ALPHA,    float,     motor_alpha,          0.0f)
 
 /* SMO */
 PARAM_DEF(PID_COMP_DELAY, float,     comp_delay_samples,   COMP_DELAY_SAMPLES)
@@ -59,9 +59,6 @@ PARAM_DEF(PID_ADC_MARG,   float,     adc_margin_ticks,     ADC_MARGIN_DEFAULT)
 PARAM_DEF(PID_OC_THR,     float,     fault_oc_threshold,   FAULT_OVERCURRENT_THRESHOLD)
 PARAM_DEF(PID_OV_THR,     float,     fault_ov_threshold,   FAULT_OVERVOLTAGE_THRESHOLD)
 PARAM_DEF(PID_UV_THR,     float,     fault_uv_threshold,   FAULT_UNDERVOLTAGE_THRESHOLD)
-PARAM_DEF(PID_STALL_SPD,  float,     fault_stall_speed,    FAULT_STALL_SPEED_RPM)
-PARAM_DEF(PID_STALL_I,    float,     fault_stall_current,  FAULT_STALL_CURRENT_A)
-PARAM_DEF(PID_STALL_MS,   float,     fault_stall_time_ms,  FAULT_STALL_TIME_MS)
 
 /* Input / Throttle */
 PARAM_DEF(PID_IN_SOURCE,   float,     input_source,         INPUT_SOURCE_DEFAULT)

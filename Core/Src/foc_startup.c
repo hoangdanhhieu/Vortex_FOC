@@ -223,7 +223,10 @@ CCMRAM_FUNC void FOC_StateStartup(void) {
         }
 
         if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
-            float max_v = SQRT3_INV * g_foc.data.Vbus;
+            /* Use the same SVPWM circle limit as FOC_StateRun() so the
+             * normalized handoff voltage reproduces exactly the Vq (in volts)
+             * applied at the end of open-loop startup (no voltage step at RUN). */
+            float max_v = SQRT3_INV * 2.0f * (g_foc.max_duty - 0.5f) * g_foc.data.Vbus;
             float Vq_norm = (max_v > 1.0f) ? (g_foc.data.Vq / max_v) : 0.0f;
             Vq_norm = clampf(Vq_norm, 0.0f, 1.0f);
 
