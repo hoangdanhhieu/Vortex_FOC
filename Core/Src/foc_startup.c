@@ -13,7 +13,7 @@
 #include "foc_input.h"
 #include "foc_state_machine.h"
 
-/* Transition blending state (open-loop → closed-loop) */
+/* Transition blending state (open-loop -> closed-loop) */
 static float s_blend_alpha = 0.0f; /* 0 = open-loop, 1 = closed-loop */
 static uint32_t s_transition_counter = 0;
 static uint32_t s_transition_samples = 0;
@@ -176,7 +176,6 @@ CCMRAM_FUNC void FOC_StateStartup(void) {
         g_foc.data.Vq *= inv_v;
     }
 
-    /* Inverse Park */
     svpwm_calculate(g_foc.data.theta_elec);
 
     SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha, g_foc.data.Vbeta, g_foc.data.Ialpha,

@@ -72,12 +72,12 @@ extern volatile float ADC_Vref;
 #define TIM1_DEADTIME_TICKS DEADTIME_NS_TO_TICKS(DEAD_TIME_NS)
 
 /*===========================================================================*/
-/* ADC Trigger Timing → MAX_DUTY derivation                                  */
+/* ADC Trigger Timing -> MAX_DUTY derivation                                  */
 /*===========================================================================*/
 /**
  * ADC clock = SYSCLK / ADC_PRESCALER
- *   → 1 ADC cycle = ADC_PRESCALER timer ticks
- *   → no need to convert through seconds
+ *   -> 1 ADC cycle = ADC_PRESCALER timer ticks
+ *   -> no need to convert through seconds
  */
 #define ADC_PRESCALER 4U
 #define ADC_CLK_HZ ((float)SYSCLK_FREQ / (float)ADC_PRESCALER) /* 42.5 MHz */
@@ -87,7 +87,7 @@ extern volatile float ADC_Vref;
 #define ADC_CONV_CYCLES 12.5f
 #define ADC_CYCLES_PER_CH (ADC_SAMPLE_CYCLES + ADC_CONV_CYCLES)
 
-/** Injected ranks per ADC (dual simultaneous → ranks run sequentially) */
+/** Injected ranks per ADC (dual simultaneous -> ranks run sequentially) */
 #define ADC_INJ_RANKS 1U
 
 /** Oversampling ratio */
@@ -327,7 +327,7 @@ extern volatile float ADC_Vref;
 #define BEEP_MAX_TOTAL_MS 5000.0f
 
 /*===========================================================================*/
-/* Motor ID Configuration — Dual-LPF & Smart Auto-Resolution                */
+/* Motor ID Configuration - Dual-LPF & Smart Auto-Resolution                */
 /*===========================================================================*/
 
 /** Fast filter delay target in seconds (~1.04 ms for instant ramp cut-off) */

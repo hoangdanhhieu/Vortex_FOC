@@ -73,7 +73,7 @@ static uint16_t s_seq = 0;
 static const float s_dummy_zero = 0.0f;
 static const float* s_stream_ptrs[4] = {&s_dummy_zero, &s_dummy_zero, &s_dummy_zero, &s_dummy_zero};
 
-/* Static TX buffer for drain — avoids stack allocation in slow task */
+/* Static TX buffer for drain - avoids stack allocation in slow task */
 static uint8_t s_drain_payload[3 + STREAM_SETS_PER_PKT * 8];
 
 /*===========================================================================*/
@@ -227,7 +227,7 @@ static uint8_t is_pid_defined(uint8_t pid) {
 }
 
 /*===========================================================================*/
-/* Streaming — ISR fast-path                                                 */
+/* Streaming - ISR fast-path                                                 */
 /*===========================================================================*/
 
 /**
@@ -291,7 +291,7 @@ CCMRAM_FUNC void Comm_StreamPush(void) {
     if (++s_dec_cnt < s_decimation) return;
     s_dec_cnt = 0;
 
-    /* Check ring overflow — drop set silently, never block ISR */
+    /* Check ring overflow - drop set silently, never block ISR */
     uint16_t next_wr = (s_wr + 1u) & (STREAM_RING_SIZE - 1u);
     if (next_wr == s_rd) return;
 
@@ -301,12 +301,12 @@ CCMRAM_FUNC void Comm_StreamPush(void) {
     set->ch[2] = (__fp16)(*s_stream_ptrs[2]);
     set->ch[3] = (__fp16)(*s_stream_ptrs[3]);
 
-    /* Atomic uint16 store — Cortex-M4 guarantees atomicity for aligned 16-bit */
+    /* Atomic uint16 store - Cortex-M4 guarantees atomicity for aligned 16-bit */
     s_wr = next_wr;
 }
 
 /*===========================================================================*/
-/* Streaming — Drain (1kHz slow task)                                        */
+/* Streaming - Drain (1kHz slow task)                                        */
 /*===========================================================================*/
 
 /**
@@ -576,7 +576,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             break;
         }
 
-        /* ── Continuous Streaming ── */
+        /* -- Continuous Streaming -- */
         case CMD_STREAM_START: {
             if (len < 2) {
                 send_ack(type, 1);
@@ -591,7 +591,6 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             if (dec < STREAM_DEC_MIN) dec = STREAM_DEC_MIN;
             if (dec > STREAM_DEC_MAX) dec = STREAM_DEC_MAX;
 
-            /* Stop any active stream before reconfiguring */
             stream_active = 0;
 
             s_num_ch = num_ch;

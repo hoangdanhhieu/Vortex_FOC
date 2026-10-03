@@ -201,7 +201,6 @@ void FlashConfig_Apply(void) {
 }
 
 int FlashConfig_Save(void) {
-    /* Update CRC before saving */
     g_config.crc = config_compute_crc(&g_config);
 
     if (FLASH_CONFIG_PTR->magic == FLASH_CONFIG_MAGIC && FLASH_CONFIG_PTR->crc == g_config.crc &&
@@ -211,7 +210,6 @@ int FlashConfig_Save(void) {
 
     LL_IWDG_ReloadCounter(IWDG);
 
-    /* Disable interrupts during Flash operations */
     __disable_irq();
 
     HAL_FLASH_Unlock();

@@ -166,7 +166,7 @@ void FOC_Safety() {
             uint8_t is_motoring = (g_foc.data.omega_elec * g_foc.data.Iq > 0.0f);
 
             /* Condition A: Observer Hallucination & High-Speed Desynchronization */
-            /* Observer reports high RPM, but physical Back-EMF is absent (R_bemf < 0.20).
+            /* Observer reports high electrical speed (rad/s elec), but physical Back-EMF is absent (R_bemf < 0.20).
              * Gated only on active current, never gated on eta_em to avoid decoupling power
              * artifacts */
             uint8_t is_hallucination = has_active_current &&
@@ -206,7 +206,7 @@ void FOC_Safety() {
             FOC_ResetStallDetector();
         }
 
-        /* 4. Continuous Current Saturation / Thermal Overload Protection (Layer 3) */
+        /* 4. Continuous Current Saturation / Thermal Overload Protection */
         if (fabsf(g_foc.data.Iq) >= 0.90f * g_foc.cfg.motor_max_curr) {
             current_sat_counter++;
             if (current_sat_counter >= 3000) { /* 3.0 seconds at >90% max current */

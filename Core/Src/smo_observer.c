@@ -131,7 +131,7 @@ CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
     float theta_err_clean = theta_err;
     smo->theta_err = theta_err;
 
-    /* 6th harmonic compensation — full observer path only (flying start feeds
+    /* 6th harmonic compensation - full observer path only (flying start feeds
      * clean external BEMF, so its Ac/As state is left untouched). */
     if (!feed) {
         if (smo->enable_harmonic_comp) {
@@ -193,7 +193,6 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
                             float Ibeta) {
     /* 0. Measure total current magnitude */
     float I_sq = Ialpha * Ialpha + Ibeta * Ibeta;
-    // smo->I_mag = sqrtf(I_sq);
 
     /* 1. Extract BEMF from observer state (Standard high-SNR Sigmoid SMO without attenuation) */
     float Ialpha_err = smo->Ialpha_est - Ialpha;
@@ -211,7 +210,7 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
         smo->l_ratio = 1.0f;
     }
 
-    /* Backward Euler Current Integration (using nominal L0 — observer gains are tuned for this) */
+    /* Backward Euler Current Integration (using nominal L0 - observer gains are tuned for this) */
     smo->Ialpha_est = (smo->Ialpha_est + (Valpha - smo->Ealpha) * smo->dt_over_Ls) * smo->denom_inv;
     smo->Ibeta_est = (smo->Ibeta_est + (Vbeta - smo->Ebeta) * smo->dt_over_Ls) * smo->denom_inv;
 
@@ -268,7 +267,7 @@ void SMO_SetTiming(SMO_Observer_t* smo, float dt) {
 
 CCMRAM_FUNC void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta) {
     /* Self-Tuning Filter (STF) for externally supplied BEMF (Backward Euler,
-     * unconditionally stable) — same filter core as the internal SMO path. */
+     * unconditionally stable) - same filter core as the internal SMO path. */
     smo->omega_stf += omega_stf_alpha * (smo->omega_est - smo->omega_stf);
     float wc = smo->wc_base + 0.8f * fabsf(smo->omega_stf);
     stf_filter_step(Ealpha, Ebeta, &smo->Ealpha_flt, &smo->Ebeta_flt, wc, smo->omega_stf, smo->dt);

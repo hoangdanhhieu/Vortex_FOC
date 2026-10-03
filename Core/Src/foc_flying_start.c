@@ -305,7 +305,6 @@ void FOC_StateBrake(void) {
 
     s_i_mag_sq_flt += 0.01f * (i_mag_sq - s_i_mag_sq_flt);
 
-    /* Check exit criteria */
     if (s_brake_counter >= s_brake_max_samples) {
         /* Maximum timeout expired: fail-safe exit to ALIGN */
         g_foc.startup.counter = 0;

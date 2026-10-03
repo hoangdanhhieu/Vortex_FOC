@@ -1,8 +1,8 @@
 /**
  * @file motor_id.h
- * @brief Motor Parameter Identification — Public API
+ * @brief Motor Parameter Identification - Public API
  *
- * Rs: PI-controlled DC 2-point injection. Eliminates dead-time error via subtraction.
+ * Rs: 2-point DC voltage injection (Settle-Ramp). Eliminates dead-time voltage via delta subtraction.
  * Ls: Dual-frequency AC sine injection with self-calibrating hardware delay compensation.
  *     The delay is solved from the constraint: Ls_compensated(f1) == Ls_compensated(f2).
  */
@@ -35,7 +35,7 @@ typedef enum {
 /*===========================================================================*/
 
 typedef struct {
-    float measured_rs;            /* Phase resistance               [Ω]     */
+    float measured_rs;            /* Phase resistance               [Ohm]   */
     float measured_ls;            /* Nominal phase inductance L0    [H]     */
     float sat_isat;               /* Saturation current Isat        [A]     */
     float sat_alpha;              /* Saturation coefficient alpha   [1/A^2] */

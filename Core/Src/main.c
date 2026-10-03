@@ -41,14 +41,10 @@ volatile float ADC_Vref = 3.3f;
  * @retval int
  */
 int main(void) {
-    /* Reset of all peripherals, Initializes Flash interface and Systick */
-
     HAL_Init();
 
-    /* Configure 170 MHz system clock */
     SystemClock_Config();
 
-    /* Read and clear reset cause */
     reset_cause = RCC->CSR;
     LL_RCC_ClearResetFlags();
 
@@ -86,7 +82,7 @@ int main(void) {
 
     FOC_PlayBeep();
     Comm_Init();
-    LL_DAC_Enable(DAC1, LL_DAC_CHANNEL_1);  // Enable DAC for plotting
+    LL_DAC_Enable(DAC1, LL_DAC_CHANNEL_1);
 
     MX_IWDG_Init();
 

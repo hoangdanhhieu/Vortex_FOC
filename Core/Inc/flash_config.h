@@ -4,7 +4,7 @@
  *
  * Uses the last 2KB Flash page (0x0801F800) on STM32G431CB.
  * Table-driven design: add new parameters by extending FlashConfig_t
- * and the parameter table in uart_cmd.c.
+ * and the parameter table in param_table.def.
  */
 
 #ifndef FLASH_CONFIG_H

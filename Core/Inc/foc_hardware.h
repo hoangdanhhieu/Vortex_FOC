@@ -92,7 +92,7 @@ static inline void FOC_HW_EnablePhase(uint8_t phase, uint8_t enable) {
 }
 
 /*===========================================================================*/
-/* 1Mhz Counter Functions                             */
+/* 1 MHz Microsecond Timebase (TIM2)                                         */
 /*===========================================================================*/
 #define FOC_Get_1MhzCounter() (TIM2->CNT)
 #define FOC_Reset_1MhzCounter() (TIM2->CNT = 0)

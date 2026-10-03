@@ -24,7 +24,8 @@ void FOC_Calibration_Reset(void);
 void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t cal_phase);
 
 /**
- * @brief State handler for FOC_STATE_CALIBRATION (computes offsets, noise profile and configures AWD)
+ * @brief State handler for FOC_STATE_CALIBRATION (computes offsets, noise profile and configures
+ * AWD)
  */
 void FOC_StateCalibration(void);
 
@@ -35,7 +36,7 @@ void FOC_ConfigureAWD(void);
 
 /**
  * @brief Calculate physical minimum observer speed based on noise floor, deadtime & SNR constraints
- * @return Minimum observer speed in RPM
+ * @return Minimum observer speed in electrical rad/s [rad/s elec]
  */
 float FOC_CalculateObserverMinSpeed(void);
 

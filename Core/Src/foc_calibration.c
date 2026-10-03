@@ -122,8 +122,8 @@ void FOC_ConfigureAWD(void) {
     float vref = ADC_Vref;
     if (vref < 1.0f) vref = 3.3f;
 
-    // 1. Resolve the overcurrent threshold in LSB counts
-    //    (0 = auto 1.25 x Imax; positive = exact value, may be < Imax for tests)
+    /* 1. Resolve the overcurrent threshold in LSB counts
+     *    (0 = auto 1.25 x Imax; positive = exact value, may be < Imax for tests) */
     const float gain = ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE;
     float current_to_adc = gain / vref;
     int32_t adc_step = (int32_t)(FOC_GetOCThreshold() * current_to_adc + 0.5f);
@@ -159,38 +159,34 @@ void FOC_ConfigureAWD(void) {
         return;
     }
 
-    // Phase A and Phase C (ADC1 AWD1 - monitors all injected channels: VOPAMP1 and CH12)
+    /* Phase A and Phase C (ADC1 AWD1 - monitors all injected channels: VOPAMP1 and CH12) */
     int32_t avg_offset_ac = (g_foc.adc_cal.offset_a + g_foc.adc_cal.offset_c_pb1) / 2;
     int32_t high_ac = avg_offset_ac + adc_step;
     int32_t low_ac = avg_offset_ac - adc_step;
     if (high_ac > 4095) high_ac = 4095;
     if (low_ac < 0) low_ac = 0;
 
-    // Phase B and C (ADC2 AWD1 - monitors all injected channels: VOPAMP2 and VOPAMP3)
+    /* Phase B and C (ADC2 AWD1 - monitors all injected channels: VOPAMP2 and VOPAMP3) */
     int32_t avg_offset_bc = (g_foc.adc_cal.offset_b + g_foc.adc_cal.offset_c_opamp3) / 2;
     int32_t high_bc = avg_offset_bc + adc_step;
     int32_t low_bc = avg_offset_bc - adc_step;
     if (high_bc > 4095) high_bc = 4095;
     if (low_bc < 0) low_bc = 0;
 
-    // 4. Vbus protection is now handled in software (FOC_SlowTask at 1kHz)
-
-    // 5. Program hardware registers using LL driver
-    // ADC1: AWD1 for all Injected Channels (Phase A and Phase C via PB1)
+    /* ADC1: AWD1 for all Injected Channels (Phase A and Phase C via PB1) */
     LL_ADC_SetAnalogWDMonitChannels(ADC1, LL_ADC_AWD1, LL_ADC_AWD_ALL_CHANNELS_INJ);
     LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD1, high_ac, low_ac);
     LL_ADC_SetAWDFilteringConfiguration(ADC1, LL_ADC_AWD1, LL_ADC_AWD_FILTERING_3SAMPLES);
 
-    // ADC2: AWD1 for all Injected Channels (Phase B and Phase C via VOPAMP3)
+    /* ADC2: AWD1 for all Injected Channels (Phase B and Phase C via VOPAMP3) */
     LL_ADC_SetAnalogWDMonitChannels(ADC2, LL_ADC_AWD1, LL_ADC_AWD_ALL_CHANNELS_INJ);
     LL_ADC_ConfigAnalogWDThresholds(ADC2, LL_ADC_AWD1, high_bc, low_bc);
     LL_ADC_SetAWDFilteringConfiguration(ADC2, LL_ADC_AWD1, LL_ADC_AWD_FILTERING_3SAMPLES);
 
-    // Clear all pending AWD flags first to prevent stale interrupt triggers
+    /* Clear all pending AWD flags first to prevent stale interrupt triggers */
     LL_ADC_ClearFlag_AWD1(ADC1);
     LL_ADC_ClearFlag_AWD1(ADC2);
 
-    // Now safely enable the AWD interrupts
     LL_ADC_EnableIT_AWD1(ADC1);
     LL_ADC_EnableIT_AWD1(ADC2);
 
@@ -269,7 +265,6 @@ void FOC_StateCalibration(void) {
             g_foc.adc_cal.offset_vphase_c = s_vphase_c_accum / CAL_SAMPLES;
         }
 
-        // Configure hardware watchdogs dynamically based on offsets
         FOC_ConfigureAWD();
 
         g_foc.startup.theta = 0.0f;

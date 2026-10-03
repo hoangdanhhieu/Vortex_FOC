@@ -512,14 +512,12 @@ static void FOC_StateSelfCommission(void) {
     float cos_th = 1.0f;
     float sin_th = 0.0f;
 
-    /* Reconstruct currents and transform to d-q frame */
     park_transform(g_foc.data.Ialpha, g_foc.data.Ibeta, cos_th, sin_th, &g_foc.data.Id,
                    &g_foc.data.Iq);
 
     /* Run the d-axis AC parameter identification step (Fast Task) */
     MotorID_FastTask(g_foc.data.Id, &g_foc.data.Vd, &g_foc.data.Vq);
 
-    /* Inverse Park and SVPWM calculation */
     svpwm_calculate(0.0f);
 
     if (id_result.state == MOTOR_ID_STATE_COMPLETE || id_result.state == MOTOR_ID_STATE_ERROR) {
@@ -600,7 +598,6 @@ float FOC_GetConfigInputDeadband(void) {
 
 void FOC_ClearFault(void) {
     if (g_foc.status.state == FOC_STATE_FAULT) {
-        // Clear all hardware AWD flags before transitioning out of FAULT state
         FOC_HW_ClearAWDFlags();
 
         g_foc.status.fault = FOC_FAULT_NONE;
@@ -645,7 +642,7 @@ float FOC_GetDt(void) {
 }
 
 /*===========================================================================*/
-/* Power-On Beep                                */
+/* Power-On Beep                                                             */
 /*===========================================================================*/
 static void FOC_Beep_Finish(void) {
     FOC_EnableDrivers(0);

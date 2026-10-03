@@ -120,7 +120,7 @@ typedef struct {
     struct {
         PI_Controller_t id;       /**< Direct axis (d-axis) current PI controller [A -> V] */
         PI_Controller_t iq;       /**< Quadrature axis (q-axis) current PI controller [A -> V] */
-        LADRC_Controller_t speed; /**< Speed loop Linear ADRC controller [RPM -> A] */
+        LADRC_Controller_t speed; /**< Speed loop Linear ADRC controller [rad/s elec -> A] */
         SMO_Observer_t smo; /**< Sensorless Sliding Mode Observer for angle/speed estimation */
         union {
             Profiler_State_t profiler; /**< Dynamic response profiler & test signal generator */
@@ -382,8 +382,7 @@ float FOC_GetDt(void);
  * No-ops unless the motor is IDLE/STOP with no active fault. The sequence
  * (3 short beeps, pause, 1 long beep, ~1.3 s) excites the motor with a small
  * open-loop voltage, then returns to IDLE. A start command, fault,
- * overvoltage, software overcurrent, or the hard timeout aborts it
- * immediately.
+ * overvoltage, or the hard timeout aborts it immediately.
  */
 void FOC_PlayBeep(void);
 

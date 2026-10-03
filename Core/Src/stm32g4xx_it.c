@@ -29,9 +29,6 @@ volatile uint16_t adc2_data;
 /*           Cortex-M4 Processor Exception Handlers                           */
 /* ========================================================================== */
 
-/**
- * @brief This function handles Non maskable interrupt.
- */
 void NMI_Handler(void) {
     while (1) {
     }
@@ -75,54 +72,33 @@ __attribute__((naked)) void HardFault_Handler(void) {
         "b HardFault_Handler_C \n");
 }
 
-/**
- * @brief This function handles Memory management fault.
- */
 void MemManage_Handler(void) {
     LL_GPIO_SetOutputPin(LED_GPIO_Port, LED_Pin);
     while (1) {
     }
 }
 
-/**
- * @brief This function handles Prefetch fault, memory access fault.
- */
 void BusFault_Handler(void) {
     LL_GPIO_SetOutputPin(LED_GPIO_Port, LED_Pin);
     while (1) {
     }
 }
 
-/**
- * @brief This function handles Undefined instruction or illegal state.
- */
 void UsageFault_Handler(void) {
     LL_GPIO_SetOutputPin(LED_GPIO_Port, LED_Pin);
     while (1) {
     }
 }
 
-/**
- * @brief This function handles System service call via SWI instruction.
- */
 void SVC_Handler(void) {
 }
 
-/**
- * @brief This function handles Debug monitor.
- */
 void DebugMon_Handler(void) {
 }
 
-/**
- * @brief This function handles Pendable request for system service.
- */
 void PendSV_Handler(void) {
 }
 
-/**
- * @brief This function handles System tick timer.
- */
 void SysTick_Handler(void) {
     HAL_IncTick();
 }
@@ -131,9 +107,6 @@ void SysTick_Handler(void) {
 /*                 STM32G4xx Peripheral Interrupt Handlers                    */
 /* ========================================================================== */
 
-/**
- * @brief This function handles DMA1 channel2 global interrupt.
- */
 void DMA1_Channel2_IRQHandler(void) {
 }
 
@@ -142,7 +115,7 @@ void DMA1_Channel2_IRQHandler(void) {
  */
 
 CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
-    // Check AWD1 on ADC1 (Phase A overcurrent)
+    /* AWD1 ADC1: Phase A overcurrent */
     if (LL_ADC_IsActiveFlag_AWD1(ADC1)) {
         LL_ADC_ClearFlag_AWD1(ADC1);
         FOC_EnableDrivers(0);
@@ -150,7 +123,7 @@ CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
         g_foc.status.state = FOC_STATE_FAULT;
     }
 
-    // Check AWD1 on ADC2 (Phase B and C overcurrent)
+    /* AWD1 ADC2: Phase B/C overcurrent */
     if (LL_ADC_IsActiveFlag_AWD1(ADC2)) {
         LL_ADC_ClearFlag_AWD1(ADC2);
         FOC_EnableDrivers(0);
@@ -162,7 +135,6 @@ CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
         uint32_t start_count = FOC_Get_1MhzCounter();
         LL_ADC_ClearFlag_JEOS(ADC1);
 
-        /* Read 1 rank from each ADC (dual simultaneous) */
         adc1_data = LL_ADC_INJ_ReadConversionData12(ADC1, LL_ADC_INJ_RANK_1);
         adc2_data = LL_ADC_INJ_ReadConversionData12(ADC2, LL_ADC_INJ_RANK_1);
 
@@ -180,16 +152,10 @@ CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
     }
 }
 
-/**
- * @brief This function handles USB low priority interrupt remap.
- */
 void USB_LP_IRQHandler(void) {
     HAL_PCD_IRQHandler(&hpcd_USB_FS);
 }
 
-/**
- * @brief This function handles TIM4 global interrupt.
- */
 void TIM4_IRQHandler(void) {
 }
 

@@ -25,11 +25,11 @@
      LL_CORDIC_OUTSIZE_32BITS)
 /**
  * @brief Calculate cosine and sine using CORDIC hardware
- * @param angle_norm Normalized angle [-1, 1) representing [-π, π)
+ * @param angle_norm Normalized angle [-1, 1) representing [-pi, pi)
  * @param cos_out Pointer to store cosine result
  * @param sin_out Pointer to store sine result
  */
-static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_out) {
+static inline void cordic_sincos(float angle_norm, float* cos_out, float* sin_out) {
     WRITE_REG(CORDIC->CSR, CORDIC_CFG_SINCOS);
     (void)READ_REG(CORDIC->CSR);  // Ensure write CSR is completed
 
@@ -48,9 +48,9 @@ static void inline cordic_sincos(float angle_norm, float* cos_out, float* sin_ou
 
 /**
  * @brief Calculate atan2(y, x) using CORDIC hardware
- * @return Normalized angle [-1, 1) representing [-π, π)
+ * @return Normalized angle [-1, 1) representing [-pi, pi)
  */
-static float inline cordic_atan2(float y, float x) {
+static inline float cordic_atan2(float y, float x) {
     float abs_x = fabsf(x);
     float abs_y = fabsf(y);
     float max_val = (abs_x > abs_y) ? abs_x : abs_y;
@@ -72,10 +72,10 @@ static float inline cordic_atan2(float y, float x) {
 }
 
 /**
- * @brief Calculate vector modulus sqrt(x² + y²) using CORDIC hardware
+ * @brief Calculate vector modulus sqrt(x^2 + y^2) using CORDIC hardware
  * @param x First component
  * @param y Second component
- * @return  sqrt(x² + y²)
+ * @return  sqrt(x^2 + y^2)
  *
  * @note Uses dedicated CORDIC MODULUS function.
  *       Inputs are normalized to max(|x|,|y|) to fit Q1.31,

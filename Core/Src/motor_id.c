@@ -1,34 +1,34 @@
 /**
  * @file motor_id.c
- * @brief Motor Parameter Identification — Safe Ramp Rs + Saturation Profiler L(I)
+ * @brief Motor Parameter Identification - Safe Ramp Rs + Saturation Profiler L(I)
  *
  * ALGORITHM OVERVIEW
- * ──────────────────
+ * ------------------
  * 1. ALIGN (150 ms)
  *    Safe linear voltage ramp (30 V/s) locks the rotor along the d-axis at I1.
  *    theta_elec = 0 throughout. 0% overshoot across all motor sizes.
  *
- * 2. MEASURE_RS — Dual-filter 2-point steady-state DC measurement
+ * 2. MEASURE_RS - 2-point DC voltage injection (Settle-Ramp) with dual IIR filtering
  *    Vd1 = Rs * I1 + Vdead
  *    Vd2 = Rs * I2 + Vdead
- *    → Rs = (Vd2 − Vd1) / (I2 − I1)  [Dead-time completely cancels!]
- *    → Vdead = max(Vd1 − Rs * I1, 0)
+ *    -> Rs = (Vd2 - Vd1) / (I2 - I1)  [Dead-time completely cancels!]
+ *    -> Vdead = max(Vd1 - Rs * I1, 0)
  *
  * 3. FREQ_DETECT (10 ms)
  *    Quick 10-cycle probe at 1000 Hz to measure Z_1000.
  *    Automatically selects optimal frequency:
- *      - 250 Hz: Large Inductance Hub / Spindle (L_probe > 400 uH or Z_1000 > 3.0 Ω)
- *      - 1000 Hz: Medium Inductance (80-400 uH or Z_1000 > 1.0 Ω)
- *      - 4800 Hz: Low Inductance Drone (10-80 uH or Z_1000 > 0.15 Ω)
+ *      - 250 Hz: Large Inductance Hub / Spindle (L_probe > 400 uH or Z_1000 > 3.0 Ohm)
+ *      - 1000 Hz: Medium Inductance (80-400 uH or Z_1000 > 1.0 Ohm)
+ *      - 4800 Hz: Low Inductance Drone (10-80 uH or Z_1000 > 0.15 Ohm)
  *      - 12000 Hz: Ultra-Low Inductance Slotless (< 10 uH)
  *
- * 4. MEASURE_SAT_PROFILE — 20-Point Dynamic Saturation Profiler + AC Injection + Exact ZOH
+ * 4. MEASURE_SAT_PROFILE - 20-Point Dynamic Saturation Profiler + AC Injection + Exact ZOH
  * Inversion Measures L at up to 20 dynamically adjusted DC bias currents. Slow integrated DC bias:
  * Vd_bias = Vdead + Rs * I_bias + sat_vd_error_int (Slow DC current loop). Lock-in DFT demodulation
  * with 1.5-cycle ZOH/delay compensation. Extracts L using Exact Discrete ZOH Inversion solved via
- * Newton-Raphson: M = (1 - 2*x^2*cos(phi) + x^4) / ((1 - x^2)^2), where x = exp(−0.5*Rs*Ts / L)
+ * Newton-Raphson: M = (1 - 2*x^2*cos(phi) + x^4) / ((1 - x^2)^2), where x = exp(-0.5*Rs*Ts / L)
  *    Fits full saturation curve via Least Squares:
- *        1 / L(I) = A + B · I^2 → L0 = 1 / A, Isat = sqrt(1 / (B * L0)), alpha = B * L0.
+ *        1 / L(I) = A + B * I^2 -> L0 = 1 / A, Isat = sqrt(1 / (B * L0)), alpha = B * L0.
  */
 
 #include "motor_id.h"
@@ -114,15 +114,15 @@ static float sat_lut_l[SAT_MAX_LUT_POINTS];
 static uint8_t sat_lut_count;
 
 /* Adaptive saturation tracking variables */
-static float sat_i_anchor;         // Linear region anchor current
-static float sat_delta_i;          // Dynamic step increment
-static float sat_delta_i_max;      // Maximum allowable step size
-static float sat_L0_val;           // Reference nominal L0 value (Level 0)
-static float sat_last_i_bias;      // DC bias of last accepted point
-static float sat_last_L_val;       // Inductance of last accepted point
-static uint8_t sat_backtrack_cnt;  // Counter for backtrack steps (limit to 2)
-static float sat_target_i_bias;    // Dynamic DC bias current target
-static float sat_vd_error_int;     // Slow DC bias voltage integrator
+static float sat_i_anchor;         /* Linear region anchor current */
+static float sat_delta_i;          /* Dynamic step increment */
+static float sat_delta_i_max;      /* Maximum allowable step size */
+static float sat_L0_val;           /* Reference nominal L0 value (Level 0) */
+static float sat_last_i_bias;      /* DC bias of last accepted point */
+static float sat_last_L_val;       /* Inductance of last accepted point */
+static uint8_t sat_backtrack_cnt;  /* Counter for backtrack steps (limit to 2) */
+static float sat_target_i_bias;    /* Dynamic DC bias current target */
+static float sat_vd_error_int;     /* Slow DC bias voltage integrator */
 
 static float meas_accum_i_sq[128];
 volatile static uint16_t meas_accum_count;
@@ -236,7 +236,6 @@ static float calculate_zoh_ls(float i_mag_sq) {
 /*===========================================================================*/
 
 void MotorID_Init(void) {
-    /* 1. Reset results struct */
     id_result.measured_rs = 0.0f;
     id_result.measured_ls = 0.0f;
     id_result.sat_isat = 0.0f;
@@ -530,7 +529,6 @@ void MotorID_FastTask(float id, float* vd, float* vq) {
         return;
     }
 
-    /* Update current tracking filters (Fast and Slow) */
     id_filt += id_alpha_fast * (id - id_filt);
     id_filt_slow += id_alpha_slow * (id - id_filt_slow);
 
@@ -1097,7 +1095,6 @@ void MotorID_InertiaSlowTask(void) {
     }
 
     if (g_foc.status.state != FOC_STATE_RUN) {
-        /* Wait for startup to complete */
         return;
     }
 
@@ -1122,7 +1119,7 @@ void MotorID_InertiaSlowTask(void) {
                        b0_init);
         LADRC_SetLimits(&g_foc.ctrl.speed, SPEED_LOOP_OUT_MIN, motor_max_curr);
 
-        /* Speed 1: Scale from auto-calibrated min_spd (1.5x) with 300 RPM floor and 30% max_spd
+        /* Speed 1: Scale from auto-calibrated min_spd (2.0x) with 300 RPM floor and 30% max_spd
          * ceiling */
         float min_floor_elec = 300.0f * RPM_TO_RAD * g_foc.cfg.motor_poles;
         float sp1 = fmaxf(2.0f * g_foc.cfg.motor_min_spd, min_floor_elec);

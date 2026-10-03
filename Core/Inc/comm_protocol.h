@@ -19,7 +19,7 @@
 #define COMM_MAX_PAYLOAD 255
 
 /*===========================================================================*/
-/* Command Types (PC → MCU)                                                  */
+/* Command Types (PC -> MCU)                                                  */
 /*===========================================================================*/
 
 #define CMD_SET 0x01           /**< Set parameter: id(1B) + value(4B) */
@@ -45,7 +45,7 @@
 #define CMD_STREAM_STOP 0x15   /**< Stop continuous stream */
 
 /*===========================================================================*/
-/* Response Types (MCU → PC)                                                 */
+/* Response Types (MCU -> PC)                                                 */
 /*===========================================================================*/
 
 #define RSP_ACK 0x81         /**< ACK: cmd_type(1B) + status(1B) */
@@ -59,8 +59,8 @@
 /*===========================================================================*/
 
 /** Decimation range: effective rate = 48000 / decimation
- *  dec=1 → 48000 Hz (max, ~375 KB/s USB load)
- *  dec=10 → 4800 Hz (min, ~38 KB/s USB load)
+ *  dec=1 -> 48000 Hz (max, ~375 KB/s USB load)
+ *  dec=10 -> 4800 Hz (min, ~38 KB/s USB load)
  */
 #define STREAM_DEC_MIN 1
 #define STREAM_DEC_MAX 10
