@@ -38,7 +38,7 @@ static uint8_t rx_idx;
 static uint8_t tx_buf[COMM_MAX_PAYLOAD + 4]
     __attribute__((aligned(4))); /* header + type + len + payload + crc */
 
-#define RX_RING_SIZE 512
+#define RX_RING_SIZE 256
 static uint8_t rx_ring_buf[RX_RING_SIZE] __attribute__((aligned(4)));
 static volatile uint16_t rx_ring_head = 0;
 static volatile uint16_t rx_ring_tail = 0;
@@ -454,8 +454,8 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 break;
             }
             int8_t dir = (payload[0] != 0) ? -1 : 1;
-            FOC_SetDirection(dir);
             cfg->direction = dir;
+            FOC_SetDirection(1);
             send_ack(type, 0);
             break;
         }

@@ -64,18 +64,15 @@ void FOC_StateAlign(void) {
         }
     }
     g_foc.startup.counter++;
-    if (g_foc.startup.counter == 1) {
-        PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
-        PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
-    }
 
     float align_samples = (float)ALIGN_DURATION_MS * 0.001f * g_foc.cfg.pwm_frequency;
     float progress = (float)g_foc.startup.counter / align_samples;
     if (progress > 1.0f) progress = 1.0f;
 
-    /* Ramp alignment current from 0 to align_current using Cosine S-Curve over first 70% duration.
-     * Remaining 30% holds steady to settle any mechanical oscillations. */
-    float ramp_duration = 0.7f;
+    /* Smooth S-curve (cosine ramp) from 0 to align_current over the first 30% duration.
+     * Remaining 70% maintains full align_current at theta = 0 to completely settle mechanical
+     * ringing. */
+    const float ramp_duration = 0.30f;
     if (progress < ramp_duration) {
         float ramp_norm = progress / ramp_duration; /* 0.0f to 1.0f maps to 0 to pi */
         float cos_ramp, sin_ramp;
@@ -85,8 +82,10 @@ void FOC_StateAlign(void) {
         g_foc.cmd.Id_ref = g_foc.cfg.align_current;
     }
     g_foc.cmd.Iq_ref = 0.0f;
+    g_foc.plot.user_plot1 = g_foc.data.Ialpha_flt;
+    g_foc.plot.user_plot2 = g_foc.data.Ibeta_flt;
 
-    /* Fixed alignment angle at 0.0f (no artificial sweeping or snapping) */
+    /* Stator magnetic field locked firmly at 0 degrees electrical (no abrupt 90->0 sweep) */
     g_foc.data.theta_elec = 0.0f;
     g_foc.data.omega_elec = 0.0f;
 
@@ -118,11 +117,12 @@ void FOC_StateAlign(void) {
     }
 }
 
-CCMRAM_FUNC void FOC_StateStartup(void) {
+void FOC_StateStartup(void) {
     g_foc.startup.counter++;
 
     float handoff_omega = g_foc.cfg.startup_handoff_speed;
-    g_foc.startup.omega += g_foc.cfg.startup_accel * g_foc.dt;
+    float accel_scale = 0.25f + 0.75f * clampf(g_foc.startup.omega / 60.0f, 0.0f, 1.0f);
+    g_foc.startup.omega += (g_foc.cfg.startup_accel * accel_scale) * g_foc.dt;
     if (g_foc.startup.omega > handoff_omega) {
         g_foc.startup.omega = handoff_omega;
     }
@@ -138,34 +138,33 @@ CCMRAM_FUNC void FOC_StateStartup(void) {
     park_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, cos_th, sin_th, &g_foc.data.Id,
                    &g_foc.data.Iq);
 
-    /* Universal Vector Steering for Smooth Propeller Startup & Pole-Slip Immunity:
-     * Steer current vector angle gamma_norm smoothly from 0 (all Id) to 1/3 (60 deg: 50% Id, 86.6%
-     * Iq). Uses 0.35 * handoff_omega bounded to [30, 80] rad/s (5-13 Hz electrical) to
-     * ensure breakaway completes locally without keeping excessive Id at high handoff speeds. */
-    float steer_threshold = clampf(0.35f * handoff_omega, 30.0f, 80.0f);
-    float steer_ratio = (steer_threshold > 1.0f) ? (g_foc.startup.omega / steer_threshold) : 1.0f;
-    if (steer_ratio > 1.0f) steer_ratio = 1.0f;
+    /* Smooth current magnitude & vector transition across the full ramp to handoff_omega:
+     * - At omega = 0: gamma = 0 (100% Id, perfectly continuous with Align).
+     * - As omega increases to handoff_omega: gamma gently steers to 60 deg (Id = 0.5, Iq = 0.866)
+     *   without rapid angular velocity perturbation d(gamma)/dt that causes pole slip. */
+    float steer_ratio =
+        (handoff_omega > 1.0f) ? clampf(g_foc.startup.omega / handoff_omega, 0.0f, 1.0f) : 1.0f;
 
-    const float gamma_target_norm = 1.0f / 3.0f; /* 60 deg = (pi/3) / pi */
+    const float gamma_target_norm = 1.0f / 3.0f; /* 60 deg = pi/3 */
     float gamma_norm = steer_ratio * gamma_target_norm;
 
     float cos_gamma, sin_gamma;
     cordic_sincos(gamma_norm, &cos_gamma, &sin_gamma);
 
-    float i_mag = g_foc.cfg.startup_current;
+    /* Seamless current magnitude transition from align_current to startup_current */
+    float i_align =
+        (g_foc.cfg.align_current > 0.1f) ? g_foc.cfg.align_current : g_foc.cfg.startup_current;
+    float i_mag = i_align + steer_ratio * (g_foc.cfg.startup_current - i_align);
+
     g_foc.cmd.Id_ref = i_mag * cos_gamma;
     g_foc.cmd.Iq_ref = i_mag * sin_gamma;
 
     float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
     float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
 
-    /* Calculate voltage commands using closed-loop current PI controllers + Feedforward */
-    float omega_e = g_foc.startup.omega;
-    float omega_Ls = omega_e * g_foc.cfg.motor_ls;
-    float E_bemf = omega_e * g_foc.cfg.motor_flux;
-
-    g_foc.data.Vd = PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq;
-    g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + omega_Ls * g_foc.data.Id + E_bemf;
+    /* Pure, uncorrupted current PI control during open-loop (no invalid BEMF feedforward) */
+    g_foc.data.Vd = PI_Update(&g_foc.ctrl.id, Id_error);
+    g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error);
 
     /* Clamp (Vd, Vq) vector magnitude to 0.57735 * Vbus (SVPWM linear limit) */
     float max_v = SQRT3_INV * g_foc.data.Vbus;
@@ -178,8 +177,8 @@ CCMRAM_FUNC void FOC_StateStartup(void) {
 
     svpwm_calculate(g_foc.data.theta_elec);
 
-    SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha, g_foc.data.Vbeta, g_foc.data.Ialpha,
-               g_foc.data.Ibeta);
+    SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha_applied, g_foc.data.Vbeta_applied,
+               g_foc.data.Ialpha, g_foc.data.Ibeta);
 
 #if ENABLE_CLOSED_LOOP_HANDOFF
     float smo_theta = SMO_GetParkAngle(&g_foc.ctrl.smo);
@@ -254,7 +253,7 @@ CCMRAM_FUNC void FOC_StateStartup(void) {
 #endif
 }
 
-CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega) {
+void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega) {
     if (!s_in_transition) {
         return;
     }
@@ -266,10 +265,6 @@ CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm
         s_blend_alpha = 1.0f;
         s_in_transition = 0;
         g_foc.status.in_transition = 0;
-
-        /* Restore original default PI gains from config */
-        PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
-        PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
     }
 
     /* Smoothly blend Id_ref from handoff value down to 0 */

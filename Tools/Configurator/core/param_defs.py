@@ -69,12 +69,13 @@ PARAM_DEFS = [
     (ParamId.UV_THR,   "UV Threshold*",  "V",     "Safety",      0, 100, 0.1, False),
     (ParamId.STALL_EN, "Stall Detect*",  "on/off", "Safety",      0, 1, 1,      False),
     # Input
-    (ParamId.IN_SOURCE,   "Input Source*", "",      "Input",       0, 2,     1,    False),
-    (ParamId.IN_MODE,     "Control Mode*", "",      "Input",       0, 2,     1,    False),
-    (ParamId.IN_MIN_SPD,  "Min Speed*",    "RPM",   "Input",       0, 10000, 50,   False),
-    (ParamId.IN_MIN_CUR,  "Min Current*",  "A",     "Input",       0, 50,    0.1,  False),
-    (ParamId.IN_MIN_VQ,   "Min Voltage*",  "ratio", "Input",       0, 0.5,   0.01, False),
-    (ParamId.IN_DEADBAND, "Deadband*",     "ratio", "Input",       0, 0.3,   0.01, False),
+    (ParamId.IN_SOURCE,    "Input Source*",        "",      "Input",       0, 4,     1,    False),
+    (ParamId.IN_MODE,      "Control Mode*",        "",      "Input",       0, 2,     1,    False),
+    (ParamId.IN_MIN_SPD,   "Min Speed*",           "RPM",   "Input",       0, 10000, 50,   False),
+    (ParamId.IN_MIN_CUR,   "Min Current*",         "A",     "Input",       0, 50,    0.1,  False),
+    (ParamId.IN_MIN_VQ,    "Min Voltage*",         "ratio", "Input",       0, 0.5,   0.01, False),
+    (ParamId.IN_DEADBAND,  "Deadband*",            "ratio", "Input",       0, 0.3,   0.01, False),
+    (ParamId.DSHOT_3D,     "DShot 3D Mode*",       "",      "Input",       0, 1,     1,    False),
     # System
     (ParamId.PWM_FREQ,    "PWM Frequency*", "Hz",   "System",      16000, 96000, 1000, False),
 ]
@@ -83,8 +84,18 @@ PARAM_DEFS = [
 # Mapping: ParamId -> list of option labels (index corresponds to float value) or list of (label, float_val)
 CHOICE_PARAMS = {
     ParamId.STALL_EN: ["0: Disabled", "1: Enabled"],
-    ParamId.IN_SOURCE: ["0: Disabled", "1: Potentiometer (PC4)", "2: Custom Driver"],
+    ParamId.IN_SOURCE: [
+        "0: Disabled",
+        "1: Potentiometer",
+        "2: Custom Driver",
+        "3: UART / USB (GUI)",
+        "4: DShot",
+    ],
     ParamId.IN_MODE: ["0: Speed (RPM)", "1: Torque (Current)", "2: Voltage (Duty %)"],
+    ParamId.DSHOT_3D: [
+        "0: Normal (0-100% Unidirectional)",
+        "1: 3D Mode (Bidirectional 3D Throttle)",
+    ],
     ParamId.PWM_FREQ: [
         ("24000 Hz", 24000.0),
         ("32000 Hz", 32000.0),

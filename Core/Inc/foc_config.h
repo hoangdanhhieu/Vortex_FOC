@@ -227,25 +227,13 @@ extern volatile float ADC_Vref;
 /* Startup Configuration                                                     */
 /*===========================================================================*/
 
-/** Alignment current [A] */
-#define ALIGN_CURRENT 0.3f
-
 /** Alignment duration [ms] */
 #define ALIGN_DURATION_MS 500
-
-/** Open-loop startup current [A] */
-#define STARTUP_CURRENT 0.5f
 
 /** Minimum continuous lock duration required before closed-loop handoff [ms] */
 #define HANDOFF_LOCK_DURATION_MS 10.0f
 #define HANDOFF_LOCK_SAMPLES \
     ((uint32_t)(HANDOFF_LOCK_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY))
-
-/** Startup acceleration [rad/s^2 elec] */
-#define STARTUP_ACCEL 350.0f
-
-/** Minimum speed before switching to closed-loop [rad/s elec] */
-#define STARTUP_HANDOFF_SPEED 750.0f
 
 /** Transition blend duration from open-loop to closed-loop [ms] */
 #define TRANSITION_BLEND_MS 20.0f
@@ -303,7 +291,7 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 
 /** Enable the power-on beep sequence (0 = disabled: no beep at boot) */
-#define BEEP_ENABLE 1
+#define BEEP_ENABLE 0
 
 /** Beep tone frequencies [Hz] (ESC-style rising chime: 3 ascending tones + ready chime) */
 #define BEEP_FREQ_TONE1_HZ 1480.0f /**< Tone 1 (low: ~D6/F#6) */
@@ -372,8 +360,9 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 /* Input & Throttle Defaults                                                 */
 /*===========================================================================*/
-#define INPUT_SOURCE_DEFAULT 1.0f /**< Default hardware: 0=NONE, 1=POT, 2=CUSTOM */
-#define INPUT_MODE_DEFAULT 2.0f   /**< Default input control mode: 0=SPEED, 1=TORQUE, 2=VOLTAGE */
+#define INPUT_SOURCE_DEFAULT \
+    1.0f /**< Default hardware: 0=NONE, 1=POT, 2=CUSTOM, 3=UART/USB, 4=DSHOT */
+#define INPUT_MODE_DEFAULT 2.0f /**< Default input control mode: 0=SPEED, 1=TORQUE, 2=VOLTAGE */
 #define INPUT_MIN_SPEED_DEFAULT 600.0f /**< Minimum speed for throttle setpoint [rad/s elec] */
 #define INPUT_MIN_CURRENT_DEFAULT 0.5f /**< Minimum current for throttle setpoint [A] */
 #define INPUT_MIN_VQ_DEFAULT 0.05f     /**< Minimum voltage ratio [0.0 to 1.0] */
@@ -383,6 +372,15 @@ extern volatile float ADC_Vref;
 #define POT_LPF_ALPHA 0.95f /**< Potentiometer LPF coefficient (~8 Hz cutoff at 1 kHz) */
 
 /*===========================================================================*/
+/* DShot Input Driver Configuration                                          */
+/*===========================================================================*/
+#define DSHOT_SIGNAL_TIMEOUT_MS 100U /**< Failsafe disarm timeout [ms] */
+#define DSHOT_THROTTLE_MIN 48U       /**< First valid throttle value */
+#define DSHOT_THROTTLE_MAX 2047U     /**< Maximum throttle value */
+#define DSHOT_3D_DEADBAND 1048U      /**< 3D mode zero-throttle midpoint */
+#define DSHOT_DMA_BUF_SIZE 32U       /**< 16 bits * 2 edge timestamps */
+
+/*===========================================================================*/
 /* Flying Start & Active Braking Configuration                               */
 /*===========================================================================*/
 
@@ -390,7 +388,7 @@ extern volatile float ADC_Vref;
 #define BRAKE_MIN_DURATION_MS 50U
 
 /** Maximum fail-safe active dynamic brake timeout [ms] */
-#define BRAKE_MAX_DURATION_MS 350U
+#define BRAKE_MAX_DURATION_MS 1000U
 
 /** Multiplier for adaptive noise floor threshold (4-sigma = 99.994% confidence) */
 #define BRAKE_NOISE_SIGMA_MULT 4.0f

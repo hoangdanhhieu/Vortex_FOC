@@ -110,7 +110,7 @@ void MX_DMA_Init(void) {
     LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMAMUX1);
     LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA1);
 
-    NVIC_SetPriority(DMA1_Channel2_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), 4, 0));
+    NVIC_SetPriority(DMA1_Channel2_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), 1, 0));
     NVIC_EnableIRQ(DMA1_Channel2_IRQn);
 }
 
@@ -657,16 +657,16 @@ void MX_TIM4_Init(void) {
     */
     GPIO_InitStruct.Pin = LL_GPIO_PIN_7;
     GPIO_InitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
-    GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
-    GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
+    GPIO_InitStruct.Pull = LL_GPIO_PULL_UP;
     GPIO_InitStruct.Alternate = LL_GPIO_AF_2;
     LL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
     /* TIM4 DMA Init */
     LL_DMA_SetPeriphRequest(DMA1, LL_DMA_CHANNEL_2, LL_DMAMUX_REQ_TIM4_CH2);
     LL_DMA_SetDataTransferDirection(DMA1, LL_DMA_CHANNEL_2, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
-    LL_DMA_SetChannelPriorityLevel(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PRIORITY_LOW);
+    LL_DMA_SetChannelPriorityLevel(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PRIORITY_MEDIUM);
     LL_DMA_SetMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MODE_NORMAL);
     LL_DMA_SetPeriphIncMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PERIPH_NOINCREMENT);
     LL_DMA_SetMemoryIncMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MEMORY_INCREMENT);
@@ -1000,18 +1000,16 @@ void TIM_Start(void) {
     LL_TIM_CC_EnableChannel(TIM1, LL_TIM_CHANNEL_CH3 | LL_TIM_CHANNEL_CH3N);
     LL_TIM_CC_EnableChannel(TIM1, LL_TIM_CHANNEL_CH4);
     LL_TIM_EnableAllOutputs(TIM1);
+
+    TIM1->RCR = 0;
+    TIM1->EGR = TIM_EGR_UG;
+    TIM1->SR = ~TIM_SR_UIF;
+    TIM1->RCR = 1;
+
     LL_TIM_EnableCounter(TIM1);
     LL_TIM_EnableCounter(TIM2);
     LL_TIM_EnableCounter(TIM6);
     LL_TIM_EnableIT_UPDATE(TIM6);
-}
-
-/**
- * @brief  Start Capture Timer
- */
-void CAPTURE_Start(void) {
-    LL_TIM_EnableCounter(TIM4);
-    LL_TIM_EnableDMAReq_CC2(TIM4);
 }
 
 /* ========================================================================== */

@@ -168,7 +168,7 @@ void FOC_StateDetect(void) {
     }
 }
 
-RAM_FUNC void FOC_StateFlyingStart(void) {
+void FOC_StateFlyingStart(void) {
     s_flying_start_counter++;
 
     float E_alpha, E_beta;
@@ -296,6 +296,9 @@ RAM_FUNC void FOC_StateFlyingStart(void) {
 }
 
 void FOC_StateBrake(void) {
+    if (s_brake_counter == 0) {
+        FOC_HW_DisableAWD();
+    }
     s_brake_counter++;
     g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.0f;
 
@@ -306,6 +309,7 @@ void FOC_StateBrake(void) {
     s_i_mag_sq_flt += 0.01f * (i_mag_sq - s_i_mag_sq_flt);
 
     if (s_brake_counter >= s_brake_max_samples) {
+        FOC_HW_EnableAWD();
         /* Maximum timeout expired: fail-safe exit to ALIGN */
         g_foc.startup.counter = 0;
         g_foc.status.state = FOC_STATE_ALIGN;
@@ -313,6 +317,7 @@ void FOC_StateBrake(void) {
         /* Below noise threshold: count consecutive debounce samples */
         s_brake_debounce_counter++;
         if (s_brake_debounce_counter >= s_brake_debounce_target) {
+            FOC_HW_EnableAWD();
             g_foc.startup.counter = 0;
             g_foc.status.state = FOC_STATE_ALIGN;
         }

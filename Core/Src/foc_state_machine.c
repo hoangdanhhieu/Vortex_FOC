@@ -39,6 +39,8 @@ extern volatile uint32_t adc_isr_us;
 extern volatile uint16_t adc_regular_buffer[3];
 extern volatile float ADC_Vref;
 static float s_beep_phase = 0.0f;
+static float s_valpha_active = 0.0f;
+static float s_vbeta_active = 0.0f;
 static void FOC_StateRun(void);
 static void FOC_StateSelfCommission(void);
 void FOC_StateBeep(void);
@@ -73,6 +75,8 @@ void FOC_Init(void) {
     g_foc.data.Vd = g_foc.data.Vq = 0.0f;
     g_foc.data.Iq_ref_cmd = 0.0f;
     g_foc.data.Valpha = g_foc.data.Vbeta = 0.0f;
+    g_foc.data.Valpha_applied = g_foc.data.Vbeta_applied = 0.0f;
+    s_valpha_active = s_vbeta_active = 0.0f;
     g_foc.data.Vbus = 12.0f;
     g_foc.data.Vbus_inv = 1.0f / 12.0f;
     g_foc.data.Ibus = 0.0f;
@@ -178,6 +182,9 @@ void FOC_Stop(void) {
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
+    g_foc.data.Valpha = g_foc.data.Vbeta = 0.0f;
+    g_foc.data.Valpha_applied = g_foc.data.Vbeta_applied = 0.0f;
+    s_valpha_active = s_vbeta_active = 0.0f;
     g_foc.status.state = FOC_STATE_IDLE;
 }
 
@@ -194,6 +201,7 @@ static inline void FOC_StateIdle(void) {
 
 static inline void FOC_StateStop(void) {
     FOC_EnableDrivers(0);
+    FOC_HW_EnableAWD();
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
@@ -402,6 +410,13 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     } else {
         FOC_HW_SetPWMDuty(out_a, out_c, out_b);
     }
+
+    /* 2-cycle pipeline voltage tracking for Peak update:
+     * Shift applied voltage so SMO receives the exact voltage applied during [-1.0 dt, 0] */
+    g_foc.data.Valpha_applied = s_valpha_active;
+    g_foc.data.Vbeta_applied = s_vbeta_active;
+    s_valpha_active = g_foc.data.Valpha;
+    s_vbeta_active = g_foc.data.Vbeta;
 }
 
 /*===========================================================================*/
@@ -409,8 +424,8 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
 /*===========================================================================*/
 
 CCMRAM_FUNC static void FOC_StateRun(void) {
-    SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha, g_foc.data.Vbeta, g_foc.data.Ialpha_flt,
-               g_foc.data.Ibeta_flt);
+    SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha_applied, g_foc.data.Vbeta_applied,
+               g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt);
 
     float smo_theta_park = SMO_GetParkAngle(&g_foc.ctrl.smo);
     float smo_theta_pwm = SMO_GetPWMAngle(&g_foc.ctrl.smo);
@@ -440,7 +455,7 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
         g_foc.cmd.Id_ref = 0.0f;
     }
 
-    FOC_Input_ApplyFastTarget_HF();
+    FOC_Input_Update_HF();
 
     if (g_foc.status.control_mode == FOC_MODE_TORQUE) {
         float ramp_rate =
@@ -629,12 +644,15 @@ void FOC_StartSelfCommission(void) {
 void FOC_SetDirection(int8_t dir) {
     if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_STOP ||
         g_foc.status.state == FOC_STATE_FAULT) {
-        g_foc.status.reverse = (dir < 0) ? -1.0f : 1.0f;
+        int8_t base_dir = (g_foc.cfg.direction < 0) ? -1 : 1;
+        int8_t cmd_dir = (dir < 0) ? -1 : 1;
+        g_foc.status.reverse = (float)(base_dir * cmd_dir);
     }
 }
 
 int8_t FOC_GetDirection(void) {
-    return (g_foc.status.reverse < 0.0f) ? -1 : 1;
+    int8_t base_dir = (g_foc.cfg.direction < 0) ? -1 : 1;
+    return (g_foc.status.reverse * (float)base_dir < 0.0f) ? -1 : 1;
 }
 
 float FOC_GetDt(void) {

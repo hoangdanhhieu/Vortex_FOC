@@ -38,6 +38,8 @@
 
 #include "foc_config.h"
 #include "foc_state_machine.h"
+#include "cordic_math.h"
+#include "foc.h"
 
 /* DEBUG VARIABLES FOR ACTIVE NOISE MEASUREMENT */
 float debug_rs_id_sq_sum = 0.0f;
@@ -49,11 +51,7 @@ float debug_noise_rms_active = 0.0f;
 
 #define ID_MAX_DFT_N 192
 
-/* Frequency generation tables and DFT buffers */
-static float sin_table_cmd[ID_MAX_DFT_N];
-static float cos_table_cmd[ID_MAX_DFT_N];
-static float sin_table_demod[ID_MAX_DFT_N];
-static float cos_table_demod[ID_MAX_DFT_N];
+/* DFT buffers and frequency generation variables */
 static float buf_s[ID_MAX_DFT_N];
 static float buf_c[ID_MAX_DFT_N];
 static float run_sum_s;
@@ -64,6 +62,8 @@ static uint16_t N_DFT;
 static float sat_freq;
 static float sat_omega;
 static float sat_phase_inc;
+static float sat_phase_inc_norm;
+static float sat_delay_phase_norm;
 static float sat_cos_half_phi;
 
 /* Timekeeping */
@@ -124,7 +124,8 @@ static uint8_t sat_backtrack_cnt;  /* Counter for backtrack steps (limit to 2) *
 static float sat_target_i_bias;    /* Dynamic DC bias current target */
 static float sat_vd_error_int;     /* Slow DC bias voltage integrator */
 
-static float meas_accum_i_sq[128];
+#define SAT_MAX_ACCUM_SAMPLES 32
+static float meas_accum_i_sq[SAT_MAX_ACCUM_SAMPLES];
 volatile static uint16_t meas_accum_count;
 
 /* Shared variables between FastTask (48kHz) and SlowTask (1kHz) */
@@ -158,6 +159,8 @@ static void configure_freq(float f_probe) {
     sat_freq = f_probe;
     sat_omega = TWO_PI * sat_freq;
     sat_phase_inc = TWO_PI * sat_freq * g_foc.dt;
+    sat_phase_inc_norm = 2.0f * sat_freq * g_foc.dt;
+    sat_delay_phase_norm = 1.5f * sat_phase_inc_norm;
     sat_cos_half_phi = cosf(0.5f * sat_phase_inc);
     N_DFT = (uint16_t)(g_foc.cfg.pwm_frequency / sat_freq + 0.5f);
     if (N_DFT > ID_MAX_DFT_N) N_DFT = ID_MAX_DFT_N;
@@ -168,13 +171,7 @@ static void configure_freq(float f_probe) {
      * - 0.5 dt: Voltage mixing across sampling interval (V_eff = 0.5*V[k-1] + 0.5*V[k]).
      * Note: The corresponding amplitude attenuation cos(phi/2) is precomputed in sat_cos_half_phi
      * and compensated when calculating Z_mag_sq. */
-    float delay_phase = 1.5f * sat_phase_inc;
     for (uint16_t k = 0; k < N_DFT; k++) {
-        float phase_cmd = sat_phase_inc * (float)k;
-        sin_table_cmd[k] = sinf(phase_cmd);
-        cos_table_cmd[k] = cosf(phase_cmd);
-        sin_table_demod[k] = sinf(phase_cmd - delay_phase);
-        cos_table_demod[k] = cosf(phase_cmd - delay_phase);
         buf_s[k] = 0.0f;
         buf_c[k] = 0.0f;
     }
@@ -586,12 +583,17 @@ void MotorID_FastTask(float id, float* vd, float* vq) {
             *vd = rs_vd_out;
         } else if (rs_sub == 3) {
             /* FREQ_DETECT_PROBE at 1000 Hz */
-            float sin_cmd = sin_table_cmd[step_in_cycle];
+            float phase_cmd_norm = sat_phase_inc_norm * (float)step_in_cycle;
+            float dummy_cos, sin_cmd;
+            cordic_sincos(normalize_angle_norm(phase_cmd_norm), &dummy_cos, &sin_cmd);
             *vd = rs_probe_vd_bias + rs_probe_v_inj * sin_cmd;
 
             if (meas_cycles >= (uint32_t)(N_DFT * 5) && meas_cycles < (uint32_t)(N_DFT * 10)) {
-                rs_probe_accum_s += id * sin_table_demod[step_in_cycle];
-                rs_probe_accum_c += id * cos_table_demod[step_in_cycle];
+                float phase_demod_norm = phase_cmd_norm - sat_delay_phase_norm;
+                float cos_demod, sin_demod;
+                cordic_sincos(normalize_angle_norm(phase_demod_norm), &cos_demod, &sin_demod);
+                rs_probe_accum_s += id * sin_demod;
+                rs_probe_accum_c += id * cos_demod;
             }
             step_in_cycle = (step_in_cycle + 1) % N_DFT;
             meas_cycles++;
@@ -615,11 +617,17 @@ void MotorID_FastTask(float id, float* vd, float* vq) {
             *vd = sat_vd_bias;
         } else if (sat_sub == 1) {
             /* INJECT_SINE_ON_TOP_OF_DC: DC integrator frozen to prevent DFT drift */
-            float sin_cmd = sin_table_cmd[step_in_cycle];
+            float phase_cmd_norm = sat_phase_inc_norm * (float)step_in_cycle;
+            float dummy_cos, sin_cmd;
+            cordic_sincos(normalize_angle_norm(phase_cmd_norm), &dummy_cos, &sin_cmd);
             *vd = sat_vd_bias + v_inj * sin_cmd;
 
-            float new_s = id * sin_table_demod[step_in_cycle];
-            float new_c = id * cos_table_demod[step_in_cycle];
+            float phase_demod_norm = phase_cmd_norm - sat_delay_phase_norm;
+            float cos_demod, sin_demod;
+            cordic_sincos(normalize_angle_norm(phase_demod_norm), &cos_demod, &sin_demod);
+
+            float new_s = id * sin_demod;
+            float new_c = id * cos_demod;
 
             run_sum_s += new_s - buf_s[buf_idx];
             run_sum_c += new_c - buf_c[buf_idx];
@@ -637,7 +645,7 @@ void MotorID_FastTask(float id, float* vd, float* vq) {
                 float i_imag = 2.0f * (run_sum_c / (float)N_DFT);
                 float i_mag_sq = i_real * i_real + i_imag * i_imag;
 
-                if (i_mag_sq > 1e-10f && meas_accum_count < 128) {
+                if (i_mag_sq > 1e-10f && meas_accum_count < SAT_MAX_ACCUM_SAMPLES) {
                     meas_accum_i_sq[meas_accum_count++] = i_mag_sq;
                 }
             }
@@ -910,8 +918,10 @@ void MotorID_SlowTask(void) {
                 bool valid_meas = false;
 
                 __disable_irq();
-                uint8_t count = (meas_accum_count > 128) ? 128 : (uint8_t)meas_accum_count;
-                float local_accum[128];
+                uint8_t count = (meas_accum_count > SAT_MAX_ACCUM_SAMPLES)
+                                    ? SAT_MAX_ACCUM_SAMPLES
+                                    : (uint8_t)meas_accum_count;
+                float local_accum[SAT_MAX_ACCUM_SAMPLES];
                 for (uint8_t i = 0; i < count; i++) {
                     local_accum[i] = meas_accum_i_sq[i];
                 }

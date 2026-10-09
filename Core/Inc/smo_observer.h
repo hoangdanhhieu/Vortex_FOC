@@ -137,15 +137,15 @@ CCMRAM_FUNC static inline float SMO_GetParkAngle(const SMO_Observer_t* smo) {
  * @return Electrical angle in [-1, 1) representing [-pi, pi)
  */
 CCMRAM_FUNC static inline float SMO_GetPWMAngle(const SMO_Observer_t* smo) {
-    /* PWM Hardware Delay Compensation (Total = 1.0 dt):
-     * - t = 0: ADC samples current at the Peak. Observer calculates theta_est for t=0.
-     * - t = 0.5 dt: Update Event occurs at the Valley. New CCR is loaded.
-     * - t = 0.5 dt to 1.5 dt: New voltage is applied to the motor.
-     * - t = 1.0 dt: The exact center (average) of the new voltage application.
-     * Since the voltage calculated now takes effect symmetrically around t = 1.0 dt,
-     * we must advance the PWM angle by exactly 1.0 dt to align it perfectly.
+    /* PWM Hardware Delay Compensation (Total = 1.5 dt for Peak Update):
+     * - t = 0: ADC samples current at Peak k. Observer calculates theta_est for t=0.
+     * - t = 1.0 dt: Update Event occurs at Peak k+1. New CCR shadow register is loaded.
+     * - t = 1.0 dt to 2.0 dt: New voltage is applied to the motor.
+     * - t = 1.5 dt: The exact center (average) of the new voltage application window.
+     * Since the voltage calculated now takes effect symmetrically around t = 1.5 dt,
+     * we must advance the PWM angle by exactly 1.5 dt to align it perfectly.
      */
-    float theta_advance = (smo->omega_est / PI) * (1.0f * smo->dt);
+    float theta_advance = (smo->omega_est / PI) * (1.5f * smo->dt);
     return normalize_angle_norm(smo->theta_est + theta_advance);
 }
 

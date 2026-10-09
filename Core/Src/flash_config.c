@@ -155,7 +155,7 @@ void FlashConfig_Apply(void) {
         g_foc.wc_current_stf = TWO_PI * 1500.0f;
     }
 
-    FOC_SetDirection(g_foc.cfg.direction);
+    FOC_SetDirection(1);
 
     float i_limit = g_foc.cfg.motor_max_curr;
     float v_limit = g_foc.data.Vbus * SQRT3_INV; /* Vbus / sqrt(3) */

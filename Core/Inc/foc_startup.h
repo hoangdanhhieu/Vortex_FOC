@@ -43,6 +43,6 @@ void FOC_StateStartup(void);
  * @param smo_theta_pwm  Estimated electrical angle for PWM from SMO
  * @param smo_omega      Estimated electrical speed from SMO
  */
-CCMRAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega);
+void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega);
 
 #endif /* FOC_STARTUP_H */

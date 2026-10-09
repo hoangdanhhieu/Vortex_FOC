@@ -7,6 +7,7 @@
 
 #include "foc_slow_task.h"
 #include "foc_state_machine.h"
+#include "input_dshot.h"
 #include "main.h"
 
 /* External handles */
@@ -108,6 +109,13 @@ void SysTick_Handler(void) {
 /* ========================================================================== */
 
 void DMA1_Channel2_IRQHandler(void) {
+    if (DMA1->ISR & DMA_ISR_TCIF2) {
+        DMA1->IFCR = DMA_IFCR_CTCIF2;
+        DShot_DMA_IRQHandler();
+    }
+    if (DMA1->ISR & DMA_ISR_TEIF2) {
+        DMA1->IFCR = DMA_IFCR_CTEIF2;
+    }
 }
 
 /**
@@ -116,7 +124,7 @@ void DMA1_Channel2_IRQHandler(void) {
 
 CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
     /* AWD1 ADC1: Phase A overcurrent */
-    if (LL_ADC_IsActiveFlag_AWD1(ADC1)) {
+    if (LL_ADC_IsActiveFlag_AWD1(ADC1) && LL_ADC_IsEnabledIT_AWD1(ADC1)) {
         LL_ADC_ClearFlag_AWD1(ADC1);
         FOC_EnableDrivers(0);
         g_foc.status.fault = FOC_FAULT_OVERCURRENT;
@@ -124,7 +132,7 @@ CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
     }
 
     /* AWD1 ADC2: Phase B/C overcurrent */
-    if (LL_ADC_IsActiveFlag_AWD1(ADC2)) {
+    if (LL_ADC_IsActiveFlag_AWD1(ADC2) && LL_ADC_IsEnabledIT_AWD1(ADC2)) {
         LL_ADC_ClearFlag_AWD1(ADC2);
         FOC_EnableDrivers(0);
         g_foc.status.fault = FOC_FAULT_OVERCURRENT;

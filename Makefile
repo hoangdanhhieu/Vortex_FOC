@@ -49,6 +49,7 @@ Core/Src/foc_startup.c \
 Core/Src/foc_slow_task.c \
 Core/Src/foc_input.c \
 Core/Src/input_pot.c \
+Core/Src/input_dshot.c \
 Core/Src/motor_id.c \
 Core/Src/comm_protocol.c \
 Core/Src/flash_config.c \

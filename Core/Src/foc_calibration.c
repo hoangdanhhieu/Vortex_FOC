@@ -155,7 +155,6 @@ void FOC_ConfigureAWD(void) {
         LL_ADC_DisableIT_AWD1(ADC1);
         LL_ADC_DisableIT_AWD2(ADC1);
         LL_ADC_DisableIT_AWD1(ADC2);
-        g_foc.plot.user_plot3 = 1.0f; /* AWD inactive -> SW fast-OC active */
         return;
     }
 
@@ -189,8 +188,6 @@ void FOC_ConfigureAWD(void) {
 
     LL_ADC_EnableIT_AWD1(ADC1);
     LL_ADC_EnableIT_AWD1(ADC2);
-
-    g_foc.plot.user_plot3 = 0.0f; /* HW AWD armed at the resolved threshold */
 }
 
 void FOC_StateCalibration(void) {

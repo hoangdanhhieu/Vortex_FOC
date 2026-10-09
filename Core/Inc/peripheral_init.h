@@ -25,9 +25,8 @@ void ADC_Setup(void);
 void ADC_Start(void);
 uint16_t ADC_ReadPot_SingleShot(void);
 
-/* Timer & Capture Controls */
+/* Timer Controls */
 void TIM_Start(void);
-void CAPTURE_Start(void);
 
 /* Individual Peripheral Initializers */
 void MX_GPIO_Init(void);

@@ -56,7 +56,7 @@ void Profiler_Start(Profiler_State_t* profiler, uint8_t mode, float amp, float o
     }
 }
 
-CCMRAM_FUNC void Profiler_Update(Profiler_State_t* profiler, float* target_ref) {
+void Profiler_Update(Profiler_State_t* profiler, float* target_ref) {
     if (profiler->mode == PROFILER_MODE_OFF) {
         return;
     }

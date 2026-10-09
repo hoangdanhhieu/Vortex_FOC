@@ -146,6 +146,20 @@ static inline void FOC_HW_ClearAWDFlags(void) {
     LL_ADC_ClearFlag_AWD2(ADC2);
 }
 
+static inline void FOC_HW_DisableAWD(void) {
+    LL_ADC_DisableIT_AWD1(ADC1);
+    LL_ADC_DisableIT_AWD1(ADC2);
+    LL_ADC_ClearFlag_AWD1(ADC1);
+    LL_ADC_ClearFlag_AWD1(ADC2);
+}
+
+static inline void FOC_HW_EnableAWD(void) {
+    LL_ADC_ClearFlag_AWD1(ADC1);
+    LL_ADC_ClearFlag_AWD1(ADC2);
+    LL_ADC_EnableIT_AWD1(ADC1);
+    LL_ADC_EnableIT_AWD1(ADC2);
+}
+
 static inline void FOC_TriggerRegularADC(void) {
     if (LL_ADC_REG_IsConversionOngoing(ADC1) == 0) {
         LL_ADC_REG_StartConversion(ADC1);

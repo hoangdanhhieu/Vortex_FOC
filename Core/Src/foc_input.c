@@ -3,29 +3,53 @@
 #include <stddef.h>
 
 #include "foc_state_machine.h"
+#include "input_dshot.h"
 #include "input_pot.h"
-#include "usb_device.h"
-
-extern USBD_HandleTypeDef hUsbDeviceFS;
 
 static FOC_InputSource_t s_input_source = FOC_INPUT_SOURCE_NONE;
 static const FOC_InputDriver_t* s_custom_driver = NULL;
-static const FOC_InputDriver_t* s_active_driver = &g_driver_pot;
+static const FOC_InputDriver_t* s_active_driver = NULL;
 
 static float s_throttle_active = 0.0f;
 static float s_dynamic_min_vq = 0.0f;
 static uint8_t s_armed = 0;
-static uint16_t s_zero_count = 0;
+static uint16_t s_fault_clear_count = 0;
+
+static void FOC_Input_SwitchDriver(const FOC_InputDriver_t* new_driver,
+                                   FOC_InputSource_t new_source) {
+    if (s_active_driver != new_driver) {
+        s_active_driver = new_driver;
+        s_input_source = new_source;
+        s_armed = 0;
+        s_fault_clear_count = 0;
+        s_throttle_active = 0.0f;
+        if (s_active_driver && s_active_driver->init) {
+            s_active_driver->init();
+        }
+    } else {
+        s_input_source = new_source;
+    }
+}
 
 void FOC_Input_Init(void) {
     s_armed = 0;
-    s_zero_count = 0;
+    s_fault_clear_count = 0;
     s_throttle_active = 0.0f;
     s_dynamic_min_vq = 0.0f;
-    s_input_source = FOC_INPUT_SOURCE_POT;
-    s_active_driver = &g_driver_pot;
-    if (g_driver_pot.init) {
-        g_driver_pot.init();
+    s_active_driver = NULL;
+    s_input_source = FOC_INPUT_SOURCE_NONE;
+
+    uint8_t src_cfg = FOC_GetConfigInputSource();
+    if (src_cfg == FOC_INPUT_SOURCE_DSHOT) {
+        FOC_Input_SwitchDriver(&g_driver_dshot, FOC_INPUT_SOURCE_DSHOT);
+    } else if (src_cfg == FOC_INPUT_SOURCE_CUSTOM && s_custom_driver != NULL) {
+        FOC_Input_SwitchDriver(s_custom_driver, FOC_INPUT_SOURCE_CUSTOM);
+    } else if (src_cfg == FOC_INPUT_SOURCE_POT) {
+        FOC_Input_SwitchDriver(&g_driver_pot, FOC_INPUT_SOURCE_POT);
+    } else if (src_cfg == FOC_INPUT_SOURCE_UART_USB) {
+        FOC_Input_SwitchDriver(NULL, FOC_INPUT_SOURCE_UART_USB);
+    } else {
+        FOC_Input_SwitchDriver(NULL, FOC_INPUT_SOURCE_NONE);
     }
 }
 
@@ -62,7 +86,7 @@ uint8_t FOC_Input_IsArmed(void) {
  * Single source of truth for throttle-to-target mapping, shared by the 1 kHz
  * slow-path dispatch and the 48 kHz high-speed driver fast path.
  */
-static void FOC_Input_MapThrottle(float thr) {
+CCMRAM_FUNC static void FOC_Input_MapThrottle(float thr) {
     switch (FOC_GetControlMode()) {
         case FOC_MODE_SPEED: {
             float min_spd = FOC_GetInputMinSpd();
@@ -96,33 +120,25 @@ static void FOC_Input_MapThrottle(float thr) {
  *         0 when a physical driver is active.
  */
 static uint8_t FOC_Input_SelectActiveDriver(FOC_InputCmd_t* cmd) {
-    /* USB Override: Top Priority for Tuning / Debugging */
-    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) {
-        s_input_source = FOC_INPUT_SOURCE_UART_USB;
-        s_active_driver = NULL;
-        s_armed = 0;
-        s_zero_count = 0;
-        s_throttle_active = 0.0f;
+    uint8_t src_cfg = FOC_GetConfigInputSource();
+
+    /* Host GUI Control via USB or Input Disabled */
+    if (src_cfg == FOC_INPUT_SOURCE_UART_USB) {
+        FOC_Input_SwitchDriver(NULL, FOC_INPUT_SOURCE_UART_USB);
+        return 1;
+    }
+    if (src_cfg == FOC_INPUT_SOURCE_NONE) {
+        FOC_Input_SwitchDriver(NULL, FOC_INPUT_SOURCE_NONE);
         return 1;
     }
 
     /* Select Active Physical Driver based on Config */
-    uint8_t src_cfg = FOC_GetConfigInputSource();
-    if (src_cfg == FOC_INPUT_SOURCE_NONE) {
-        s_input_source = FOC_INPUT_SOURCE_NONE;
-        s_active_driver = NULL;
-        s_armed = 0;
-        s_zero_count = 0;
-        s_throttle_active = 0.0f;
-        return 1;
-    }
-
     if (src_cfg == FOC_INPUT_SOURCE_CUSTOM && s_custom_driver != NULL) {
-        s_active_driver = s_custom_driver;
-        s_input_source = FOC_INPUT_SOURCE_CUSTOM;
+        FOC_Input_SwitchDriver(s_custom_driver, FOC_INPUT_SOURCE_CUSTOM);
+    } else if (src_cfg == FOC_INPUT_SOURCE_DSHOT) {
+        FOC_Input_SwitchDriver(&g_driver_dshot, FOC_INPUT_SOURCE_DSHOT);
     } else {
-        s_active_driver = &g_driver_pot;
-        s_input_source = FOC_INPUT_SOURCE_POT;
+        FOC_Input_SwitchDriver(&g_driver_pot, FOC_INPUT_SOURCE_POT);
     }
 
     /* Read Hardware */
@@ -138,30 +154,73 @@ static uint8_t FOC_Input_SelectActiveDriver(FOC_InputCmd_t* cmd) {
 /**
  * @brief Update the arming state (1 kHz).
  *
- * Drivers with manages_arming=1 are the source of truth for arming
- * (e.g. DShot protocol arming). All other drivers use the pot-style
- * zero-throttle lock: hold throttle at 0 for 100 ms to arm.
+ * Each active driver owns its safety handshake / zero interlock and reports
+ * arming readiness via cmd->arm_req. If the system is in FAULT, arming is forced to 0.
  */
 static void FOC_Input_UpdateArming(const FOC_InputCmd_t* cmd, FOC_State_t state) {
-    if (s_active_driver && s_active_driver->manages_arming) {
-        s_armed = ((state == FOC_STATE_IDLE || state == FOC_STATE_FAULT) ? 0u : cmd->arm_req);
+    if (state == FOC_STATE_FAULT) {
+        s_armed = 0;
+        return;
+    }
+    s_armed = cmd->is_active ? cmd->arm_req : 0U;
+}
+
+/**
+ * @brief Stop the motor and reset the input-layer state (1 kHz).
+ */
+static void FOC_Input_DoStop(void) {
+    FOC_SetVoltageRef(0.0f);
+    FOC_SetSpeedRef(0.0f);
+    FOC_SetTorqueCurrent(0.0f);
+    FOC_Stop();
+    s_armed = 0;
+    s_dynamic_min_vq = 0.0f;
+}
+
+/**
+ * @brief Zero-throttle fault recovery (1 kHz).
+ *
+ * When FOC is in FAULT, holding the throttle at zero continuously for 200 ms
+ * acknowledges and clears the fault condition, transitioning FOC back to IDLE.
+ */
+static void FOC_Input_CheckFaultRecovery(const FOC_InputCmd_t* cmd, FOC_State_t state) {
+    if (state != FOC_STATE_FAULT) {
+        s_fault_clear_count = 0;
         return;
     }
 
-    if (state == FOC_STATE_IDLE || state == FOC_STATE_FAULT || state == FOC_STATE_BEEP) {
-        if (state == FOC_STATE_FAULT) {
-            s_armed = 0;
-            s_zero_count = 0;
+    if (!cmd->arm_req && cmd->is_active) {
+        if (++s_fault_clear_count >= 200U) { /* 200 ms continuous zero throttle */
+            FOC_ClearFault();
+            s_fault_clear_count = 0;
         }
-        if (!s_armed) {
-            if (cmd->throttle <= 0.001f) {
-                if (++s_zero_count >= 100) { /* 100ms at zero throttle */
-                    s_armed = 1;
-                }
-            } else {
-                s_zero_count = 0;
-            }
-        }
+    } else {
+        s_fault_clear_count = 0;
+    }
+}
+
+/**
+ * @brief Apply the driver's direction request (1 kHz).
+ *
+ * dir_req: +1 = FWD, -1 = REV, 0 = keep current. When a reversal is requested,
+ * stops the motor, applies the new direction, and triggers immediate FOC restart
+ * so the core's BEMF detector & dynamic brake (FOC_STATE_BRAKE) safely reverse rotation.
+ */
+static void FOC_Input_CheckDirection(const FOC_InputCmd_t* cmd, FOC_State_t state) {
+    if (cmd->dir_req == 0 || cmd->dir_req == FOC_GetDirection()) {
+        return;
+    }
+    if (state != FOC_STATE_IDLE && state != FOC_STATE_STOP && state != FOC_STATE_FAULT &&
+        state != FOC_STATE_BEEP) {
+        FOC_Input_DoStop();
+    }
+    FOC_SetDirection(cmd->dir_req);
+    if (cmd->arm_req && cmd->is_active) {
+        uint8_t mode_val = FOC_GetConfigInputMode();
+        if (mode_val > 2) mode_val = 2;
+        FOC_SetControlMode((FOC_ControlMode_t)mode_val);
+        s_armed = 1;
+        FOC_Start();
     }
 }
 
@@ -184,13 +243,7 @@ static void FOC_Input_CheckStartStop(const FOC_InputCmd_t* cmd, FOC_State_t stat
     if (state != FOC_STATE_IDLE && state != FOC_STATE_FAULT && state != FOC_STATE_STOP &&
         state != FOC_STATE_BEEP) {
         if (!cmd->arm_req || !cmd->is_active) {
-            FOC_SetVoltageRef(0.0f);
-            FOC_SetSpeedRef(0.0f);
-            FOC_SetTorqueCurrent(0.0f);
-            FOC_Stop();
-            s_armed = 0;
-            s_zero_count = 0;
-            s_dynamic_min_vq = 0.0f;
+            FOC_Input_DoStop();
         }
     }
 }
@@ -202,18 +255,20 @@ void FOC_Input_Update(void) {
     }
 
     FOC_State_t state = FOC_GetState();
+    FOC_Input_CheckFaultRecovery(&cmd, state);
+    state = FOC_GetState(); /* Re-sample state if fault was cleared to IDLE */
     FOC_Input_UpdateArming(&cmd, state);
+    FOC_Input_CheckDirection(&cmd, state);
+    state = FOC_GetState(); /* A direction-induced stop may have moved us to IDLE */
     FOC_Input_CheckStartStop(&cmd, state);
 
-    /* Target Dispatcher when running (slow drivers only; high-speed drivers
-     * are dispatched at 48 kHz via FOC_Input_ApplyFastTarget_HF). */
     if (state == FOC_STATE_RUN && cmd.is_active &&
         !(s_active_driver && s_active_driver->is_high_speed)) {
         FOC_Input_MapThrottle(cmd.throttle);
     }
 }
 
-CCMRAM_FUNC void FOC_Input_ApplyFastTarget_HF(void) {
+CCMRAM_FUNC void FOC_Input_Update_HF(void) {
     if (!s_armed || s_active_driver == NULL || !s_active_driver->is_high_speed ||
         s_active_driver->read_fast == NULL) {
         return;

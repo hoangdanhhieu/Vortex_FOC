@@ -77,6 +77,7 @@ typedef struct {
     float Vd, Vq;        /**< Park rotating frame control voltages (d-axis, q-axis) [V] */
     float Iq_ref_cmd;    /**< Slew-rate limited active Iq current command [A] */
     float Valpha, Vbeta; /**< Inverse Park stationary frame output voltages [V] */
+    float Valpha_applied, Vbeta_applied; /**< Voltages physically applied to motor during previous PWM period [V] */
     float theta_park;    /**< Electrical rotor position angle for Park transform (no hardware delay
                             compensation) */
     float theta_elec;    /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0,

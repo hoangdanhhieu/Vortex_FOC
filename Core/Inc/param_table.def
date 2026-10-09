@@ -28,10 +28,10 @@ PARAM_DEF(PID_LADRC_B0,   float,     ladrc_b0,             LADRC_B0_DEFAULT)
 PARAM_DEF(PID_V_RAMP,     float,     voltage_ramp_rate,    VOLTAGE_RAMP_RATE)
 
 /* Startup */
-PARAM_DEF(PID_I_STRT,     float,     startup_current,      STARTUP_CURRENT)
-PARAM_DEF(PID_I_ALGN,     float,     align_current,        ALIGN_CURRENT)
-PARAM_DEF(PID_ACCEL,      float,     startup_accel,        STARTUP_ACCEL)
-PARAM_DEF(PID_HANDOFF,    float,     startup_handoff_speed,STARTUP_HANDOFF_SPEED)
+PARAM_DEF(PID_I_STRT,     float,     startup_current,      0.0f)
+PARAM_DEF(PID_I_ALGN,     float,     align_current,        0.0f)
+PARAM_DEF(PID_ACCEL,      float,     startup_accel,        0.0f)
+PARAM_DEF(PID_HANDOFF,    float,     startup_handoff_speed, 0.0f)
 
 /* Ramp Rates */
 PARAM_DEF(PID_RAMP_ACC,   float,     speed_ramp_accel,     SPEED_RAMP_ACCEL)
@@ -75,6 +75,9 @@ PARAM_DEF(PID_PWM_FREQ,    float,     pwm_frequency,        48000.0f)
 PARAM_DEF(PID_DIRECTION,  int8_t,    direction,            1)
 PARAM_DEF(PID_OC_COUNT,   uint8_t,   fault_oc_count,       FAULT_OVERCURRENT_COUNT)
 PARAM_DEF(PID_STALL_EN,   uint8_t,   fault_stall_enable,   FAULT_STALL_ENABLE)
+
+/* DShot */
+PARAM_DEF(PID_DSHOT_3D,    uint8_t,   dshot_3d_enable,      0)
 
 /* Undefine the macro so the file can be included multiple times with different definitions */
 #undef PARAM_DEF

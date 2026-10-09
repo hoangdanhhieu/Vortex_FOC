@@ -104,24 +104,19 @@ void SMO_ResetStates(SMO_Observer_t* smo, float omega_init) {
 }
 
 CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
-    /* BEMF feed path (Flying Start via SMO_FeedBEMF) shares this track loop:
-     * it only compensates the 0.3 dt hardware ADC delay and skips the
-     * observer-specific 6th harmonic compensation blocks below. */
     const uint8_t feed = (FOC_GetState() == FOC_STATE_FLYING_START);
 
     float theta_bemf = cordic_atan2(-smo->Ealpha_flt, smo->Ebeta_flt);
 
     /* Phase Delay Compensation:
-     * - Full observer path (Total = 1.0 dt):
-     *   - 0.5 dt from Backward Euler integration (midpoint lag).
-     *   - 0.5 dt from Voltage Mismatch: The ADC samples exactly at the Peak (t=0).
-     *     The actual voltage applied to the motor between two samples is V[N-2] for
-     *     the first 0.5 dt, and V[N-1] for the second 0.5 dt. However, the observer
-     *     uses V[N-1] for the entire 1.0 dt. This "pulls" the voltage forward in
-     *     time, causing a 0.5 dt lag in the resulting BEMF estimate.
+     * - Full observer path (Total = 0.5 dt for Peak Update):
+     *   - With Peak register update and actual voltage V[k-2] fed into the observer,
+     *     the observer voltage exactly matches the physical motor voltage across [-1.0 dt, 0].
+     *     Therefore, voltage mismatch error is 0.
+     *   - Only Backward Euler midpoint integration lag remains: exactly 0.5 dt.
      * - BEMF feed path: 0.3 dt hardware ADC regular sampling delay.
      */
-    float tau_total = feed ? (0.3f * smo->dt) : ((1.0f + g_foc.cfg.comp_delay_samples) * smo->dt);
+    float tau_total = feed ? (0.3f * smo->dt) : ((0.5f + g_foc.cfg.comp_delay_samples) * smo->dt);
     float x = smo->omega_est * tau_total;
     float x_sq = x * x;
     float phase_lag = x * (1.0f - x_sq * (0.33333333f - 0.2f * x_sq)) * (1.0f / PI);
