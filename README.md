@@ -10,6 +10,7 @@
 [![MCU](https://img.shields.io/badge/Hardware-STM32G431KB-blue.svg?style=for-the-badge&logo=stmicroelectronics)](https://www.st.com/en/microcontrollers-microprocessors/stm32g431kb.html)
 [![Loop Rate](https://img.shields.io/badge/Current_Loop-24_to_64_kHz-orange.svg?style=for-the-badge)]()
 [![GUI](https://img.shields.io/badge/Configurator-PySide6%20%7C%20PyQtGraph-brightgreen.svg?style=for-the-badge&logo=python)](Tools/Configurator/)
+[![DShot](https://img.shields.io/badge/ESC_Protocol-DShot150--1200_%7C_BDShot_300--600-00b4d8.svg?style=for-the-badge)](Core/Src/input_dshot.c)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg?style=for-the-badge)](LICENSE)
 
 ---
@@ -18,6 +19,7 @@
 
 - **24 kHz to 64 kHz Current Loop (~10.5 µs compute time)**: Configurable PWM and control loop frequency running entirely in STM32 CCMRAM for zero-wait-state execution, utilizing hardware CORDIC math and simultaneous dual injected ADC conversions.
 - **Continuous STF-SMO with Fastmoid & Auto-Gains**: Ultra-fast algebraic sigmoid running in 3 FPU cycles with real-time 1 kHz adaptation of sliding gain `k_slide` and boundary layer `k_sigmoid`, combined with a Self-Tuning Filter (STF) for zero phase-lag BEMF filtering.
+- **DShot150–1200 & Bi-Directional DShot (BDShot)**: High-speed digital protocol with auto-baudrate detection and DMA capture on PB7 (TIM4 CH2). Supports standard DShot150/300/600/1200 and bidirectional telemetry (BDShot 300 & 600) sending inverted GCR-encoded eRPM back to Flight Controllers for dynamic RPM notch filtering.
 - **6th-Order Harmonic Rejection**: Online LMS adaptive filter eliminates inverter dead-time distortion and motor cogging ripple from the estimated rotor angle.
 - **LADRC Speed Controller**: Linear Active Disturbance Rejection Control with a 2nd-order LESO, actively estimating and rejecting aerodynamic drag, load step torque, and voltage droop in real time.
 - **Dynamic 3-Phase Skipping**: Low-side 3-shunt sensing automatically skips the phase with the highest duty cycle, eliminating narrow-pulse sampling errors and extending maximum modulation index.
@@ -81,6 +83,12 @@ Identify motor parameters in seconds directly through the GUI:
 - **Dynamic Saturation Profiler**: Sweeps DC bias levels with AC injection, using lock-in DFT demodulation and discrete ZOH inversion to extract nominal inductance, saturation current, and saturation coefficients.
 - **Flux Linkage & KV**: Hand-spin coast test measures zero-crossing periods and peak back-EMF to calculate flux linkage and KV rating.
 - **Inertia & Gain**: Closed-loop step speed test integrates torque current to identify rotor inertia and controller scaling.
+### 6. Digital ESC Protocols: DShot & Bi-Directional DShot (BDShot)
+Designed for seamless integration with drone and robotic flight controllers (Betaflight, INAV, ArduPilot):
+- **Wide Protocol Coverage**: Auto-detects and locks DShot150, DShot300, DShot600, and DShot1200 timings automatically using DMA-assisted edge capture on PB7 (TIM4 CH2).
+- **Bi-Directional Telemetry (BDShot 300 & 600)**: Transmits inverted GCR-encoded electrical RPM (eRPM) packets back over the single signal wire between throttle frames without external telemetry pads.
+- **Dynamic RPM Filtering Ready**: Provides low-latency, high-precision rotor frequency feedback, allowing flight controllers to run dynamic harmonic notch filters for vibration-free flight.
+- **Robust Failsafe & CRC**: Verifies 4-bit CRC checksum on every packet and incorporates a high-speed timeout watchdog to disarm motors instantly if the signal line is severed.
 
 ---
 
@@ -135,6 +143,7 @@ Vortex_FOC/
 │   │   ├── foc_hardware.h            # Direct register LL hardware abstraction (TIM1, ADC, OPAMP)
 │   │   ├── foc_state_machine.h       # FOC control structures & high-frequency task API
 │   │   ├── foc.h                     # Clarke/Park transforms, centered SVPWM, deadtime
+│   │   ├── input_dshot.h             # DShot 150–1200 & BDShot telemetry driver API
 │   │   ├── cordic_math.h             # Hardware CORDIC math wrappers (sin/cos, atan2, modulus)
 │   │   ├── smo_observer.h            # STF-SMO observer, dynamic PLL & 6th-order compensator
 │   │   ├── ladrc_controller.h        # Discrete 2nd-order LESO speed controller
@@ -152,6 +161,7 @@ Vortex_FOC/
 │   └── Src/                          # Real-time C99 firmware implementation
 │       ├── foc_state_machine.c       # 24–64 kHz CCMRAM high-frequency ISR & state dispatcher
 │       ├── foc.c                     # Space Vector PWM & polynomial S-curve deadtime comp
+│       ├── input_dshot.c             # DMA-driven DShot decoder, auto-baud & GCR telemetry engine
 │       ├── smo_observer.c            # Continuous STF-SMO, fastmoid & adaptive PLL
 │       ├── ladrc_controller.c        # Linear Active Disturbance Rejection Control (LADRC)
 │       ├── pi_controller.c           # PI controller with dynamic output limits
@@ -176,6 +186,15 @@ Vortex_FOC/
 ├── STM32G431XX_FLASH.ld              # GNU LD Linker script with CCMRAM (.ccmram) placement
 └── Makefile                          # ARM GCC build script with optimization flags
 ```
+
+---
+
+## Author & Contact
+
+- **Author**: Hoàng Danh Hiếu
+- **Email**: [hoangdanhhieu2003@gmail.com](mailto:hoangdanhhieu2003@gmail.com)
+- **GitHub**: [@hoangdanhhieu](https://github.com/hoangdanhhieu)
+- **Project**: [Vortex FOC](https://github.com/hoangdanhhieu/Vortex_FOC)
 
 ---
 
