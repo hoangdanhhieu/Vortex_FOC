@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 
 from core.serial_comm import SerialThread
-from core import protocol
+from core import protocol, param_defs
 from ui.styles import GREEN, RED, TEXT_DIM, YELLOW, ACCENT
 from ui.widgets import NoWheelSlider
 
@@ -64,11 +64,11 @@ class ControlPanel(QGroupBox):
         spd_group = QGroupBox("Speed Control")
         spd_layout = QVBoxLayout(spd_group)
         spd_header = QHBoxLayout()
-        spd_title = QLabel("Target:")
-        spd_title.setStyleSheet("color: #a6adc8;")
+        self.spd_title = QLabel("Target (Max 30,000 RPM):")
+        self.spd_title.setStyleSheet("color: #a6adc8;")
         self.lbl_spd_val = QLabel("0 RPM")
         self.lbl_spd_val.setStyleSheet(f"font-weight: bold; color: {ACCENT}; font-size: 13px;")
-        spd_header.addWidget(spd_title)
+        spd_header.addWidget(self.spd_title)
         spd_header.addStretch()
         spd_header.addWidget(self.lbl_spd_val)
         spd_layout.addLayout(spd_header)
@@ -144,8 +144,10 @@ class ControlPanel(QGroupBox):
 
         layout.addStretch()
 
-        # Connect status signal
+        # Connect signals
         self._serial.status_received.connect(self._update_status)
+        self._serial.params_received.connect(self._on_params_received)
+        self._serial.value_received.connect(self._on_value_received)
 
         # Cache variables
         self._last_vbus = 0.0
@@ -178,6 +180,45 @@ class ControlPanel(QGroupBox):
             self.slider_volt.setValue(0)
             self.lbl_volt_val.setText("0.0 %")
             self.slider_volt.blockSignals(False)
+
+    def set_max_speed(self, max_rpm: int):
+        """Dynamically update speed slider range and step based on motor max speed."""
+        if max_rpm <= 0:
+            return
+        max_rpm = int(round(max_rpm))
+        curr_val = self.slider_spd.value()
+        self.slider_spd.blockSignals(True)
+        self.slider_spd.setRange(0, max_rpm)
+        step = max(50, int(max_rpm / 100))
+        self.slider_spd.setSingleStep(step)
+        self.slider_spd.setPageStep(step * 10)
+        if curr_val > max_rpm:
+            self.slider_spd.setValue(max_rpm)
+            self.lbl_spd_val.setText(f"{max_rpm:,} RPM")
+        self.slider_spd.blockSignals(False)
+        self.spd_title.setText(f"Target (Max {max_rpm:,} RPM):")
+
+    def _on_params_received(self, params: dict):
+        if protocol.ParamId.M_POLES in params:
+            protocol.set_pole_pairs(params[protocol.ParamId.M_POLES])
+        if protocol.ParamId.M_MAX_SPD in params:
+            max_spd_rad = params[protocol.ParamId.M_MAX_SPD]
+            poles = params.get(protocol.ParamId.M_POLES, protocol.get_pole_pairs())
+            max_rpm = int(round(param_defs.mcu_to_gui(protocol.ParamId.M_MAX_SPD, max_spd_rad, poles)))
+            if max_rpm > 0:
+                self.set_max_speed(max_rpm)
+
+    def _on_value_received(self, pid: int, val: float):
+        if pid == protocol.ParamId.M_POLES:
+            protocol.set_pole_pairs(val)
+        elif pid == protocol.ParamId.M_MAX_SPD:
+            max_rpm = int(round(param_defs.mcu_to_gui(pid, val, protocol.get_pole_pairs())))
+            if max_rpm > 0:
+                self.set_max_speed(max_rpm)
+
+    def on_param_changed(self, pid: int, gui_val: float):
+        if pid == protocol.ParamId.M_MAX_SPD and gui_val > 0:
+            self.set_max_speed(int(round(gui_val)))
 
     def _on_stop(self):
         self._throttle_timer.stop()

@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QScrollArea, QMessageBox, QGraphicsOpacityEffect,
     QFileDialog, QComboBox
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 
 from core.serial_comm import SerialThread
 from core import protocol
@@ -58,6 +58,8 @@ class ParamComboBox(QComboBox):
         self.setEnabled(not ro)
 
 class ParamEditor(QWidget):
+    param_changed = Signal(int, float)  # pid, gui_value
+
     def __init__(self, serial_thread: SerialThread, parent=None):
         super().__init__(parent)
         self._serial = serial_thread
@@ -413,6 +415,7 @@ class ParamEditor(QWidget):
                 protocol.set_pole_pairs(spin.value())
             mcu_val = gui_to_mcu(pid, spin.value(), protocol.get_pole_pairs())
             self._serial.send(protocol.build_set(pid, mcu_val))
+            self.param_changed.emit(pid, spin.value())
 
     def _read_all(self):
         self._serial.send(protocol.build_simple(protocol.CmdType.PARAM_ALL))
@@ -425,6 +428,7 @@ class ParamEditor(QWidget):
             if pid < protocol.ParamId.SPD_REF:
                 mcu_val = gui_to_mcu(pid, spin.value(), protocol.get_pole_pairs())
                 self._serial.send(protocol.build_set(pid, mcu_val))
+                self.param_changed.emit(pid, spin.value())
 
     def _save(self):
         freq_spin = self._spinboxes.get(protocol.ParamId.PWM_FREQ)
@@ -497,6 +501,7 @@ class ParamEditor(QWidget):
                             protocol.set_pole_pairs(val)
                         mcu_val = gui_to_mcu(pid, val, protocol.get_pole_pairs())
                         self._serial.send(protocol.build_set(pid, mcu_val))
+                        self.param_changed.emit(pid, val)
                         count += 1
 
             QMessageBox.information(self, "Import", f"Loaded {count} parameters from:\n{path}")

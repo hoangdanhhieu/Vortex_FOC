@@ -16,7 +16,7 @@ QWidget {{
     background-color: {BG_BASE};
     color: {TEXT};
     font-family: 'Segoe UI', 'Inter', sans-serif;
-    font-size: 13px;
+    font-size: 10pt;
 }}
 QMainWindow {{
     background-color: {BG_BASE};
@@ -27,7 +27,7 @@ QGroupBox {{
     margin-top: 14px;
     padding: 12px 8px 8px 8px;
     font-weight: bold;
-    font-size: 13px;
+    font-size: 10pt;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
@@ -184,7 +184,7 @@ QTextEdit {{
     border: 1px solid {BORDER};
     border-radius: 4px;
     font-family: 'Cascadia Code', 'Consolas', monospace;
-    font-size: 12px;
+    font-size: 9.5pt;
     padding: 4px;
 }}
 QSlider::groove:horizontal {{

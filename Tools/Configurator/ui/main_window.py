@@ -86,6 +86,9 @@ class MainWindow(QMainWindow):
         self._serial.ack_received.connect(self._on_ack)
         self._serial.error.connect(self._on_error)
 
+        # Cross-panel signals
+        self.param_editor.param_changed.connect(self.ctrl_panel.on_param_changed)
+
     def _on_connection_changed(self, connected: bool):
         self.param_editor.set_enabled_state(connected)
         self.ctrl_panel.set_enabled_state(connected)
@@ -113,7 +116,32 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Error: {msg}", 5000)
 
     def closeEvent(self, event):
+        # 1. Stop background polling timer
+        self._status_timer.stop()
+
+        # 2. Stop panel-specific timers
+        if hasattr(self, 'ctrl_panel') and hasattr(self.ctrl_panel, '_throttle_timer'):
+            if self.ctrl_panel._throttle_timer.isActive():
+                self.ctrl_panel._throttle_timer.stop()
+        if hasattr(self, 'plot_panel') and hasattr(self.plot_panel, '_render_timer'):
+            if self.plot_panel._render_timer.isActive():
+                self.plot_panel._render_timer.stop()
+
+        # 3. If connected, tell MCU to stop streaming and stop motor
         if self._serial.is_connected:
-            self._serial.send(protocol.build_plot(False))
+            try:
+                self._serial.send(protocol.build_stream_stop())
+                self._serial.send(protocol.build_simple(protocol.CmdType.STOP))
+            except Exception:
+                pass
+
+        # 4. Cleanly disconnect serial port and wait for thread to terminate
+        try:
             self._serial.disconnect_port()
+        except Exception:
+            pass
+
+        if self._serial.isRunning():
+            self._serial.wait(1000)
+
         event.accept()
