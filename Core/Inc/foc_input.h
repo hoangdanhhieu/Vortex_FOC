@@ -52,6 +52,8 @@ CCMRAM_FUNC void FOC_Input_Update_HF(void);
 void FOC_Input_SelectSource(FOC_InputSource_t source);
 void FOC_Input_RegisterCustomDriver(const FOC_InputDriver_t* driver);
 void FOC_Input_SetMinVq(float vq_min);
+void FOC_Input_NotifyHostActivity(uint16_t timeout_ms);
+uint8_t FOC_Input_IsHostControlling(void);
 
 FOC_InputSource_t FOC_Input_GetSource(void);
 float FOC_Input_GetThrottle(void);

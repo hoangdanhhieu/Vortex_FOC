@@ -5,7 +5,51 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 import core.protocol as protocol
+from ui.styles import GREEN, RED
 from ui.widgets import WheelDoubleSpinBox
+
+STYLE_STOP_PROFILE = f"""
+QPushButton {{
+    background-color: #382430;
+    border: 1px solid #663344;
+    border-radius: 5px;
+    padding: 6px 16px;
+    font-weight: 600;
+    min-height: 24px;
+    color: {RED};
+}}
+QPushButton:hover {{
+    background-color: #55293d;
+    border-color: {RED};
+    color: #ffffff;
+}}
+QPushButton:pressed {{
+    background-color: {RED};
+    color: #1e1e2e;
+}}
+"""
+
+STYLE_START_PROFILE = f"""
+QPushButton {{
+    background-color: #22382c;
+    border: 1px solid #386047;
+    border-radius: 5px;
+    padding: 6px 16px;
+    font-weight: 600;
+    min-height: 24px;
+    color: {GREEN};
+}}
+QPushButton:hover {{
+    background-color: #31523f;
+    border-color: {GREEN};
+    color: #ffffff;
+}}
+QPushButton:pressed {{
+    background-color: {GREEN};
+    color: #1e1e2e;
+}}
+"""
+
 
 class ProfilerPanel(QWidget):
     def __init__(self, serial_thread):
@@ -15,7 +59,7 @@ class ProfilerPanel(QWidget):
         # Opacity effect for disconnected state
         self._fade_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._fade_effect)
-        self.set_enabled_state(False) # Default to disabled
+        self.set_enabled_state(False)  # Default to disabled
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -28,6 +72,7 @@ class ProfilerPanel(QWidget):
         grid.addWidget(QLabel("Mode:"), 0, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.cb_mode = QComboBox()
         self.cb_mode.addItems(["Off", "Step (Pulse)", "Chirp (Sine Sweep)", "Noise (Wind Gusts)"])
+        self.cb_mode.currentIndexChanged.connect(self._on_mode_changed)
         grid.addWidget(self.cb_mode, 0, 1)
 
         # Amplitude
@@ -54,10 +99,13 @@ class ProfilerPanel(QWidget):
         self.sp_freq.setValue(10.0)
         grid.addWidget(self.sp_freq, 3, 1)
 
-        # Start Button
-        self.btn_send = QPushButton("Send Profile")
+        # Start / Stop Button
+        self.btn_send = QPushButton("Stop Profile")
+        self.btn_send.setCursor(Qt.PointingHandCursor)
         self.btn_send.clicked.connect(self._on_send)
         grid.addWidget(self.btn_send, 4, 0, 1, 2)
+
+        self._on_mode_changed(0)
 
         layout.addWidget(group)
         layout.addStretch()
@@ -67,12 +115,21 @@ class ProfilerPanel(QWidget):
         self.setEnabled(enabled)
         self._fade_effect.setOpacity(1.0 if enabled else 0.4)
 
+    def _on_mode_changed(self, idx: int):
+        if idx == 0:
+            self.btn_send.setText("Stop Profile")
+            self.btn_send.setStyleSheet(STYLE_STOP_PROFILE)
+        else:
+            self.btn_send.setText("Start Profile")
+            self.btn_send.setStyleSheet(STYLE_START_PROFILE)
+
     def _on_send(self):
         mode = self.cb_mode.currentIndex()
         amp = float(self.sp_amp.value())
         offset = float(self.sp_offset.value())
         freq = float(self.sp_freq.value())
         self._serial.send(protocol.build_profiler(mode, amp, offset, freq))
+
 
 # Backward-compatibility alias
 BISTPanel = ProfilerPanel

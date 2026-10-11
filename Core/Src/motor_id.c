@@ -150,6 +150,8 @@ static float s_accum_flux = 0.0f;
 static float s_accum_kv = 0.0f;
 static uint8_t s_spin_detected = 0;
 static int8_t s_flux_direction = 1;
+static uint8_t s_inertia_pending = 0;
+static float s_saved_accel = 0.0f;
 
 /*===========================================================================*/
 /* Private Helper Functions                                                  */
@@ -341,6 +343,12 @@ void MotorID_Stop(void) {
         id_result.state = MOTOR_ID_STATE_IDLE;
     }
     s_is_flux_measuring = 0;
+    if (s_inertia_pending) {
+        s_inertia_pending = 0;
+        if (s_saved_accel > 0.0f) {
+            g_foc.cfg.speed_ramp_accel = s_saved_accel;
+        }
+    }
     FOC_EnableDrivers(0);
 }
 
@@ -1080,8 +1088,6 @@ static float s_inertia_omega2_avg = 0.0f;
 static float s_inertia_speed1_elec = 0.0f;
 static float s_inertia_speed2_elec = 0.0f;
 static float s_id_speed_lpf = 0.0f;
-static float s_saved_accel = 0.0f;
-static uint8_t s_inertia_pending = 0;
 
 void MotorID_MeasureInertiaOffline(void) {
     if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_STOP ||

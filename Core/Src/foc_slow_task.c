@@ -220,6 +220,7 @@ void FOC_Safety() {
         }
     } else {
         current_sat_counter = 0;
+        overspeed_count = 0;
         FOC_ResetStallDetector();
     }
 }

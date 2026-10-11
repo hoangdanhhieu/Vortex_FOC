@@ -123,7 +123,6 @@ void DMA1_Channel2_IRQHandler(void) {
  */
 
 CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
-    /* AWD1 ADC1: Phase A overcurrent */
     if (LL_ADC_IsActiveFlag_AWD1(ADC1) && LL_ADC_IsEnabledIT_AWD1(ADC1)) {
         LL_ADC_ClearFlag_AWD1(ADC1);
         FOC_EnableDrivers(0);
@@ -131,7 +130,6 @@ CCMRAM_FUNC void ADC1_2_IRQHandler(void) {
         g_foc.status.state = FOC_STATE_FAULT;
     }
 
-    /* AWD1 ADC2: Phase B/C overcurrent */
     if (LL_ADC_IsActiveFlag_AWD1(ADC2) && LL_ADC_IsEnabledIT_AWD1(ADC2)) {
         LL_ADC_ClearFlag_AWD1(ADC2);
         FOC_EnableDrivers(0);
@@ -173,9 +171,7 @@ void TIM4_IRQHandler(void) {
 void TIM6_DAC_IRQHandler(void) {
     if (LL_TIM_IsActiveFlag_UPDATE(TIM6)) {
         LL_TIM_ClearFlag_UPDATE(TIM6);
-
         if (!FOC_IsInitialized()) return;
-
         FOC_SlowTask();
         SMO_SlowTask(&g_foc.ctrl.smo);
         g_slow_ticks++;

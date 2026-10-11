@@ -48,6 +48,7 @@ void Profiler_Start(Profiler_State_t* profiler, uint8_t mode, float amp, float o
     profiler->frequency = freq;
 
     profiler->phase = 0.0f;
+    profiler->out_val = 0.0f;
     profiler->tick_counter = 0;
 
     /* Chirp logic: sweep from 1Hz to target 'freq' over 2 seconds */

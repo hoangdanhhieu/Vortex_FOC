@@ -14,6 +14,8 @@ static float s_throttle_active = 0.0f;
 static float s_dynamic_min_vq = 0.0f;
 static uint8_t s_armed = 0;
 static uint16_t s_fault_clear_count = 0;
+static volatile uint16_t s_host_override_ticks = 0;
+static volatile uint8_t s_host_controlling = 0;
 
 static void FOC_Input_SwitchDriver(const FOC_InputDriver_t* new_driver,
                                    FOC_InputSource_t new_source) {
@@ -36,6 +38,8 @@ void FOC_Input_Init(void) {
     s_fault_clear_count = 0;
     s_throttle_active = 0.0f;
     s_dynamic_min_vq = 0.0f;
+    s_host_override_ticks = 0;
+    s_host_controlling = 0;
     s_active_driver = NULL;
     s_input_source = FOC_INPUT_SOURCE_NONE;
 
@@ -55,6 +59,27 @@ void FOC_Input_Init(void) {
 
 void FOC_Input_SetMinVq(float vq_min) {
     s_dynamic_min_vq = vq_min;
+}
+
+void FOC_Input_NotifyHostActivity(uint16_t timeout_ms) {
+    if (timeout_ms > 0) {
+        s_host_override_ticks = timeout_ms;
+        if (!s_host_controlling) {
+            s_host_controlling = 1;
+            FOC_Input_SwitchDriver(NULL, FOC_INPUT_SOURCE_UART_USB);
+        }
+    } else {
+        s_host_override_ticks = 0;
+        if (s_host_controlling) {
+            s_host_controlling = 0;
+            s_armed = 0;
+            s_throttle_active = 0.0f;
+        }
+    }
+}
+
+uint8_t FOC_Input_IsHostControlling(void) {
+    return s_host_controlling;
 }
 
 void FOC_Input_SelectSource(FOC_InputSource_t source) {
@@ -249,6 +274,27 @@ static void FOC_Input_CheckStartStop(const FOC_InputCmd_t* cmd, FOC_State_t stat
 }
 
 void FOC_Input_Update(void) {
+    /* 1. Profiler / MotorID Test Protection: completely isolate from physical throttle */
+    if (FOC_IsProfilerActive() || g_foc.status.state == FOC_STATE_SELF_COMMISSION ||
+        g_foc.status.state == FOC_STATE_COAST_FLUX_ID) {
+        return;
+    }
+
+    /* 2. Host USB Watchdog & Failsafe */
+    if (s_host_controlling) {
+        if (s_host_override_ticks > 0) {
+            s_host_override_ticks--;
+        } else {
+            /* Watchdog timeout: Host USB connection lost while motor was commanded */
+            s_host_controlling = 0;
+            FOC_State_t state = FOC_GetState();
+            if (state != FOC_STATE_IDLE && state != FOC_STATE_STOP && state != FOC_STATE_FAULT) {
+                FOC_Input_DoStop();
+            }
+        }
+        return; /* Bypass physical drivers while Host USB is controlling */
+    }
+
     FOC_InputCmd_t cmd;
     if (FOC_Input_SelectActiveDriver(&cmd)) {
         return;
@@ -269,6 +315,11 @@ void FOC_Input_Update(void) {
 }
 
 CCMRAM_FUNC void FOC_Input_Update_HF(void) {
+    if (s_host_controlling || s_host_override_ticks > 0 || FOC_IsProfilerActive() ||
+        g_foc.status.state == FOC_STATE_SELF_COMMISSION ||
+        g_foc.status.state == FOC_STATE_COAST_FLUX_ID) {
+        return;
+    }
     if (!s_armed || s_active_driver == NULL || !s_active_driver->is_high_speed ||
         s_active_driver->read_fast == NULL) {
         return;

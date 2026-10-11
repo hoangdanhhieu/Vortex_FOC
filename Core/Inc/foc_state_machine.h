@@ -378,6 +378,12 @@ int8_t FOC_GetDirection(void);
 float FOC_GetDt(void);
 
 /**
+ * @brief Check if the dynamic response profiler is currently active
+ * @return 1 if profiler is running, 0 otherwise
+ */
+uint8_t FOC_IsProfilerActive(void);
+
+/**
  * @brief Start the ESC-style power-on beep sequence
  *
  * No-ops unless the motor is IDLE/STOP with no active fault. The sequence

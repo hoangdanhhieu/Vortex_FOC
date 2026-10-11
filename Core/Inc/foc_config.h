@@ -228,12 +228,14 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 
 /** Alignment duration [ms] */
-#define ALIGN_DURATION_MS 500
+#define ALIGN_DURATION_MS 300
+
+/** Default open-loop startup ramp duration [ms] */
+#define STARTUP_RAMP_MS_DEFAULT 350.0f
 
 /** Minimum continuous lock duration required before closed-loop handoff [ms] */
 #define HANDOFF_LOCK_DURATION_MS 10.0f
-#define HANDOFF_LOCK_SAMPLES \
-    ((uint32_t)(HANDOFF_LOCK_DURATION_MS * 0.001f * (float)CONTROL_FREQUENCY))
+#define HANDOFF_LOCK_SAMPLES (HANDOFF_LOCK_DURATION_MS * 0.001f)
 
 /** Transition blend duration from open-loop to closed-loop [ms] */
 #define TRANSITION_BLEND_MS 20.0f

@@ -79,8 +79,9 @@ CCMRAM_FUNC void foc_apply_deadtime_compensation(float* out_a, float* out_b, flo
     if (dt_comp <= 0.0f) return;
 
     if (g_foc.status.state == FOC_STATE_SELF_COMMISSION ||
-        g_foc.status.state == FOC_STATE_CALIBRATION || g_foc.status.state == FOC_STATE_ALIGN ||
-        g_foc.status.state == FOC_STATE_BRAKE || g_foc.status.state == FOC_STATE_BEEP) {
+        g_foc.status.state == FOC_STATE_CALIBRATION || g_foc.status.state == FOC_STATE_BRAKE ||
+        g_foc.status.state == FOC_STATE_BEEP || g_foc.status.state == FOC_STATE_STARTUP ||
+        g_foc.status.state == FOC_STATE_ALIGN) {
         return;
     }
 

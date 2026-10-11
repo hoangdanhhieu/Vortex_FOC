@@ -30,7 +30,7 @@ PARAM_DEF(PID_V_RAMP,     float,     voltage_ramp_rate,    VOLTAGE_RAMP_RATE)
 /* Startup */
 PARAM_DEF(PID_I_STRT,     float,     startup_current,      0.0f)
 PARAM_DEF(PID_I_ALGN,     float,     align_current,        0.0f)
-PARAM_DEF(PID_ACCEL,      float,     startup_accel,        0.0f)
+PARAM_DEF(PID_STRT_TIME,  float,     startup_ramp_ms,      STARTUP_RAMP_MS_DEFAULT)
 PARAM_DEF(PID_HANDOFF,    float,     startup_handoff_speed, 0.0f)
 
 /* Ramp Rates */

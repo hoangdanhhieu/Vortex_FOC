@@ -51,20 +51,38 @@ QPushButton:pressed {{
     color: {BG_BASE};
 }}
 QPushButton#btn_start {{
-    background-color: #2d4a3e;
-    border-color: {GREEN};
+    background-color: #22382c;
+    border: 1px solid #386047;
+    border-radius: 5px;
+    padding: 6px 16px;
+    font-weight: 600;
+    min-height: 24px;
     color: {GREEN};
 }}
 QPushButton#btn_start:hover {{
+    background-color: #31523f;
+    border-color: {GREEN};
+    color: #ffffff;
+}}
+QPushButton#btn_start:pressed {{
     background-color: {GREEN};
     color: {BG_BASE};
 }}
 QPushButton#btn_stop {{
-    background-color: #4a2d3e;
-    border-color: {RED};
+    background-color: #382430;
+    border: 1px solid #663344;
+    border-radius: 5px;
+    padding: 6px 16px;
+    font-weight: 600;
+    min-height: 24px;
     color: {RED};
 }}
 QPushButton#btn_stop:hover {{
+    background-color: #55293d;
+    border-color: {RED};
+    color: #ffffff;
+}}
+QPushButton#btn_stop:pressed {{
     background-color: {RED};
     color: {BG_BASE};
 }}

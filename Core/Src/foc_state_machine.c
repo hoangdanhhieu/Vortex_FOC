@@ -166,6 +166,7 @@ void FOC_Start(void) {
         s_cal_phase = 2;
         FOC_HW_SwitchCurrentSensing(s_skip_phase);
 
+        g_foc.status.run_counter = 0;
         g_foc.status.state = FOC_STATE_CALIBRATION;
 
         float v_limit = g_foc.data.Vbus * SQRT3_INV;
@@ -185,6 +186,24 @@ void FOC_Stop(void) {
     g_foc.data.Valpha = g_foc.data.Vbeta = 0.0f;
     g_foc.data.Valpha_applied = g_foc.data.Vbeta_applied = 0.0f;
     s_valpha_active = s_vbeta_active = 0.0f;
+
+    g_foc.cmd.Id_ref = 0.0f;
+    g_foc.cmd.Iq_ref = 0.0f;
+    g_foc.cmd.Iq_ref_target = 0.0f;
+    g_foc.data.Iq_ref_cmd = 0.0f;
+    g_foc.cmd.Vq_ref = 0.0f;
+    g_foc.cmd.Vq_ref_target = 0.0f;
+    g_foc.cmd.speed_ref = 0.0f;
+    g_foc.cmd.speed_ref_target = 0.0f;
+
+    PI_Reset(&g_foc.ctrl.id);
+    PI_Reset(&g_foc.ctrl.iq);
+    LADRC_Reset(&g_foc.ctrl.speed);
+    SMO_Reset(&g_foc.ctrl.smo);
+    FOC_Startup_Reset();
+    FOC_ResetStallDetector();
+
+    g_foc.status.run_counter = 0;
     g_foc.status.state = FOC_STATE_IDLE;
 }
 
@@ -365,8 +384,7 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     /*=======================================================================*/
     /* ADC Channel Switching for NEXT trigger (duty-based + hysteresis)      */
     /*=======================================================================*/
-    if (g_foc.status.state != FOC_STATE_CALIBRATION &&
-        g_foc.status.state != FOC_STATE_SELF_COMMISSION && g_foc.status.state != FOC_STATE_BEEP) {
+    if (g_foc.status.state == FOC_STATE_RUN) {
         /* Map duties to physical inverter bridges A, B, C (accounts for reverse direction) */
         float phys_duties[3];
         phys_duties[0] = out_a;
@@ -403,7 +421,6 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         s_cal_phase = (s_cal_phase == 2) ? 0 : (s_cal_phase + 1);
         FOC_HW_SwitchCurrentSensing(s_cal_phase);
     }
-    /* FOC_STATE_BEEP: keep the current-sensing phase fixed */
 
     if (g_foc.status.reverse > 0) {
         FOC_HW_SetPWMDuty(out_a, out_b, out_c);
@@ -482,30 +499,16 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
     g_foc.data.Vd =
         saturatef(PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq, max_v);
-
+    g_foc.plot.user_plot1 = omega_Ls * g_foc.data.Iq;
     /* 2. Common remaining voltage margin for q-axis */
     float vq_max_sq = max_v * max_v - g_foc.data.Vd * g_foc.data.Vd;
     float vq_max = (vq_max_sq > 0.0f) ? sqrtf(vq_max_sq) : 0.0f;
-
     /* 3. Compute q-axis voltage according to control mode */
     if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
         float volt_ramp_step = (g_foc.cfg.voltage_ramp_rate / max_v) * g_foc.dt;
         float ramp_error = g_foc.cmd.Vq_ref_target - g_foc.cmd.Vq_ref;
         g_foc.cmd.Vq_ref += clampf(ramp_error, -volt_ramp_step, volt_ramp_step);
-
         float vq_cmd = g_foc.cmd.Vq_ref * max_v;
-
-        /* Back-EMF Voltage Floor: clamp regenerative braking current to
-         * VOLTAGE_MODE_REGEN_CURRENT_MAX */
-        float e_bemf_full = g_foc.data.omega_elec * g_foc.cfg.motor_flux;
-        float vq_floor = e_bemf_full - (g_foc.cfg.motor_rs * VOLTAGE_MODE_REGEN_CURRENT_MAX);
-        if (vq_floor < 0.0f) {
-            vq_floor = 0.0f;
-        }
-        if (vq_cmd < vq_floor) {
-            vq_cmd = vq_floor;
-        }
-
         g_foc.data.Vq = clampf(vq_cmd, 0.0f, vq_max);
     } else {
         float Iq_error = g_foc.data.Iq_ref_cmd - g_foc.data.Iq;
@@ -618,6 +621,12 @@ void FOC_ClearFault(void) {
         g_foc.status.fault = FOC_FAULT_NONE;
         g_foc.status.state = FOC_STATE_IDLE;
         FOC_ResetStallDetector();
+
+        PI_Reset(&g_foc.ctrl.id);
+        PI_Reset(&g_foc.ctrl.iq);
+        LADRC_Reset(&g_foc.ctrl.speed);
+        SMO_Reset(&g_foc.ctrl.smo);
+        FOC_Startup_Reset();
     }
 }
 
@@ -657,6 +666,10 @@ int8_t FOC_GetDirection(void) {
 
 float FOC_GetDt(void) {
     return g_foc.dt;
+}
+
+uint8_t FOC_IsProfilerActive(void) {
+    return (g_foc.ctrl.profiler.mode != PROFILER_MODE_OFF);
 }
 
 /*===========================================================================*/

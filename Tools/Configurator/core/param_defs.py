@@ -42,7 +42,7 @@ PARAM_DEFS = [
     # Startup
     (ParamId.I_STRT,   "Startup I*",     "A",     "Startup",     0, 100, 0.1,   False),
     (ParamId.I_ALGN,   "Align I*",       "A",     "Startup",     0, 100, 0.1,   False),
-    (ParamId.ACCEL,    "Accel*",         "rad/s²", "Startup",    0, 500000, 1000, False),
+    (ParamId.STRT_TIME, "Ramp Time*",     "ms",     "Startup",    50, 3000, 10,   False),
     (ParamId.HANDOFF,  "Handoff*",       "RPM",   "Startup",     0, 100000, 10,  False),
     # Ramp Rates
     (ParamId.RAMP_ACC, "Ramp Accel*",    "rad/s²", "Ramp Rates", 0, 500000, 1000, False),

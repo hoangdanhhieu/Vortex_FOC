@@ -93,7 +93,7 @@ class PlotPanel(QWidget):
         # ── Left Sidebar ──────────────────────────────────────────────────────
         sidebar = QVBoxLayout()
 
-        self.btn_toggle = QPushButton("▶ Start Stream")
+        self.btn_toggle = QPushButton("Start Stream")
         self.btn_toggle.setMinimumHeight(40)
         self.btn_toggle.setStyleSheet(
             "font-weight: bold; background-color: #a6e3a1; color: #11111b; border-radius: 4px;"
@@ -152,7 +152,7 @@ class PlotPanel(QWidget):
             en_cb.setChecked(i < 2)
             top_h.addWidget(en_cb)
 
-            color_lbl = QLabel("■")
+            color_lbl = QLabel("")
             color_lbl.setStyleSheet(
                 f"color: {CHANNEL_COLORS[i]}; font-size: 16px; border: none;"
             )
@@ -311,7 +311,7 @@ class PlotPanel(QWidget):
     def _toggle_plot(self):
         if not self._running:
             self._running = True
-            self.btn_toggle.setText("■ Stop Stream")
+            self.btn_toggle.setText("Stop Stream")
             self.btn_toggle.setStyleSheet(
                 "font-weight: bold; background-color: #f38ba8; color: #11111b;"
             )
@@ -341,7 +341,7 @@ class PlotPanel(QWidget):
             self._render_timer.stop()
             self._drain_pending_chunks()
             self._hide_cursor()
-            self.btn_toggle.setText("▶ Start Stream")
+            self.btn_toggle.setText("Start Stream")
             self.btn_toggle.setStyleSheet(
                 "font-weight: bold; background-color: #a6e3a1; color: #11111b;"
             )
@@ -581,7 +581,7 @@ class PlotPanel(QWidget):
                 ch_name = self.ch_combos[i].currentText()
                 hud_parts.append(
                     f"<span style='color:{CHANNEL_COLORS[i]}; font-weight:bold;'>"
-                    f"■ CH{i + 1} ({ch_name}): {y_val:+.3f}</span>"
+                    f"CH{i + 1} ({ch_name}): {y_val:+.3f}</span>"
                 )
             else:
                 dot.setVisible(False)

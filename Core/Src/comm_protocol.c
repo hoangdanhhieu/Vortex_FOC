@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "flash_config.h"
+#include "foc_input.h"
 #include "foc_state_machine.h"
 #include "motor_id.h"
 #include "response_profiler.h"
@@ -434,11 +435,13 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             break;
 
         case CMD_START:
+            FOC_Input_NotifyHostActivity(500);
             FOC_Start();
             send_ack(type, 0);
             break;
 
         case CMD_STOP:
+            FOC_Input_NotifyHostActivity(0);
             FOC_Stop();
             send_ack(type, 0);
             break;
@@ -455,7 +458,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             }
             int8_t dir = (payload[0] != 0) ? -1 : 1;
             cfg->direction = dir;
-            FOC_SetDirection(1);
+            FlashConfig_Apply();
             send_ack(type, 0);
             break;
         }
@@ -467,9 +470,34 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             }
             float speed_rad;
             memcpy(&speed_rad, payload, 4);
-            FOC_SetControlMode(FOC_MODE_SPEED);
-            FOC_SetSpeedRef(speed_rad);
-            send_ack(type, 0);
+            if (fabsf(speed_rad) > 1.0f) {
+                FOC_Input_NotifyHostActivity(500);
+                FOC_SetControlMode(FOC_MODE_SPEED);
+                /* Clamp speed to observer-safe operating range [motor_min_spd .. motor_max_spd] */
+                float min_spd = FOC_GetMinSpeed();
+                float max_spd = FOC_GetMaxSpeed();
+                if (min_spd > 0.0f) {
+                    if (speed_rad > 0.0f && speed_rad < min_spd) {
+                        speed_rad = min_spd;
+                    } else if (speed_rad < 0.0f && speed_rad > -min_spd) {
+                        speed_rad = -min_spd;
+                    }
+                }
+                if (max_spd > min_spd) {
+                    speed_rad = clampf(speed_rad, -max_spd, max_spd);
+                }
+                FOC_SetSpeedRef(speed_rad);
+                if (FOC_GetState() == FOC_STATE_IDLE || FOC_GetState() == FOC_STATE_BEEP) {
+                    FOC_Start();
+                }
+            } else {
+                FOC_Input_NotifyHostActivity(0);
+                if (FOC_GetState() != FOC_STATE_IDLE && FOC_GetState() != FOC_STATE_STOP &&
+                    FOC_GetState() != FOC_STATE_FAULT) {
+                    FOC_Stop();
+                }
+            }
+            /* Streaming throttle commands do not flood USB with ACKs */
             break;
         }
 
@@ -480,9 +508,21 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             }
             float pct;
             memcpy(&pct, payload, 4);
-            FOC_SetControlMode(FOC_MODE_TORQUE);
-            FOC_SetTorqueRef(pct);
-            send_ack(type, 0);
+            if (fabsf(pct) > 0.001f) {
+                FOC_Input_NotifyHostActivity(500);
+                FOC_SetControlMode(FOC_MODE_TORQUE);
+                FOC_SetTorqueRef(pct);
+                if (FOC_GetState() == FOC_STATE_IDLE || FOC_GetState() == FOC_STATE_BEEP) {
+                    FOC_Start();
+                }
+            } else {
+                FOC_Input_NotifyHostActivity(0);
+                if (FOC_GetState() != FOC_STATE_IDLE && FOC_GetState() != FOC_STATE_STOP &&
+                    FOC_GetState() != FOC_STATE_FAULT) {
+                    FOC_Stop();
+                }
+            }
+            /* Streaming throttle commands do not flood USB with ACKs */
             break;
         }
 
@@ -493,9 +533,21 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             }
             float pct;
             memcpy(&pct, payload, 4);
-            FOC_SetControlMode(FOC_MODE_VOLTAGE);
-            FOC_SetVoltageRef(pct);
-            send_ack(type, 0);
+            if (fabsf(pct) > 0.001f) {
+                FOC_Input_NotifyHostActivity(500);
+                FOC_SetControlMode(FOC_MODE_VOLTAGE);
+                FOC_SetVoltageRef(pct);
+                if (FOC_GetState() == FOC_STATE_IDLE || FOC_GetState() == FOC_STATE_BEEP) {
+                    FOC_Start();
+                }
+            } else {
+                FOC_Input_NotifyHostActivity(0);
+                if (FOC_GetState() != FOC_STATE_IDLE && FOC_GetState() != FOC_STATE_STOP &&
+                    FOC_GetState() != FOC_STATE_FAULT) {
+                    FOC_Stop();
+                }
+            }
+            /* Streaming throttle commands do not flood USB with ACKs */
             break;
         }
 
@@ -503,7 +555,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             uint8_t rsp[16];
             rsp[0] = (uint8_t)g_foc.status.state;
             rsp[1] = (uint8_t)g_foc.status.fault;
-            rsp[2] = (FOC_GetDirection() < 0) ? 1 : 0;
+            rsp[2] = (g_foc.cfg.direction < 0) ? 1 : 0;
             rsp[3] = 0;
             memcpy(&rsp[4], &g_foc.data.omega_elec, 4);
             memcpy(&rsp[8], &g_foc.data.Vbus, 4);
@@ -568,6 +620,11 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 Profiler_Start(&g_foc.ctrl.profiler, mode, amp_args, offset_args, freq_args);
                 if (mode != PROFILER_MODE_OFF) {
                     FOC_SetControlMode(FOC_MODE_TORQUE);
+                    if (FOC_GetState() == FOC_STATE_IDLE || FOC_GetState() == FOC_STATE_BEEP) {
+                        FOC_Start();
+                    }
+                } else {
+                    FOC_Stop();
                 }
                 send_ack(type, 0);
             } else {
@@ -711,7 +768,7 @@ void Comm_SendStatus(void) {
     uint8_t rsp[16];
     rsp[0] = (uint8_t)g_foc.status.state;
     rsp[1] = (uint8_t)g_foc.status.fault;
-    rsp[2] = (FOC_GetDirection() < 0) ? 1 : 0;
+    rsp[2] = (g_foc.cfg.direction < 0) ? 1 : 0;
     rsp[3] = 0;
     memcpy(&rsp[4], &g_foc.data.omega_elec, 4);
     memcpy(&rsp[8], &g_foc.data.Vbus, 4);

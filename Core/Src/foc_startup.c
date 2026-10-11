@@ -24,6 +24,10 @@ static uint32_t s_startup_timeout_cnt = 0;
 static float s_delta_theta_flt = 0.0f;
 static float s_delta_theta_variance = 1.0f;
 static float s_handoff_id = 0.0f;
+static float s_align_current = 0.0f;
+static float s_startup_current = 0.0f;
+static float s_startup_ramp_ms = STARTUP_RAMP_MS_DEFAULT;
+static float s_startup_ramp_samples = 0.0f;
 
 void FOC_Startup_Reset(void) {
     s_blend_alpha = 0.0f;
@@ -32,10 +36,14 @@ void FOC_Startup_Reset(void) {
     s_in_transition = 0;
     s_handoff_converge_cnt = 0;
     s_startup_stall_cnt = 0;
+    s_startup_timeout_cnt = 0;
     s_delta_theta_flt = 0.0f;
     s_delta_theta_variance = 1.0f;
     s_handoff_id = 0.0f;
     g_foc.status.in_transition = 0;
+    g_foc.startup.counter = 0;
+    g_foc.startup.theta = 0.0f;
+    g_foc.startup.omega = 0.0f;
 }
 
 void FOC_Startup_ForceComplete(void) {
@@ -58,11 +66,33 @@ void FOC_Startup_StartTransition(float blend_duration_ms, float handoff_id) {
 
 void FOC_StateAlign(void) {
     if (g_foc.startup.counter == 0) {
-        /* Ensure startup handoff speed respects physical observer minimum speed */
         if (g_foc.cfg.startup_handoff_speed < g_foc.cfg.motor_min_spd) {
             g_foc.cfg.startup_handoff_speed = g_foc.cfg.motor_min_spd;
         }
+        if (g_foc.cfg.align_current < 0.1f) {
+            s_align_current = 0.10f * g_foc.cfg.motor_max_curr;
+        } else {
+            s_align_current = g_foc.cfg.align_current;
+        }
+        if (g_foc.cfg.startup_current < 0.1f) {
+            s_startup_current = 0.20f * g_foc.cfg.motor_max_curr;
+        } else {
+            s_startup_current = g_foc.cfg.startup_current;
+        }
+        if (g_foc.cfg.startup_ramp_ms >= 50.0f) {
+            s_startup_ramp_ms = g_foc.cfg.startup_ramp_ms;
+        } else {
+            s_startup_ramp_ms = STARTUP_RAMP_MS_DEFAULT;
+        }
+        s_startup_ramp_samples = s_startup_ramp_ms * 0.001f * g_foc.cfg.pwm_frequency;
+        if (s_startup_ramp_samples < 1.0f) {
+            s_startup_ramp_samples = 1.0f;
+        }
+        FOC_Startup_Reset();
+        PI_SetGains(&g_foc.ctrl.id, 0.5f * g_foc.cfg.kp_id, 0.5f * g_foc.cfg.ki_id);
+        PI_SetGains(&g_foc.ctrl.iq, 0.5f * g_foc.cfg.kp_iq, 0.5f * g_foc.cfg.ki_iq);
     }
+
     g_foc.startup.counter++;
 
     float align_samples = (float)ALIGN_DURATION_MS * 0.001f * g_foc.cfg.pwm_frequency;
@@ -72,18 +102,16 @@ void FOC_StateAlign(void) {
     /* Smooth S-curve (cosine ramp) from 0 to align_current over the first 30% duration.
      * Remaining 70% maintains full align_current at theta = 0 to completely settle mechanical
      * ringing. */
-    const float ramp_duration = 0.30f;
+    const float ramp_duration = 0.40f;
     if (progress < ramp_duration) {
         float ramp_norm = progress / ramp_duration; /* 0.0f to 1.0f maps to 0 to pi */
         float cos_ramp, sin_ramp;
         cordic_sincos(ramp_norm, &cos_ramp, &sin_ramp);
-        g_foc.cmd.Id_ref = 0.5f * (1.0f - cos_ramp) * g_foc.cfg.align_current;
+        g_foc.cmd.Id_ref = 0.5f * (1.0f - cos_ramp) * s_align_current;
     } else {
-        g_foc.cmd.Id_ref = g_foc.cfg.align_current;
+        g_foc.cmd.Id_ref = s_align_current;
     }
     g_foc.cmd.Iq_ref = 0.0f;
-    g_foc.plot.user_plot1 = g_foc.data.Ialpha_flt;
-    g_foc.plot.user_plot2 = g_foc.data.Ibeta_flt;
 
     /* Stator magnetic field locked firmly at 0 degrees electrical (no abrupt 90->0 sweep) */
     g_foc.data.theta_elec = 0.0f;
@@ -95,11 +123,9 @@ void FOC_StateAlign(void) {
                    &g_foc.data.Iq);
 
     float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
-    float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
 
     g_foc.data.Vd = PI_Update(&g_foc.ctrl.id, Id_error);
-    g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error);
-
+    g_foc.data.Vq = 0;
     svpwm_calculate(g_foc.data.theta_elec);
 
     if (g_foc.startup.counter > (uint32_t)align_samples) {
@@ -107,12 +133,7 @@ void FOC_StateAlign(void) {
         g_foc.startup.counter = 0;
         g_foc.startup.theta = 0.0f;
         g_foc.startup.omega = 0.0f;
-        /* Do NOT reset PI controllers to preserve steady-state integrator voltage */
-        g_foc.ctrl.smo.theta_est = 0.0f;
-        g_foc.ctrl.smo.omega_est = 0.0f;
-        g_foc.ctrl.smo.omega_out = 0.0f;
-        g_foc.ctrl.smo.omega_stf = 0.0f;
-        g_foc.ctrl.smo.pll_integral = 0.0f;
+        SMO_Reset(&g_foc.ctrl.smo);
         g_foc.status.state = FOC_STATE_STARTUP;
     }
 }
@@ -121,9 +142,16 @@ void FOC_StateStartup(void) {
     g_foc.startup.counter++;
 
     float handoff_omega = g_foc.cfg.startup_handoff_speed;
-    float accel_scale = 0.25f + 0.75f * clampf(g_foc.startup.omega / 60.0f, 0.0f, 1.0f);
-    g_foc.startup.omega += (g_foc.cfg.startup_accel * accel_scale) * g_foc.dt;
-    if (g_foc.startup.omega > handoff_omega) {
+    float progress = (s_startup_ramp_samples > 0.0f)
+                         ? ((float)g_foc.startup.counter / s_startup_ramp_samples)
+                         : 1.0f;
+
+    /* Analytical Minimum-Jerk S-Curve: zero acceleration jerk at start and handoff */
+    if (progress < 1.0f) {
+        float cos_p, sin_p;
+        cordic_sincos(progress, &cos_p, &sin_p);
+        g_foc.startup.omega = 0.5f * (1.0f - cos_p) * handoff_omega;
+    } else {
         g_foc.startup.omega = handoff_omega;
     }
 
@@ -138,12 +166,9 @@ void FOC_StateStartup(void) {
     park_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, cos_th, sin_th, &g_foc.data.Id,
                    &g_foc.data.Iq);
 
-    /* Smooth current magnitude & vector transition across the full ramp to handoff_omega:
-     * - At omega = 0: gamma = 0 (100% Id, perfectly continuous with Align).
-     * - As omega increases to handoff_omega: gamma gently steers to 60 deg (Id = 0.5, Iq = 0.866)
-     *   without rapid angular velocity perturbation d(gamma)/dt that causes pole slip. */
+    float steer_threshold = clampf(0.35f * handoff_omega, 30.0f, 80.0f);
     float steer_ratio =
-        (handoff_omega > 1.0f) ? clampf(g_foc.startup.omega / handoff_omega, 0.0f, 1.0f) : 1.0f;
+        (steer_threshold > 1.0f) ? clampf(g_foc.startup.omega / steer_threshold, 0.0f, 1.0f) : 1.0f;
 
     const float gamma_target_norm = 1.0f / 3.0f; /* 60 deg = pi/3 */
     float gamma_norm = steer_ratio * gamma_target_norm;
@@ -151,10 +176,7 @@ void FOC_StateStartup(void) {
     float cos_gamma, sin_gamma;
     cordic_sincos(gamma_norm, &cos_gamma, &sin_gamma);
 
-    /* Seamless current magnitude transition from align_current to startup_current */
-    float i_align =
-        (g_foc.cfg.align_current > 0.1f) ? g_foc.cfg.align_current : g_foc.cfg.startup_current;
-    float i_mag = i_align + steer_ratio * (g_foc.cfg.startup_current - i_align);
+    float i_mag = s_align_current + steer_ratio * (s_startup_current - s_align_current);
 
     g_foc.cmd.Id_ref = i_mag * cos_gamma;
     g_foc.cmd.Iq_ref = i_mag * sin_gamma;
@@ -198,15 +220,13 @@ void FOC_StateStartup(void) {
             }
         }
     }
-
-    if (s_handoff_converge_cnt > HANDOFF_LOCK_SAMPLES) {
-        SMO_ResetStates(&g_foc.ctrl.smo, g_foc.startup.omega);
+    const float handoff_lock_samples = HANDOFF_LOCK_SAMPLES * g_foc.cfg.pwm_frequency;
+    if (s_handoff_converge_cnt > handoff_lock_samples) {
         SMO_SlowTask(&g_foc.ctrl.smo);
 
         PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
         PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
 
-        /* Seamless torque continuity for all modes */
         float handoff_iq = g_foc.cmd.Iq_ref;
         g_foc.cmd.Iq_ref = handoff_iq;
         g_foc.data.Iq_ref_cmd = handoff_iq;
@@ -221,9 +241,6 @@ void FOC_StateStartup(void) {
         }
 
         if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
-            /* Use the same SVPWM circle limit as FOC_StateRun() so the
-             * normalized handoff voltage reproduces exactly the Vq (in volts)
-             * applied at the end of open-loop startup (no voltage step at RUN). */
             float max_v = SQRT3_INV * 2.0f * (g_foc.max_duty - 0.5f) * g_foc.data.Vbus;
             float Vq_norm = (max_v > 1.0f) ? (g_foc.data.Vq / max_v) : 0.0f;
             Vq_norm = clampf(Vq_norm, 0.0f, 1.0f);

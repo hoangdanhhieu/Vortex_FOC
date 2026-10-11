@@ -94,6 +94,7 @@ void SMO_Reset(SMO_Observer_t* smo) {
     smo->bemf_mag = 0.0f;
     smo->I_mag = 0.0f;
     smo->l_ratio = 1.0f;
+    smo->enable_harmonic_comp = 0;
 }
 
 void SMO_ResetStates(SMO_Observer_t* smo, float omega_init) {
@@ -101,6 +102,9 @@ void SMO_ResetStates(SMO_Observer_t* smo, float omega_init) {
     smo->omega_est = omega_init;
     smo->omega_out = omega_init;
     smo->omega_stf = omega_init;
+    smo->omega_est_filt = fabsf(omega_init);
+    smo->Ac = 0.0f;
+    smo->As = 0.0f;
 }
 
 CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {

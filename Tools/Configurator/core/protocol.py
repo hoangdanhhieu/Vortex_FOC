@@ -77,7 +77,7 @@ class ParamId(IntEnum):
     # Speed Controller (LADRC)
     LADRC_WC = 5; LADRC_WO = 6; LADRC_B0 = 7; V_RAMP = 8
     # Startup
-    I_STRT = 9; I_ALGN = 10; ACCEL = 11; HANDOFF = 12
+    I_STRT = 9; I_ALGN = 10; STRT_TIME = 11; HANDOFF = 12
     # Ramp Rates
     RAMP_ACC = 13; RAMP_DEC = 14; I_RAMP = 15
     # Motor
