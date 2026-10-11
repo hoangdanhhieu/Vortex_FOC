@@ -12,6 +12,7 @@ from core.serial_comm import SerialThread
 from core import protocol
 from core.param_defs import (
     PARAM_DEFS, PARAM_GROUPS, get_params_by_group, CHOICE_PARAMS,
+    AUTO_PARAMS, PARAM_TOOLTIPS,
     mcu_to_gui, gui_to_mcu
 )
 from ui.widgets import WheelDoubleSpinBox
@@ -78,9 +79,9 @@ class ParamEditor(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # Legend for live updates
-        legend = QLabel("<i>* marked variables update immediately while running.</i>")
-        legend.setStyleSheet("color: #888; font-size: 10px;")
+        # Legend for live updates and auto values
+        legend = QLabel("<i>* Live variables update immediately. Values showing '0 (Auto)' are automatically calculated by MCU firmware.</i>")
+        legend.setStyleSheet("color: #888; font-size: 8pt;")
         legend.setAlignment(Qt.AlignRight)
         layout.addWidget(legend)
 
@@ -155,7 +156,7 @@ class ParamEditor(QWidget):
                 self.btn_measure.setText("Start Identification (RL Measure)")
             if hasattr(self, 'btn_measure_inertia'):
                 self.btn_measure_inertia.setEnabled(True)
-                self.btn_measure_inertia.setText("Measure Inertia (Auto b0)")
+                self.btn_measure_inertia.setText("Measure Inertia (J & b0)")
         else:
             self.setToolTip("")
 
@@ -195,8 +196,15 @@ class ParamEditor(QWidget):
                         spin.setDecimals(4)
                 spin.setReadOnly(ro)
                 spin.setMinimumWidth(120)
+                if pid in AUTO_PARAMS:
+                    spin.setSpecialValueText("0 (Auto)")
                 self._spinboxes[pid] = spin
                 grid.addWidget(spin, row, 1)
+
+            if pid in PARAM_TOOLTIPS:
+                tip = PARAM_TOOLTIPS[pid]
+                lbl.setToolTip(tip)
+                self._spinboxes[pid].setToolTip(tip)
 
             if unit:
                 grid.addWidget(QLabel(unit), row, 2)
@@ -252,10 +260,10 @@ class ParamEditor(QWidget):
             group_box = QGroupBox("LADRC Tuning Helper")
             group_layout = QHBoxLayout()
             
-            self.btn_measure_inertia = QPushButton("Measure Inertia (Auto b0)")
+            self.btn_measure_inertia = QPushButton("Measure Inertia (J & b0)")
             self.btn_measure_inertia.clicked.connect(self._measure_inertia)
             self.btn_measure_inertia.setFixedHeight(30)
-            self.btn_measure_inertia.setToolTip("Start Offline Inertia ID (Speed Step Method)")
+            self.btn_measure_inertia.setToolTip("Start Offline Inertia ID (Speed Step Method to identify J and b0)")
             group_layout.addWidget(self.btn_measure_inertia)
             
             group_box.setLayout(group_layout)
@@ -312,7 +320,7 @@ class ParamEditor(QWidget):
         self._serial.send(protocol.build_simple(protocol.CmdType.IDENT_INERTIA))
         if hasattr(self, 'btn_measure_inertia'):
             self.btn_measure_inertia.setEnabled(False)
-            self.btn_measure_inertia.setText("Measuring Inertia...")
+            self.btn_measure_inertia.setText("Measuring Inertia (J & b0)...")
         if hasattr(self, 'btn_measure'):
             self.btn_measure.setEnabled(False)
         if hasattr(self, 'btn_measure_flux'):
@@ -397,7 +405,7 @@ class ParamEditor(QWidget):
             self.btn_measure_flux.setText("Measure Flux Linkage")
         if hasattr(self, 'btn_measure_inertia'):
             self.btn_measure_inertia.setEnabled(True)
-            self.btn_measure_inertia.setText("Measure Inertia (Auto b0)")
+            self.btn_measure_inertia.setText("Measure Inertia (J & b0)")
         
     def _check_measure_status(self):
         # We need to check if the state is back to IDLE
@@ -580,7 +588,7 @@ class ParamEditor(QWidget):
                 self.btn_measure_flux.setText("Measure Flux Linkage")
             if hasattr(self, 'btn_measure_inertia'):
                 self.btn_measure_inertia.setEnabled(True)
-                self.btn_measure_inertia.setText("Measure Inertia (Auto b0)")
+                self.btn_measure_inertia.setText("Measure Inertia (J & b0)")
             
             if getattr(self, '_is_measuring_inertia', False):
                 self._serial.send(protocol.build_get(protocol.ParamId.ID_INERTIA_MEAS))
@@ -602,8 +610,8 @@ class ParamEditor(QWidget):
             if self._measured_inertia is not None and self._measured_b0 is not None:
                 msg = (f"Inertia Identification Complete!\n\n"
                        f"Measured Parameters:\n"
-                       f"• Inertia (J): {self._measured_inertia:.8e} kg*m²\n"
-                       f"• Computed b0: {self._measured_b0:.2f}\n\n"
+                       f"• Rotor Inertia (J): {self._measured_inertia:.8e} kg*m²\n"
+                       f"• LADRC Gain (b0):   {self._measured_b0:.2f} rad/(s²*A)\n\n"
                        f"Do you want to apply these values to the configuration?\n"
                        f"(Values will only be applied to hardware when you click 'Write All' or 'Save to Flash')")
                 
@@ -621,7 +629,7 @@ class ParamEditor(QWidget):
                             spin.setValue(val)
                     
                     QMessageBox.information(self, "Values Updated", 
-                                          "J and b0 fields have been filled with the measured values.\n"
+                                          "Rotor Inertia (J) and LADRC Gain (b0) fields have been filled with the measured values.\n"
                                           "Click 'Write All' or 'Save to Flash' to apply them.")
                 
                 # Reset

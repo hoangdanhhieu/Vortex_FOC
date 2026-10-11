@@ -108,6 +108,59 @@ CHOICE_PARAMS = {
 # Groups in display order
 PARAM_GROUPS = ["Current PI", "Speed LADRC", "Startup", "Ramp Rates", "Motor", "ADC", "Safety", "Input", "System"]
 
+# Parameters where setting 0 activates firmware auto-calculation
+AUTO_PARAMS = {
+    ParamId.I_STRT,
+    ParamId.I_ALGN,
+    ParamId.HANDOFF,
+    ParamId.OC_THR,
+    ParamId.I_RAMP,
+}
+
+# Parameter descriptions and guidelines
+PARAM_TOOLTIPS = {
+    ParamId.KP_ID: "Proportional gain for D-axis current loop (V/A). Can be auto-computed from Ls and BW.",
+    ParamId.KI_ID: "Integral gain for D-axis current loop (V/A/s). Can be auto-computed from Rs and BW.",
+    ParamId.KP_IQ: "Proportional gain for Q-axis current loop (V/A). Can be auto-computed from Ls and BW.",
+    ParamId.KI_IQ: "Integral gain for Q-axis current loop (V/A/s). Can be auto-computed from Rs and BW.",
+    ParamId.BW_CUR: "Current loop target bandwidth (Hz). Used for auto PI gain calculation.",
+    ParamId.LADRC_WC: "LADRC controller bandwidth (rad/s). Higher value = faster speed tracking.",
+    ParamId.LADRC_WO: "LADRC observer bandwidth (rad/s). Typically 3x to 5x of Wc.",
+    ParamId.LADRC_B0: "LADRC control gain parameter b0 = (p * Kt) / J. Identified via 'Measure Inertia'.",
+    ParamId.I_STRT: "Startup open-loop current (A). Set 0 for Auto (MCU calculates 20% of Max Current).",
+    ParamId.I_ALGN: "Rotor alignment current (A). Set 0 for Auto (MCU calculates 10% of Max Current).",
+    ParamId.STRT_TIME: "Duration of open-loop speed ramp-up (ms).",
+    ParamId.HANDOFF: "Speed threshold to switch to closed-loop (RPM). Set 0 for Auto (calibrated motor_min_spd).",
+    ParamId.RAMP_ACC: "Speed acceleration limit (rad/s²).",
+    ParamId.RAMP_DEC: "Speed deceleration limit (rad/s²).",
+    ParamId.I_RAMP: "Rate of change limit for torque current (A/s). Set 0 for Auto (1000 A/s).",
+    ParamId.V_RAMP: "Rate of change limit for voltage control mode (V/s).",
+    ParamId.M_RS: "Motor phase resistance (Ohm). Identified via 'Start Identification'.",
+    ParamId.M_LS: "Motor phase inductance (H). Identified via 'Start Identification'.",
+    ParamId.M_ISAT: "Core saturation threshold current (A). Identified via 'Start Identification'.",
+    ParamId.M_ALPHA: "Inductance saturation profile coefficient (1/A²). Identified via 'Start Identification'.",
+    ParamId.M_KV: "Motor velocity constant (RPM/V). Estimated via 'Measure Flux Linkage'.",
+    ParamId.M_FLUX: "Permanent magnet flux linkage (Wb). Identified via 'Measure Flux Linkage'.",
+    ParamId.M_POLES: "Number of rotor pole pairs (Poles / 2).",
+    ParamId.M_J: "Rotor + load moment of inertia (kg*m²). Identified via 'Measure Inertia'.",
+    ParamId.M_MAX_SPD: "Maximum motor mechanical speed limit (RPM).",
+    ParamId.M_MAX_I: "Maximum continuous phase current limit (A).",
+    ParamId.COMP_DELAY: "ADC sampling and inverter propagation delay compensation (samples).",
+    ParamId.ADC_MARG: "ADC injected sampling safety margin (timer ticks).",
+    ParamId.OC_THR: "Overcurrent trip threshold (A). Set 0 for Auto (MCU trips at 1.25x Max Current).",
+    ParamId.OV_THR: "Bus overvoltage trip threshold (V).",
+    ParamId.UV_THR: "Bus undervoltage trip threshold (V).",
+    ParamId.STALL_EN: "Enable/disable 4-layer auto-scaled sensorless stall detection.",
+    ParamId.IN_SOURCE: "Throttle input source selector (Disabled, Potentiometer, Custom, GUI, DShot).",
+    ParamId.IN_MODE: "Control mode for input throttle (Speed, Torque, or Voltage).",
+    ParamId.IN_MIN_SPD: "Minimum speed command corresponding to throttle minimum (RPM).",
+    ParamId.IN_MIN_CUR: "Minimum torque current command corresponding to throttle minimum (A).",
+    ParamId.IN_MIN_VQ: "Minimum voltage command corresponding to throttle minimum (ratio).",
+    ParamId.IN_DEADBAND: "Deadband range at the bottom of the throttle input (ratio 0..0.3).",
+    ParamId.DSHOT_3D: "Enable bidirectional 3D throttle mode for DShot input.",
+    ParamId.PWM_FREQ: "TIM1 switching frequency (Hz). Changing requires saving to Flash and MCU reboot.",
+}
+
 
 def get_params_by_group(group: str):
     return [p for p in PARAM_DEFS if p[3] == group]
