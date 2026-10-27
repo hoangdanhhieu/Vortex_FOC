@@ -337,7 +337,7 @@ class ParamEditor(QWidget):
 
             rs = rs_spin.value()
             ls = ls_spin.value()
-            BW_RAD_S = bw_spin.value()
+            BW_RAD_S = bw_spin.value() * 2.0 * math.pi
 
             if rs <= 0 or ls <= 0 or BW_RAD_S <= 0:
                 QMessageBox.warning(self, "Invalid Parameters", "Rs, Ls, and BW must be greater than 0.")
