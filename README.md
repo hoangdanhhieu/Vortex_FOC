@@ -1,205 +1,84 @@
 # Vortex FOC
 
-**Sensorless Field Oriented Control (FOC) for PMSM & BLDC Motors**  
-*Optimized for STM32G431 microcontrollers — featuring configurable 24 kHz to 64 kHz CCMRAM execution, Self-Tuning Filter SMO, LADRC speed control, and a real-time Python desktop configurator.*
+**High-Performance Sensorless Field Oriented Control (FOC) Firmware for PMSM & BLDC Motors**  
+*Optimized for STM32G4 microcontrollers with high-speed current loops, advanced sensorless observer, digital ESC protocols, and a real-time desktop configurator.*
 
 ---
 
-[![Vortex FOC Demo](Hardware/Prototype/Image.jpg)](https://www.youtube.com/watch?v=LBecr3bSMa8)
+[![Vortex FOC Demo](Hardware/V1/Image.jpg)](https://www.youtube.com/watch?v=LBecr3bSMa8)
 
-[![MCU](https://img.shields.io/badge/Hardware-STM32G431KB-blue.svg?style=for-the-badge&logo=stmicroelectronics)](https://www.st.com/en/microcontrollers-microprocessors/stm32g431kb.html)
+[![MCU](https://img.shields.io/badge/Hardware-STM32G431-blue.svg?style=for-the-badge&logo=stmicroelectronics)](https://www.st.com/en/microcontrollers-microprocessors/stm32g4-series.html)
 [![Loop Rate](https://img.shields.io/badge/Current_Loop-24_to_64_kHz-orange.svg?style=for-the-badge)]()
 [![GUI](https://img.shields.io/badge/Configurator-PySide6%20%7C%20PyQtGraph-brightgreen.svg?style=for-the-badge&logo=python)](Tools/Configurator/)
 [![DShot](https://img.shields.io/badge/ESC_Protocol-DShot150--1200_%7C_BDShot_300--600-00b4d8.svg?style=for-the-badge)](Core/Src/input_dshot.c)
-[![License](https://img.shields.io/badge/License-MIT-purple.svg?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](LICENSE)
 
 ---
 
-## Highlights
+## Overview
 
-- **24 kHz to 64 kHz Current Loop (~10.5 µs compute time)**: Configurable PWM and control loop frequency running entirely in STM32 CCMRAM for zero-wait-state execution, utilizing hardware CORDIC math and simultaneous dual injected ADC conversions.
-- **Continuous STF-SMO with Fastmoid & Auto-Gains**: Ultra-fast algebraic sigmoid running in 3 FPU cycles with real-time 1 kHz adaptation of sliding gain `k_slide` and boundary layer `k_sigmoid`, combined with a Self-Tuning Filter (STF) for zero phase-lag BEMF filtering.
-- **DShot150–1200 & Bi-Directional DShot (BDShot)**: High-speed digital protocol with auto-baudrate detection and DMA capture on PB7 (TIM4 CH2). Supports standard DShot150/300/600/1200 and bidirectional telemetry (BDShot 300 & 600) sending inverted GCR-encoded eRPM back to Flight Controllers for dynamic RPM notch filtering.
-- **6th-Order Harmonic Rejection**: Online LMS adaptive filter eliminates inverter dead-time distortion and motor cogging ripple from the estimated rotor angle.
-- **LADRC Speed Controller**: Linear Active Disturbance Rejection Control with a 2nd-order LESO, actively estimating and rejecting aerodynamic drag, load step torque, and voltage droop in real time.
-- **Dynamic 3-Phase Skipping**: Low-side 3-shunt sensing automatically skips the phase with the highest duty cycle, eliminating narrow-pulse sampling errors and extending maximum modulation index.
-- **Shockless Flying Start & Reverse Braking**: Seamlessly catches spinning propellers with inverse-sigmoid observer pre-seeding; recovers reverse windmilling motors via low-side dynamic braking.
-- **Automated Motor ID Suite**: Built-in self-commissioning extracts resistance `Rs` (with deadtime cancellation), saturation profile `L(I)`, flux linkage, KV rating, and rotor inertia `J` without external lab equipment.
-- **High-Bandwidth Real-Time Telemetry**: Streams FP16 multi-channel waveform telemetry over USB CDC at up to full loop rate (24k to 64k samples/sec) directly to the Python GUI.
+**Vortex FOC** is an open-source, ultra-fast, sensorless Field Oriented Control firmware tailored for high-speed brushless motors and drone ESCs. Built specifically around the STM32G431 microcontroller, it leverages hardware acceleration (CORDIC, internal OPAMPs, dual fast ADCs, and zero-wait-state CCMRAM) to deliver silky-smooth torque, fast dynamic response, and high efficiency.
 
 ---
 
-## Technical Specifications
+## Key Features
 
-| Parameter | Specification | Notes |
-| :--- | :--- | :--- |
-| **Microcontroller** | STM32G431KBU6 (ARM Cortex-M4F @ 170 MHz) | Hardware FPU, CORDIC coprocessor, 10 KB CCMRAM |
-| **PWM / Control Frequency** | 24 kHz to 64 kHz (Default: 48 kHz) | Configurable at runtime via GUI or `Core/Inc/foc_config.h` |
-| **Current Loop Execution** | ~10.5 µs in CCMRAM | Ample CPU headroom remaining across 24–64 kHz |
-| **Outer Speed Loop** | 1 kHz periodic (TIM6 IRQ) | LADRC disturbance rejection & health supervision |
-| **Current Sensing Topology** | 3-Shunt Low-Side (5 mΩ shunts) | 3x on-chip OPAMPs (Gain 16x) + Analog Watchdog |
-| **Speed Control Range** | Standstill up to 30,000+ RPM | Tested across 7-pole-pair drone & gimbal motors |
-| **Observer Angle Jitter** | < 1.5° electrical | 6th-order harmonic LMS suppression enabled |
-| **Telemetry Throughput** | Up to 64,000 samples/sec (USB Full-Speed CDC) | Lock-free ring buffer with FP16 half-precision packing |
-| **Desktop Host GUI** | Python 3.10+ (PySide6 + pyqtgraph) | Windows / Linux / macOS compatible |
-
----
-
-## Key Features & Technologies
-
-### 1. Advanced Sensorless Observer (STF-SMO)
-Traditional sliding mode observers suffer from high-frequency chattering and require heavy low-pass filters that introduce speed-dependent phase lag. Vortex FOC implements an optimized continuous observer:
-- **Algebraic Fast Sigmoid (Fastmoid)**: Uses a fast rational function instead of slow exponential math, compiling down to only 3 assembly instructions on the hardware FPU for negligible compute overhead.
-- **Real-Time Auto-Gain Scheduling**: Evaluated periodically at 1 kHz in `smo_observer.c`. Sliding gain automatically scales with estimated back-EMF amplitude with an adaptive inductance safety ceiling, while boundary layer thickness dynamically tracks current loop bandwidth across the entire speed range.
-- **Critically-Damped Adaptive PLL**: Tracking bandwidth automatically scales with rotor electrical frequency while maintaining an exact critical damping ratio, eliminating overshoot and ensuring robust angle lock from standstill to 30,000+ RPM.
-- **Self-Tuning Filter (STF)**: Resonant alpha-beta filter tracks motor rotational frequency dynamically, providing deep harmonic attenuation with zero phase lag at the fundamental frequency.
-- **Fast Phase Delay Compensation**: Employs an ultra-fast polynomial approximation (avoiding costly trigonometric calls) to compensate for computational lag, ADC sampling delay, and PWM actuation lead time.
-- **Adaptive 6th-Harmonic Rejection**: Online LMS filter continuously tracks and cancels 6th-harmonic electrical ripples caused by inverter dead-time distortion and stator slotting.
-- **Real-Time Magnetic Saturation Feedback**: Continuously estimates core saturation to dynamically adjust current loop PI gains and decoupling feedforward terms.
-
-### 2. Disturbance-Rejection Speed Control (LADRC)
-Replacing traditional PI loops, the **Linear Active Disturbance Rejection Controller (LADRC)** uses a discrete 2nd-order Linear Extended State Observer (LESO):
-- Continuously estimates the total disturbance (external wind gusts, prop drag changes, battery voltage drop, and modeling inaccuracies).
-- Actively cancels disturbances before they can affect rotor speed, delivering exceptional stiffness and zero-overshoot response during rapid throttle transients.
-
-### 3. Smart Startup & Resilient Flying Start
-- **Standstill Alignment**: Cosine S-curve ramping of direct-axis current damps mechanical rotor oscillations during initial alignment.
-- **Universal Vector Steering**: Progressively steers the stator current vector from pure alignment into active torque generation during open-loop ramp-up, delivering high breakaway torque for heavy propellers without pole slipping.
-- **Passive Flying Start**: Tristates the bridge to measure terminal back-EMF, extracts rotational direction via vector cross-product, and locks the observer phase.
-- **Inverse Sigmoid Seeding**: Pre-seeds observer currents directly onto the sliding manifold prior to closing the loop, preventing back-EMF collapse and eliminating torque shock upon handoff.
-- **Active Reverse Recovery**: When reverse rotation is detected, engages low-side dynamic braking until the motor comes to a complete rest, then initiates forward startup safely.
-
-### 4. 4-Layer Stall & Desynchronization Protection
-Rather than relying on simple overcurrent limits, Vortex FOC evaluates a multi-layer supervisor at 1 kHz:
-1. **Electromechanical Power Ratio**: Monitors real electromechanical power versus apparent electrical power. During mechanical stall, electromechanical conversion collapses while electrical power turns purely into heat.
-2. **Vector Orthogonality Check**: Detects phase displacement between the estimated back-EMF vector and current angle.
-3. **BEMF Residual Ratio**: Flags observer runaway or hallucinations where high velocity is reported without matching terminal voltage.
-4. **Leaky Risk Accumulator**: Aggregates risk states to trip within 28–35 ms on hard stalls while rejecting benign transient throttle dips.
-
-### 5. Automated Motor ID (Self-Commissioning)
-Identify motor parameters in seconds directly through the GUI:
-- **Resistance (`Rs`) & Deadtime (`Vdead`)**: 2-point steady-state DC injection completely cancels inverter dead-time voltage errors.
-- **Frequency Detection**: Diagnostic probe automatically selects the optimal injection frequency based on motor impedance.
-- **Dynamic Saturation Profiler**: Sweeps DC bias levels with AC injection, using lock-in DFT demodulation and discrete ZOH inversion to extract nominal inductance, saturation current, and saturation coefficients.
-- **Flux Linkage & KV**: Hand-spin coast test measures zero-crossing periods and peak back-EMF to calculate flux linkage and KV rating.
-- **Inertia & Gain**: Closed-loop step speed test integrates torque current to identify rotor inertia and controller scaling.
-### 6. Digital ESC Protocols: DShot & Bi-Directional DShot (BDShot)
-Designed for seamless integration with drone and robotic flight controllers (Betaflight, INAV, ArduPilot):
-- **Wide Protocol Coverage**: Auto-detects and locks DShot150, DShot300, DShot600, and DShot1200 timings automatically using DMA-assisted edge capture on PB7 (TIM4 CH2).
-- **Bi-Directional Telemetry (BDShot 300 & 600)**: Transmits inverted GCR-encoded electrical RPM (eRPM) packets back over the single signal wire between throttle frames without external telemetry pads.
-- **Dynamic RPM Filtering Ready**: Provides low-latency, high-precision rotor frequency feedback, allowing flight controllers to run dynamic harmonic notch filters for vibration-free flight.
-- **Robust Failsafe & CRC**: Verifies 4-bit CRC checksum on every packet and incorporates a high-speed timeout watchdog to disarm motors instantly if the signal line is severed.
+- **Sensorless FOC Control**: Smooth, quiet, and highly efficient motor operation from standstill to extreme RPM without hall sensors.
+- **Ultra-Fast Loop Rate**: Configurable 24 kHz to 64 kHz current loop running in CCMRAM for lightning-fast dynamic response.
+- **3 Versatile Control Modes**: Supports **Speed Mode** (with disturbance-rejection LADRC), **Torque Mode** (direct current control for robotics/actuators), and **Voltage Mode** (duty cycle control for multirotors).
+- **Smooth Startup & 3D Reversals**: Gentle S-curve ramp-up and seamless zero-crossing direction reversals without rotor slip.
+- **Flying Start**: Instantly catches spinning or windmilling motors in either direction without current spikes.
+- **DShot & Bi-Directional DShot**: Supports DShot150–1200 and BDShot300/600 with real-time eRPM telemetry for flight controller RPM filtering.
+- **ESC Melodies & Beacon Beeps**: Power-on musical chimes, arming chirps, and lost-model beacon beepers directly through the motor coils.
+- **Comprehensive Protection**: Fast hardware overcurrent (AWD), intelligent stall/desync detection, and voltage monitoring.
+- **Automated Motor Identification**: One-click measurement of resistance (Rs), inductance (Ls), flux linkage, KV, and rotor inertia.
+- **Real-Time Telemetry & GUI**: Live high-speed waveform plotting and instant parameter tuning over USB.
 
 ---
 
-## Python Configurator GUI
+## Hardware Specifications
 
-The desktop toolchain (`Tools/Configurator/`) provides real-time monitoring and parameter editing:
-
-- **Live Multi-Channel Plotting**: Visualizes speed, Id/Iq currents, Vd/Vq voltages, and raw ADC readings with adjustable exponential smoothing.
-- **Single Source of Truth Parameter Editor**: Parameter definitions in MCU Flash are mirrored from the X-Macro table (`Core/Inc/param_table.def`), allowing live parameter tuning with one-click Flash save/load.
-- **Dynamic Response Profiler**: Generates automated test signals (Step, Frequency Chirp, PRBS Noise) directly into the control loops to profile motor dynamics and tune loop bandwidths.
-- **Motor ID Wizard**: Interactive prompts guide you through Resistance, Inductance, Saturation, and Flux calibration.
+- **Microcontroller**: STM32G431 (ARM Cortex-M4F @ 170 MHz, CORDIC coprocessor, 10 KB CCMRAM)
+- **Current Sensing**: 3-Shunt Low-Side topology (3 mΩ shunts, 15x internal OPAMP gain, 33A peak sensing ceiling)
+- **Input Channels**: DShot / BDShot (PB7 / TIM4 CH2), Analog Potentiometer (PA0), or USB CDC Virtual COM port
 
 ---
 
-## Getting Started
+## Desktop Configurator GUI
 
-### 1. Prerequisites
-- **Compiler**: `arm-none-eabi-gcc` (v10.3+ recommended) and `make`.
-- **Debugger**: ST-Link V2 / V3 with OpenOCD or STM32CubeProgrammer.
-- **Host Environment**: Python 3.10+ for the Configurator GUI.
+Vortex FOC comes with a custom Python desktop application (`Tools/Configurator/`) for real-time monitoring and parameter tuning:
+- Live multi-channel plotting (speed, currents, voltages, duty cycles).
+- Single-click Flash parameter read/write with explicit safety interlocks.
+- Automated Motor Identification Wizard.
+- Dynamic Response Profiler (Step, Chirp, PRBS noise tests).
 
-### 2. Firmware Build & Flash
+---
+
+## Quick Start
+
+### 1. Build Firmware
+Requires `arm-none-eabi-gcc` and `make`:
 ```bash
-make -j8
+make -j4
 ```
 
-### 3. Launch Configurator GUI
+### 2. Flash to MCU
+Flash via ST-Link and OpenOCD:
+```bash
+make flash
+```
+
+### 3. Launch Configurator
 ```bash
 cd Tools/Configurator
 pip install -r requirements.txt
 python main.py
 ```
 
-### 4. Basic Motor Tuning Workflow
-1. Connect your Vortex FOC board to PC via USB.
-2. Launch the Configurator — it will auto-detect and connect to the virtual COM port.
-3. Open the **Motor ID** tab and run **Start Self-Commissioning** to measure `Rs`, `Vdead`, and `L(I)`.
-4. Perform the hand-spin prompt to calibrate `Flux Linkage` and `KV`.
-5. Click **Apply to Flash** to save motor parameters permanently.
-6. Switch to **Speed Mode**, enter your desired target RPM, and click **Start**.
-
 ---
 
-## Repository Structure
+## Author & License
 
-```
-Vortex_FOC/
-├── Core/
-│   ├── Inc/                          # System headers & public API definitions
-│   │   ├── foc_config.h              # System clock, frequencies, safety thresholds & constants
-│   │   ├── motor_params.h            # Motor physical constants (Rs, Ls, flux linkage, pole pairs)
-│   │   ├── foc_hardware.h            # Direct register LL hardware abstraction (TIM1, ADC, OPAMP)
-│   │   ├── foc_state_machine.h       # FOC control structures & high-frequency task API
-│   │   ├── foc.h                     # Clarke/Park transforms, centered SVPWM, deadtime
-│   │   ├── input_dshot.h             # DShot 150–1200 & BDShot telemetry driver API
-│   │   ├── cordic_math.h             # Hardware CORDIC math wrappers (sin/cos, atan2, modulus)
-│   │   ├── smo_observer.h            # STF-SMO observer, dynamic PLL & 6th-order compensator
-│   │   ├── ladrc_controller.h        # Discrete 2nd-order LESO speed controller
-│   │   ├── pi_controller.h           # PI controller library with anti-windup clamping
-│   │   ├── motor_id.h                # Automated motor parameter identification API
-│   │   ├── foc_startup.h             # Universal vector steering & startup handoff API
-│   │   ├── foc_flying_start.h        # Passive BEMF detection & dynamic brake API
-│   │   ├── foc_calibration.h        # ADC offset calibration & Analog Watchdog configuration
-│   │   ├── foc_slow_task.h           # 1 kHz slow task & 4-layer stall guards
-│   │   ├── foc_input.h               # Application layer: Throttle, Potentiometer, Safety arming
-│   │   ├── comm_protocol.h           # High-speed USB CDC binary protocol & telemetry
-│   │   ├── flash_config.h            # MCU Flash configuration persistence API
-│   │   ├── response_profiler.h       # Step, Chirp, and PRBS noise signal generator
-│   │   └── param_table.def           # Single Source of Truth X-Macro parameter table
-│   └── Src/                          # Real-time C99 firmware implementation
-│       ├── foc_state_machine.c       # 24–64 kHz CCMRAM high-frequency ISR & state dispatcher
-│       ├── foc.c                     # Space Vector PWM & polynomial S-curve deadtime comp
-│       ├── input_dshot.c             # DMA-driven DShot decoder, auto-baud & GCR telemetry engine
-│       ├── smo_observer.c            # Continuous STF-SMO, fastmoid & adaptive PLL
-│       ├── ladrc_controller.c        # Linear Active Disturbance Rejection Control (LADRC)
-│       ├── pi_controller.c           # PI controller with dynamic output limits
-│       ├── foc_slow_task.c           # 1 kHz speed loop & 4-layer stall/desync protection
-│       ├── foc_startup.c             # S-curve alignment & vector-steered open-loop ramp
-│       ├── foc_flying_start.c        # Passive BEMF catch, inverse-sigmoid seed & dynamic brake
-│       ├── foc_calibration.c        # 3-phase ADC zero-offset calibration & noise analysis
-│       ├── foc_input.c               # Input command processing, arming logic & failsafe
-│       ├── motor_id.c                # Automated Rs, L(I) saturation, flux & inertia estimation
-│       ├── comm_protocol.c           # USB CDC binary engine & lock-free FP16 ring buffer
-│       ├── flash_config.c            # Persistent storage read/write routines
-│       ├── peripheral_init.c         # Clock (170 MHz), TIM1, Dual ADC, 3x OPAMP, DMA setup
-│       ├── response_profiler.c       # Dynamic response test signal generator
-│       ├── stm32g4xx_it.c            # Hardware interrupt service routines & HardFault crash logger
-│       └── main.c                    # Main entry point & hardware watchdog refresh
-├── Hardware/                         # Schematics, PCB layout & hardware documentation
-│   └── Prototype/                    # Hardware prototype photos & pinout specifications
-├── Tools/Configurator/               # PySide6 desktop GUI toolchain
-│   ├── main.py                       # Configurator entry point
-│   ├── core/                         # USB serial thread, binary protocol & param sync
-│   └── ui/                           # Live waveform plotter, param editor & profiler panels
-├── STM32G431XX_FLASH.ld              # GNU LD Linker script with CCMRAM (.ccmram) placement
-└── Makefile                          # ARM GCC build script with optimization flags
-```
-
----
-
-## Author & Contact
-
-- **Author**: Hoàng Danh Hiếu
+- **Author**: Hoàng Danh Hiếu ([@hoangdanhhieu](https://github.com/hoangdanhhieu))
 - **Email**: [hoangdanhhieu2003@gmail.com](mailto:hoangdanhhieu2003@gmail.com)
-- **GitHub**: [@hoangdanhhieu](https://github.com/hoangdanhhieu)
-- **Project**: [Vortex FOC](https://github.com/hoangdanhhieu/Vortex_FOC)
-
----
-
-## License
-This project is released under the **MIT License**. See [LICENSE](LICENSE) for details.
-
----
-*Vortex FOC — Engineered for high-speed, resilient, and sensorless electric motor control.*
+- **License**: Licensed under the **GNU General Public License v3.0 (GPLv3)**. See [LICENSE](LICENSE) for details.
