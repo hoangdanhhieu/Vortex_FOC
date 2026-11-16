@@ -11,8 +11,10 @@ from enum import IntEnum
 
 HEADER = 0xAA
 
-CURRENT_POLE_PAIRS = 7.0
-CURRENT_PWM_FREQ   = 48000.0
+CURRENT_POLE_PAIRS   = 7.0
+CURRENT_PWM_FREQ     = 48000.0
+CURRENT_MAX_SPEED    = 25000.0  # RPM
+CURRENT_MAX_CURRENT  = 20.0     # A
 
 
 def set_pole_pairs(poles: float):
@@ -33,6 +35,39 @@ def set_pwm_frequency(freq: float):
 
 def get_pwm_frequency() -> float:
     return CURRENT_PWM_FREQ
+
+
+def set_max_speed(rpm: float):
+    global CURRENT_MAX_SPEED
+    if rpm > 0:
+        CURRENT_MAX_SPEED = float(rpm)
+
+
+def get_max_speed() -> float:
+    return CURRENT_MAX_SPEED
+
+
+def set_max_current(amps: float):
+    global CURRENT_MAX_CURRENT
+    if amps > 0:
+        CURRENT_MAX_CURRENT = float(amps)
+
+
+def get_max_current() -> float:
+    return CURRENT_MAX_CURRENT
+
+
+CURRENT_BOARD_MAX_CURRENT = 33.0  # Initial fallback until read from MCU
+
+
+def set_board_max_current(amps: float):
+    global CURRENT_BOARD_MAX_CURRENT
+    if amps > 0:
+        CURRENT_BOARD_MAX_CURRENT = float(amps)
+
+
+def get_board_max_current() -> float:
+    return CURRENT_BOARD_MAX_CURRENT
 
 STREAM_DEC_MIN = 1
 STREAM_DEC_MAX = 10
@@ -71,43 +106,80 @@ class RspType(IntEnum):
     STREAM_DATA = 0x91   # seq(2B) + num_sets(1B) + [ch0..ch3 fp16] × num_sets
 
 
-class ParamId(IntEnum):
+class FocState(IntEnum):
+    IDLE            = 0
+    CALIBRATION     = 1
+    DETECT          = 2
+    FLYING_START    = 3
+    ALIGN           = 4
+    STARTUP         = 5
+    RUN             = 6
+    ZERO_CROSS      = 7
+    STOP            = 8
+    FAULT           = 9
+    SELF_COMMISSION = 10
+    COAST_FLUX_ID   = 11
+    BEEP            = 12
+
+
+STATE_NAMES = [
+    "IDLE", "CAL", "DETECT", "FLY_START", "ALIGN", "STARTUP",
+    "RUN", "ZERO_CROSS", "STOP", "FAULT", "IDENT", "COAST_ID",
+    "BEEP"
+]
+
+
+from enum import IntEnum, auto
+class AutoZeroEnum(IntEnum):
+    def _generate_next_value_(name, start, count, last_values):
+        return count
+        
+class ParamId(AutoZeroEnum):
     # Current PI
-    KP_ID = 0; KI_ID = 1; KP_IQ = 2; KI_IQ = 3; BW_CUR = 4
+    KP_ID = auto(); KI_ID = auto(); KP_IQ = auto(); KI_IQ = auto(); BW_CUR = auto()
     # Speed Controller (LADRC)
-    LADRC_WC = 5; LADRC_WO = 6; LADRC_B0 = 7; V_RAMP = 8
+    LADRC_WC = auto(); LADRC_WO = auto(); LADRC_B0 = auto(); V_RAMP = auto()
     # Startup
-    I_STRT = 9; I_ALGN = 10; STRT_TIME = 11; HANDOFF = 12
+    I_STRT = auto(); I_ALGN = auto(); STRT_TIME = auto(); HANDOFF = auto()
     # Ramp Rates
-    RAMP_ACC = 13; RAMP_DEC = 14; I_RAMP = 15
+    RAMP_ACC = auto(); RAMP_DEC = auto(); I_RAMP = auto(); I_CROSS = auto()
     # Motor
-    M_RS = 16; M_LS = 17; M_KV = 18; M_FLUX = 19; M_POLES = 20
-    M_J = 21; M_MAX_SPD = 22; M_MAX_I = 23; M_ISAT = 24; M_ALPHA = 25
+    M_RS = auto(); M_LS = auto(); M_KV = auto(); M_FLUX = auto(); M_POLES = auto()
+    M_J = auto(); M_MAX_SPD = auto(); M_MAX_I = auto(); M_ISAT = auto(); M_ALPHA = auto()
     # SMO
-    COMP_DELAY = 26
+    COMP_DELAY = auto()
     # ADC
-    ADC_MARG = 27
+    ADC_MARG = auto()
     # Safety
-    OC_THR = 28; OV_THR = 29; UV_THR = 30
+    OC_THR = auto(); OV_THR = auto(); UV_THR = auto()
     # Input / Throttle
-    IN_SOURCE = 31; IN_MODE = 32; IN_MIN_SPD = 33; IN_MIN_CUR = 34; IN_MIN_VQ = 35; IN_DEADBAND = 36
+    IN_SOURCE = auto(); IN_MODE = auto(); IN_MIN_SPD = auto()
+    IN_MIN_CUR = auto(); IN_MIN_VQ = auto(); IN_DEADBAND = auto()
     # Hardware / System
-    PWM_FREQ = 37
+    PWM_FREQ = auto(); DEADTIME = auto(); BEEP_VOL = auto()
     # Internal
-    DIRECTION = 38; OC_COUNT = 39; STALL_EN = 40
+    DIRECTION = auto(); OC_COUNT = auto(); STALL_EN = auto()
     # DShot
-    DSHOT_3D = 41
+    DSHOT_3D = auto()
+    # Calibration Offsets & Noise Profile (Persistent hardware calibration)
+    CAL_VALID = auto()
+    CAL_OFFSET_A = auto(); CAL_OFFSET_B = auto()
+    CAL_OFFSET_C1 = auto(); CAL_OFFSET_C2 = auto()
+    CAL_VPHASE_A = auto(); CAL_VPHASE_C = auto()
+    CAL_NOISE_RMS = auto(); CAL_NOISE_PKPK = auto()
+    CAL_IS_FLAT_THR = auto(); CAL_I_INJ_MIN = auto()
     # Live Params
-    SPD_REF = 42; TRQ_REF = 43; VBUS = 44; RPM = 45
-    ID_MEAS = 46; IQ_MEAS = 47; IA = 48; IB = 49; IC = 50
-    DUTY_A = 51; DUTY_B = 52; DUTY_C = 53; VD = 54; VQ = 55
-    ID_RS_MEAS = 56; ID_LS_MEAS = 57; ID_ISAT_MEAS = 58
-    ID_ALPHA_MEAS = 59; ID_DT_MEAS = 60; ID_FREQ_MEAS = 61
-    ID_FLUX_MEAS = 62; ID_KV_MEAS = 63
-    ID_INERTIA_MEAS = 64; ID_B0_MEAS = 65
-    USER_PLOT1 = 66; USER_PLOT2 = 67; USER_PLOT3 = 68
-    THETA_ELEC = 69
-    PID_COUNT = 70
+    SPD_REF = auto(); TRQ_REF = auto(); VBUS = auto(); RPM = auto()
+    ID_MEAS = auto(); IQ_MEAS = auto(); IA = auto(); IB = auto(); IC = auto()
+    DUTY_A = auto(); DUTY_B = auto(); DUTY_C = auto(); VD = auto(); VQ = auto()
+    ID_RS_MEAS = auto(); ID_LS_MEAS = auto(); ID_ISAT_MEAS = auto()
+    ID_ALPHA_MEAS = auto(); ID_DT_MEAS = auto(); ID_FREQ_MEAS = auto()
+    ID_FLUX_MEAS = auto(); ID_KV_MEAS = auto()
+    ID_INERTIA_MEAS = auto(); ID_B0_MEAS = auto()
+    USER_PLOT1 = auto(); USER_PLOT2 = auto(); USER_PLOT3 = auto()
+    THETA_ELEC = auto()
+    BOARD_MAX_I = auto()
+    PID_COUNT = auto()
 
 
 @dataclass
@@ -244,15 +316,28 @@ def parse_ack(payload: bytes) -> tuple[int, bool]:
     return 0, False
 
 
+def update_cached_param(pid: int, val: float):
+    """Cache core motor/board parameters needed across GUI panels and conversions."""
+    if pid == ParamId.M_POLES:
+        set_pole_pairs(val)
+    elif pid == ParamId.PWM_FREQ:
+        set_pwm_frequency(val)
+    elif pid == ParamId.BOARD_MAX_I:
+        set_board_max_current(val)
+    elif pid == ParamId.M_MAX_I:
+        set_max_current(val)
+    elif pid == ParamId.M_MAX_SPD:
+        poles = get_pole_pairs()
+        rpm = (val / poles) * (60.0 / (2.0 * math.pi)) if poles > 0 else 0.0
+        set_max_speed(rpm)
+
+
 def parse_value(payload: bytes) -> tuple[int, float]:
     """Parse VALUE: returns (param_id, value)"""
     if len(payload) >= 5:
         pid = payload[0]
         val = struct.unpack('<f', payload[1:5])[0]
-        if pid == ParamId.M_POLES:
-            set_pole_pairs(val)
-        elif pid == ParamId.PWM_FREQ:
-            set_pwm_frequency(val)
+        update_cached_param(pid, val)
         return pid, val
     return 0, 0.0
 
@@ -291,10 +376,7 @@ def parse_param_all(payload: bytes) -> dict[int, float]:
         pid         = payload[pos]
         val         = struct.unpack('<f', payload[pos+1:pos+5])[0]
         params[pid] = val
-        if pid == ParamId.M_POLES:
-            set_pole_pairs(val)
-        elif pid == ParamId.PWM_FREQ:
-            set_pwm_frequency(val)
+        update_cached_param(pid, val)
         pos        += 5
     return params
 

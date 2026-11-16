@@ -109,12 +109,14 @@ void SysTick_Handler(void) {
 /* ========================================================================== */
 
 void DMA1_Channel2_IRQHandler(void) {
+    if (DMA1->ISR & DMA_ISR_TEIF2) {
+        DMA1->IFCR = DMA_IFCR_CTEIF2;
+        DShot_DMA_ErrorRecover();
+        return;
+    }
     if (DMA1->ISR & DMA_ISR_TCIF2) {
         DMA1->IFCR = DMA_IFCR_CTCIF2;
         DShot_DMA_IRQHandler();
-    }
-    if (DMA1->ISR & DMA_ISR_TEIF2) {
-        DMA1->IFCR = DMA_IFCR_CTEIF2;
     }
 }
 

@@ -26,14 +26,6 @@ static float s_cross_prod_sum = 0.0f;
 static float s_dc_alpha = 0.0f;
 static float s_dc_beta = 0.0f;
 
-/* Active dynamic brake state (reverse spinning recovery) */
-static uint32_t s_brake_counter = 0;
-static uint32_t s_brake_min_samples = 0;
-static uint32_t s_brake_max_samples = 0;
-static uint32_t s_brake_debounce_target = 0;
-static uint32_t s_brake_debounce_counter = 0;
-static float s_brake_exit_curr_sq = 0.0f;
-static float s_i_mag_sq_flt = 100.0f;
 static float s_detect_peak_alpha;
 
 /* Helper to extract pure BEMF fundamental by rejecting common-mode DC offset */
@@ -45,8 +37,8 @@ static inline void get_pure_bemf(float* alpha, float* beta) {
      * raw_alpha = (va - 0.5*vb - 0.5*vc) * (2/3) = va
      * raw_beta  = SQRT3_INV * (vb - vc) = -SQRT3_INV * (va + 2*vc) */
     float raw_alpha = va;
-    float raw_beta = (g_foc.status.reverse > 0.0f) ? (-SQRT3_INV * (va + 2.0f * vc))
-                                                   : (SQRT3_INV * (va + 2.0f * vc));
+    float raw_beta = (g_foc.cfg.direction > 0.0f) ? (-SQRT3_INV * (va + 2.0f * vc))
+                                                  : (SQRT3_INV * (va + 2.0f * vc));
 
     /* Fast DC blocker (HPF) to remove offset caused by diode clamping and ADC clipping.
      * Cutoff ~15Hz*/
@@ -100,20 +92,7 @@ void FOC_FlyingStart_Init(void) {
     s_dc_alpha = 0.0f;
     s_dc_beta = 0.0f;
 
-    s_detect_peak_alpha = 400.0f * TWO_PI * FOC_GetDt();
-
-    /* Braking timing initialization */
-    s_brake_min_samples =
-        (uint32_t)((float)BRAKE_MIN_DURATION_MS * 0.001f * g_foc.cfg.pwm_frequency);
-    s_brake_max_samples =
-        (uint32_t)((float)BRAKE_MAX_DURATION_MS * 0.001f * g_foc.cfg.pwm_frequency);
-    s_brake_debounce_target =
-        (uint32_t)((float)BRAKE_DEBOUNCE_MS * 0.001f * g_foc.cfg.pwm_frequency);
-    s_brake_counter = 0;
-    s_brake_debounce_counter = 0;
-    float exit_curr = BRAKE_EXIT_CURR_MIN;
-    s_brake_exit_curr_sq = exit_curr * exit_curr;
-    s_i_mag_sq_flt = 100.0f;
+    s_detect_peak_alpha = 400.0f * TWO_PI * g_foc.dt;
 }
 
 void FOC_StateDetect(void) {
@@ -159,6 +138,8 @@ void FOC_StateDetect(void) {
             g_foc.ctrl.smo.pll_integral = est_omega;
             g_foc.data.omega_elec = est_omega;
 
+            SMO_SetDirection(&g_foc.ctrl.smo, sign_w);
+
             s_flying_start_counter = 0;
             g_foc.status.state = FOC_STATE_FLYING_START;
         } else {
@@ -185,16 +166,7 @@ void FOC_StateFlyingStart(void) {
     }
 
     /* Check exit criteria before precharge / enable */
-    if (omega_now <= 0.0f) {
-        FOC_EnableDrivers(1);
-        s_brake_counter = 0;
-        s_brake_debounce_counter = 0;
-        s_i_mag_sq_flt = 100.0f;
-        g_foc.status.state = FOC_STATE_BRAKE;
-        return;
-    }
-
-    if (omega_now < g_foc.cfg.motor_min_spd * 0.6f) {
+    if (fabsf(omega_now) < g_foc.cfg.motor_min_spd * 0.6f) {
         FOC_EnableDrivers(1);
         g_foc.startup.counter = 0;
         g_foc.status.state = FOC_STATE_ALIGN;
@@ -236,7 +208,13 @@ void FOC_StateFlyingStart(void) {
 
         const float ff_gain = 0.9f;
         g_foc.ctrl.id.integral = 0.0f;
-        g_foc.ctrl.iq.integral = E_bemf * (1.0f - ff_gain);
+        if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
+            /* In Voltage mode, Vq is output directly from PI controller without feedforward
+             * addition */
+            g_foc.ctrl.iq.integral = E_bemf;
+        } else {
+            g_foc.ctrl.iq.integral = E_bemf * (1.0f - ff_gain);
+        }
 
         /* Seed SMO current observer using inverse sigmoid so the observer starts ALREADY
          * on the sliding surface. This prevents BEMF from collapsing to 0.0V (zero-sigmoid shock)
@@ -260,31 +238,24 @@ void FOC_StateFlyingStart(void) {
         g_foc.ctrl.smo.Ealpha = g_foc.ctrl.smo.Ealpha_flt;
         g_foc.ctrl.smo.Ebeta = g_foc.ctrl.smo.Ebeta_flt;
 
+        /* Set actual rotor direction for the state machine and SMO */
+        float spin_dir = (omega_now >= 0.0f) ? 1.0f : -1.0f;
+        g_foc.status.reverse = spin_dir;
+        SMO_SetDirection(&g_foc.ctrl.smo, spin_dir);
+
         if (g_foc.status.control_mode == FOC_MODE_SPEED) {
+            /* Bumpless speed handoff: start ramping speed_ref from current rotor speed */
             g_foc.cmd.speed_ref = omega_now;
-            if (fabsf(g_foc.cmd.speed_ref_target) < 1.0f ||
-                g_foc.cmd.speed_ref_target < omega_now) {
-                g_foc.cmd.speed_ref_target = omega_now;
-            }
-            /* Bumpless zero-torque handoff: motor is freewheeling, so initial torque command is 0.
-             * LADRC seamlessly ramps torque according to the user throttle target without an
-             * initial current kick. */
-            g_foc.cmd.Iq_ref = 0.0f;
-            g_foc.data.Iq_ref_cmd = 0.0f;
             LADRC_SeedState(&g_foc.ctrl.speed, omega_now, 0.0f);
-        } else if (g_foc.status.control_mode == FOC_MODE_TORQUE) {
-            g_foc.data.Iq_ref_cmd = g_foc.cmd.Iq_ref;
-        } else {
-            g_foc.cmd.Iq_ref = 0.0f;
-            g_foc.data.Iq_ref_cmd = 0.0f;
-        }
-        g_foc.cmd.Id_ref = 0.0f;
-        if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
+        } else if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
             float max_v = SQRT3_INV * 2.0f * (g_foc.max_duty - 0.5f) * g_foc.data.Vbus;
             float E_bemf_norm = (max_v > 1.0f) ? (E_bemf / max_v) : 0.0f;
-            E_bemf_norm = clampf(E_bemf_norm, -1.0f, 1.0f);
-            g_foc.cmd.Vq_ref = E_bemf_norm;
+            g_foc.cmd.Vq_ref = clampf(E_bemf_norm, -1.0f, 1.0f);
         }
+
+        /* Bumpless current start: zero initial torque current, ramp smoothly to target in RUN */
+        g_foc.cmd.Iq_ref = 0.0f;
+        g_foc.cmd.Id_ref = 0.0f;
 
         /* Direct handoff: bypass startup angle blending */
         g_foc.startup.theta = theta_park;
@@ -292,36 +263,5 @@ void FOC_StateFlyingStart(void) {
         FOC_Startup_ForceComplete();
         FOC_EnableDrivers(1);
         g_foc.status.state = FOC_STATE_RUN;
-    }
-}
-
-void FOC_StateBrake(void) {
-    if (s_brake_counter == 0) {
-        FOC_HW_DisableAWD();
-    }
-    s_brake_counter++;
-    g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.0f;
-
-    /* Current magnitude squared in stationary alpha-beta frame */
-    float i_mag_sq =
-        g_foc.data.Ialpha_flt * g_foc.data.Ialpha_flt + g_foc.data.Ibeta_flt * g_foc.data.Ibeta_flt;
-
-    s_i_mag_sq_flt += 0.01f * (i_mag_sq - s_i_mag_sq_flt);
-
-    if (s_brake_counter >= s_brake_max_samples) {
-        FOC_HW_EnableAWD();
-        /* Maximum timeout expired: fail-safe exit to ALIGN */
-        g_foc.startup.counter = 0;
-        g_foc.status.state = FOC_STATE_ALIGN;
-    } else if (s_brake_counter >= s_brake_min_samples && s_i_mag_sq_flt < s_brake_exit_curr_sq) {
-        /* Below noise threshold: count consecutive debounce samples */
-        s_brake_debounce_counter++;
-        if (s_brake_debounce_counter >= s_brake_debounce_target) {
-            FOC_HW_EnableAWD();
-            g_foc.startup.counter = 0;
-            g_foc.status.state = FOC_STATE_ALIGN;
-        }
-    } else {
-        s_brake_debounce_counter = 0;
     }
 }

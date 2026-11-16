@@ -42,6 +42,8 @@ typedef struct {
     float pll_integral; /**< PLL integral accumulator */
     float pll_int_min;  /**< PLL integral minimum limit */
     float pll_int_max;  /**< PLL integral maximum limit */
+    float direction;    /**< Active rotation direction (+1.0f or -1.0f) governed exclusively by FOC
+                           State Machine */
 
     /* Dynamic PLL bandwidth parameters */
     float pll_cutoff_min; /**< Minimum PLL bandwidth [Hz] */
@@ -71,9 +73,9 @@ typedef struct {
     float theta_err;      /**< Instantaneous PLL angle tracking error [-1.0 to 1.0) */
     float bemf_mag;       /**< Instantaneous Back-EMF vector magnitude [V] */
 
-    /* Precomputed Implicit Backward Euler coefficients */
-    float dt_over_Ls; /**< Precomputed dt * Ls_inv */
-    float denom_inv;  /**< Precomputed 1.0 / (1.0 + Rs * dt_over_Ls) */
+    /* Precomputed Exact Discrete ZOH coefficients */
+    float a_zoh; /**< Discrete pole exp(-Rs * dt / Ls) */
+    float b_zoh; /**< Discrete input gain (1.0 - a_zoh) / Rs */
 
     /* Dynamic load current magnitude & saturation */
     float I_mag;   /**< Measured phase current magnitude [A] */
@@ -84,6 +86,9 @@ typedef struct {
     float gamma_6th_dt; /**< Precomputed gamma_6th * dt */
     float pll_ki_dt;    /**< Precomputed pll_ki * dt */
     float wc_base;      /**< Precomputed base cutoff frequency for STF BEMF filter [rad/s] */
+    float bw_cur;
+    float omega_obs;
+    float phase_lag;
 } SMO_Observer_t;
 
 /**
@@ -104,6 +109,21 @@ void SMO_Reset(SMO_Observer_t* smo);
  * @param omega_init Initial electrical speed in rad/s
  */
 void SMO_ResetStates(SMO_Observer_t* smo, float omega_init);
+
+/**
+ * @brief Seed SMO observer speed and angle states (e.g. exiting zero-crossing bridge)
+ * @param smo Pointer to SMO structure
+ * @param omega_init Initial electrical speed in rad/s
+ * @param theta_norm Initial electrical angle in [-1, 1) representing [-pi, pi)
+ */
+void SMO_ResetStatesWithAngle(SMO_Observer_t* smo, float omega_init, float theta_norm);
+
+/**
+ * @brief Set SMO active rotation direction
+ * @param smo Pointer to SMO structure
+ * @param dir Direction (+1.0f for forward, -1.0f for reverse)
+ */
+void SMO_SetDirection(SMO_Observer_t* smo, float dir);
 
 /**
  * @brief Update SMO observer with new voltage and current measurements
@@ -128,7 +148,7 @@ void SMO_SlowTask(SMO_Observer_t* smo);
  * @return Electrical angle in [-1, 1) representing [-pi, pi)
  */
 CCMRAM_FUNC static inline float SMO_GetParkAngle(const SMO_Observer_t* smo) {
-    return smo->theta_est;
+    return normalize_angle_norm(smo->theta_est + smo->phase_lag);
 }
 
 /**
@@ -137,16 +157,8 @@ CCMRAM_FUNC static inline float SMO_GetParkAngle(const SMO_Observer_t* smo) {
  * @return Electrical angle in [-1, 1) representing [-pi, pi)
  */
 CCMRAM_FUNC static inline float SMO_GetPWMAngle(const SMO_Observer_t* smo) {
-    /* PWM Hardware Delay Compensation (Total = 1.5 dt for Peak Update):
-     * - t = 0: ADC samples current at Peak k. Observer calculates theta_est for t=0.
-     * - t = 1.0 dt: Update Event occurs at Peak k+1. New CCR shadow register is loaded.
-     * - t = 1.0 dt to 2.0 dt: New voltage is applied to the motor.
-     * - t = 1.5 dt: The exact center (average) of the new voltage application window.
-     * Since the voltage calculated now takes effect symmetrically around t = 1.5 dt,
-     * we must advance the PWM angle by exactly 1.5 dt to align it perfectly.
-     */
     float theta_advance = (smo->omega_est / PI) * (1.5f * smo->dt);
-    return normalize_angle_norm(smo->theta_est + theta_advance);
+    return normalize_angle_norm(smo->theta_est + theta_advance + smo->phase_lag);
 }
 
 /**
@@ -169,7 +181,7 @@ CCMRAM_FUNC static inline float SMO_GetSpeed(const SMO_Observer_t* smo) {
  * @param max_speed_elec_rad Maximum motor speed in electrical rad/s
  */
 void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha,
-                        float flux_linkage, float poles, float max_speed_elec_rad);
+                        float flux_linkage, float poles, float max_speed_elec_rad, float bw_cur);
 
 /**
  * @brief Feed external BEMF directly into the shared STF + PLL track loop

@@ -50,7 +50,7 @@ class PlotPanel(QWidget):
         self._stream_time = 0.0
 
         # History ring buffers for strip chart (pre-allocated)
-        self.MAX_HISTORY = 500_000
+        self.MAX_HISTORY = 10_000_000
         self.history_t   = np.zeros(self.MAX_HISTORY, dtype=np.float32)
         self.history_y   = {i: np.zeros(self.MAX_HISTORY, dtype=np.float32) for i in range(4)}
         self.history_len = 0

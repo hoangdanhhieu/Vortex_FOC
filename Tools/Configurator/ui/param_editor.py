@@ -1,5 +1,4 @@
-"""Parameter editor — tabbed groups with spinboxes for each parameter."""
-
+import math
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QLabel, QDoubleSpinBox, QPushButton, QGridLayout,
@@ -12,10 +11,10 @@ from core.serial_comm import SerialThread
 from core import protocol
 from core.param_defs import (
     PARAM_DEFS, PARAM_GROUPS, get_params_by_group, CHOICE_PARAMS,
-    AUTO_PARAMS, PARAM_TOOLTIPS,
+    AUTO_PARAMS, PARAM_TOOLTIPS, SLIDER_PARAMS,
     mcu_to_gui, gui_to_mcu
 )
-from ui.widgets import WheelDoubleSpinBox
+from ui.widgets import WheelDoubleSpinBox, NoWheelSlider
 
 class ParamComboBox(QComboBox):
     """Dropdown parameter selector that behaves like a spinbox for get/set."""
@@ -58,6 +57,119 @@ class ParamComboBox(QComboBox):
     def setReadOnly(self, ro: bool):
         self.setEnabled(not ro)
 
+class ParamSlider(QWidget):
+    """Slider with live numerical readout that behaves like a spinbox for get/set."""
+    valueChanged = Signal(float)
+    sliderReleased = Signal()
+
+    def __init__(self, pmin: float, pmax: float, step: float = 1.0, parent=None):
+        super().__init__(parent)
+        self._min = float(pmin)
+        self._max = float(pmax)
+        self._step = float(step) if step > 0 else 1.0
+        self._total_steps = max(1, int(round((self._max - self._min) / self._step)))
+        self._decimals = max(0, -int(math.floor(math.log10(self._step)))) if self._step < 1 else 0
+        self._special_text = None
+        self._color_thresholds = None  # (warn_val, alert_val)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self._slider = NoWheelSlider(Qt.Horizontal)
+        self._slider.setRange(0, self._total_steps)
+        self._slider.setSingleStep(1)
+        self._slider.setPageStep(max(1, int(self._total_steps / 10)))
+
+        self._lbl_val = QLabel("0")
+        self._lbl_val.setMinimumWidth(65)
+        self._lbl_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._lbl_val.setStyleSheet("font-weight: bold; color: #89b4fa; font-size: 11px;")
+
+        self._slider.valueChanged.connect(self._on_slider_moved)
+        self._slider.sliderReleased.connect(self.sliderReleased)
+
+        layout.addWidget(self._slider, 1)
+        layout.addWidget(self._lbl_val, 0)
+
+        self._value = self._min
+        self.setValue(self._min)
+
+    def _on_slider_moved(self, step_idx: int):
+        val = self._min + step_idx * self._step
+        val = max(self._min, min(self._max, val))
+        self._value = val
+        self._update_label(val)
+        self.valueChanged.emit(val)
+
+    def _update_label(self, val: float):
+        if self._special_text and abs(val - self._min) < 1e-6:
+            self._lbl_val.setText(self._special_text)
+            self._lbl_val.setStyleSheet("font-weight: bold; color: #89b4fa; font-size: 11px;")
+        else:
+            if self._decimals == 0:
+                self._lbl_val.setText(f"{int(round(val))}")
+            else:
+                self._lbl_val.setText(f"{val:.{self._decimals}f}")
+            if self._color_thresholds:
+                warn_val, alert_val = self._color_thresholds
+                if val > alert_val:
+                    color = "#f38ba8"  # Coral red (> 90%)
+                elif val >= warn_val:
+                    color = "#fab387"  # Amber orange (80% - 90%)
+                else:
+                    color = "#89b4fa"  # Normal blue (< 80%)
+                self._lbl_val.setStyleSheet(f"font-weight: bold; color: {color}; font-size: 11px;")
+            else:
+                self._lbl_val.setStyleSheet("font-weight: bold; color: #89b4fa; font-size: 11px;")
+
+    def value(self) -> float:
+        return self._value
+
+    def setValue(self, val: float):
+        val = max(self._min, min(self._max, float(val)))
+        self._value = val
+        step_idx = int(round((val - self._min) / self._step)) if self._step > 0 else 0
+        self._slider.blockSignals(True)
+        self._slider.setValue(step_idx)
+        self._slider.blockSignals(False)
+        self._update_label(val)
+
+    def setMaximum(self, pmax: float):
+        if pmax <= self._min:
+            return
+        self._max = float(pmax)
+        self._total_steps = max(1, int(round((self._max - self._min) / self._step)))
+        self._slider.blockSignals(True)
+        self._slider.setRange(0, self._total_steps)
+        self._slider.setPageStep(max(1, int(self._total_steps / 10)))
+        if self._value > self._max:
+            self._value = self._max
+        step_idx = int(round((self._value - self._min) / self._step)) if self._step > 0 else 0
+        self._slider.setValue(step_idx)
+        self._slider.blockSignals(False)
+        self._update_label(self._value)
+
+    def setColorThresholds(self, warn_val: float, alert_val: float):
+        self._color_thresholds = (float(warn_val), float(alert_val))
+        self._update_label(self._value)
+
+    def setReadOnly(self, ro: bool):
+        self._slider.setEnabled(not ro)
+
+    def setToolTip(self, tip: str):
+        super().setToolTip(tip)
+        self._slider.setToolTip(tip)
+        self._lbl_val.setToolTip(tip)
+
+    def blockSignals(self, b: bool):
+        super().blockSignals(b)
+        self._slider.blockSignals(b)
+
+    def setSpecialValueText(self, text: str):
+        self._special_text = text
+        self._update_label(self._value)
+
 class ParamEditor(QWidget):
     param_changed = Signal(int, float)  # pid, gui_value
 
@@ -65,11 +177,18 @@ class ParamEditor(QWidget):
         super().__init__(parent)
         self._serial = serial_thread
         self._spinboxes = {}  # pid -> QDoubleSpinBox
+        self._labels = {}     # pid -> QLabel
+        self._unit_labels = {}  # pid -> QLabel
+        self._set_buttons = {}  # pid -> QPushButton
         self._measured_rs = None
         self._measured_ls = None
         self._measured_inertia = None
         self._measured_b0 = None
         self._is_measuring = False
+
+        self._measure_timeout_timer = QTimer(self)
+        self._measure_timeout_timer.setSingleShot(True)
+        self._measure_timeout_timer.timeout.connect(self._on_measure_timeout)
 
         # Opacity effect for disconnected state
         self._fade_effect = QGraphicsOpacityEffect(self)
@@ -138,6 +257,7 @@ class ParamEditor(QWidget):
         self._serial.params_received.connect(self._on_params_received)
         self._serial.value_received.connect(self._on_value_received)
         self._serial.status_received.connect(self._on_status_received)
+        self._serial.ack_received.connect(self._on_ack_received)
 
         self._measuring = False
 
@@ -172,6 +292,7 @@ class ParamEditor(QWidget):
             lbl = QLabel(f"{name}:")
             lbl.setMinimumWidth(100)
             grid.addWidget(lbl, row, 0)
+            self._labels[pid] = lbl
 
             if pid in CHOICE_PARAMS:
                 widget = ParamComboBox(CHOICE_PARAMS[pid])
@@ -179,12 +300,26 @@ class ParamEditor(QWidget):
                 widget.setMinimumWidth(120)
                 self._spinboxes[pid] = widget
                 grid.addWidget(widget, row, 1)
+            elif pid in SLIDER_PARAMS:
+                widget_max = protocol.get_max_current() if pid in (protocol.ParamId.I_STRT, protocol.ParamId.I_ALGN) else pmax
+                widget = ParamSlider(pmin, widget_max, step)
+                widget.setReadOnly(ro)
+                widget.setMinimumWidth(120)
+                if pid == protocol.ParamId.OC_THR or pid == protocol.ParamId.BEEP_VOL:
+                    widget.setSpecialValueText("OFF")
+                elif pid in (protocol.ParamId.I_STRT, protocol.ParamId.I_ALGN):
+                    widget.setSpecialValueText("0 (Auto)")
+                elif pid == protocol.ParamId.M_MAX_I:
+                    b_max = protocol.get_board_max_current()
+                    widget.setColorThresholds(0.80 * b_max, 0.90 * b_max)
+                    widget.valueChanged.connect(self._update_motor_current_limits)
+                self._spinboxes[pid] = widget
+                grid.addWidget(widget, row, 1)
             else:
                 spin = WheelDoubleSpinBox()
                 spin.setRange(pmin, pmax)
                 spin.setSingleStep(step)
                 spin.setKeyboardTracking(False)
-                import math
                 if step >= 1:
                     spin.setDecimals(0)
                 else:
@@ -207,13 +342,19 @@ class ParamEditor(QWidget):
                 self._spinboxes[pid].setToolTip(tip)
 
             if unit:
-                grid.addWidget(QLabel(unit), row, 2)
+                unit_lbl = QLabel(unit)
+                grid.addWidget(unit_lbl, row, 2)
+                self._unit_labels[pid] = unit_lbl
 
             btn = QPushButton("Set")
             btn.setFixedWidth(50)
             btn.setEnabled(not ro)
             btn.clicked.connect(lambda _, p=pid: self._set_param(p))
+            if ro:
+                lbl.setStyleSheet("color: #7f849c; font-style: italic;")
+                btn.setStyleSheet("color: #45475a; border-color: #282838; background-color: #14141e;")
             grid.addWidget(btn, row, 3)
+            self._set_buttons[pid] = btn
 
         # Bottom helpers
         last_row = len(params)
@@ -303,11 +444,11 @@ class ParamEditor(QWidget):
         if hasattr(self, 'btn_measure_flux'):
             self.btn_measure_flux.setEnabled(False)
             self.btn_measure_flux.setText("Spin Motor by Hand...")
-            QTimer.singleShot(12000, self._reset_measure_state) # Fallback timeout
         if hasattr(self, 'btn_measure'):
             self.btn_measure.setEnabled(False)
         if hasattr(self, 'btn_measure_inertia'):
             self.btn_measure_inertia.setEnabled(False)
+        self._measure_timeout_timer.start(12000)
 
     def _measure_inertia(self):
         self._measured_inertia = None
@@ -325,6 +466,7 @@ class ParamEditor(QWidget):
             self.btn_measure.setEnabled(False)
         if hasattr(self, 'btn_measure_flux'):
             self.btn_measure_flux.setEnabled(False)
+        self._measure_timeout_timer.start(25000)
 
     def _auto_compute_pi(self):
         try:
@@ -388,13 +530,15 @@ class ParamEditor(QWidget):
         if hasattr(self, 'btn_measure'):
             self.btn_measure.setEnabled(False)
             self.btn_measure.setText("Measuring...")
-            QTimer.singleShot(15000, self._reset_measure_state) # Fallback timeout
         if hasattr(self, 'btn_measure_flux'):
             self.btn_measure_flux.setEnabled(False)
         if hasattr(self, 'btn_measure_inertia'):
             self.btn_measure_inertia.setEnabled(False)
+        self._measure_timeout_timer.start(15000)
             
     def _reset_measure_state(self):
+        if hasattr(self, '_measure_timeout_timer'):
+            self._measure_timeout_timer.stop()
         self._is_measuring = False
         self._has_started_measuring = False
         if hasattr(self, 'btn_measure'):
@@ -406,6 +550,17 @@ class ParamEditor(QWidget):
         if hasattr(self, 'btn_measure_inertia'):
             self.btn_measure_inertia.setEnabled(True)
             self.btn_measure_inertia.setText("Measure Inertia (J & b0)")
+
+    def _on_measure_timeout(self):
+        if self._is_measuring:
+            self._reset_measure_state()
+            QMessageBox.warning(self, "Failed", "Measurement timed out.")
+
+    def _on_ack_received(self, cmd: int, ok: bool):
+        if cmd in (protocol.CmdType.IDENT, protocol.CmdType.IDENT_FLUX, protocol.CmdType.IDENT_INERTIA):
+            if not ok:
+                self._reset_measure_state()
+                QMessageBox.warning(self, "Failed", "Command rejected by MCU.")
         
     def _check_measure_status(self):
         # We need to check if the state is back to IDLE
@@ -417,10 +572,18 @@ class ParamEditor(QWidget):
         pass # Will implement status listener
 
     def _set_param(self, pid: int):
+        ro_pids = {p[0] for p in PARAM_DEFS if len(p) > 7 and p[7]}
+        if pid in ro_pids:
+            return
         spin = self._spinboxes.get(pid)
         if spin:
             if pid == protocol.ParamId.M_POLES:
                 protocol.set_pole_pairs(spin.value())
+            if pid == protocol.ParamId.M_MAX_SPD:
+                protocol.set_max_speed(spin.value())
+            if pid == protocol.ParamId.M_MAX_I:
+                protocol.set_max_current(spin.value())
+                self._update_motor_current_limits(spin.value())
             mcu_val = gui_to_mcu(pid, spin.value(), protocol.get_pole_pairs())
             self._serial.send(protocol.build_set(pid, mcu_val))
             self.param_changed.emit(pid, spin.value())
@@ -432,11 +595,19 @@ class ParamEditor(QWidget):
         poles_spin = self._spinboxes.get(protocol.ParamId.M_POLES)
         if poles_spin:
             protocol.set_pole_pairs(poles_spin.value())
+        spd_spin = self._spinboxes.get(protocol.ParamId.M_MAX_SPD)
+        if spd_spin:
+            protocol.set_max_speed(spd_spin.value())
+        curr_spin = self._spinboxes.get(protocol.ParamId.M_MAX_I)
+        if curr_spin:
+            protocol.set_max_current(curr_spin.value())
+        ro_pids = {p[0] for p in PARAM_DEFS if len(p) > 7 and p[7]}
         for pid, spin in self._spinboxes.items():
-            if pid < protocol.ParamId.SPD_REF:
-                mcu_val = gui_to_mcu(pid, spin.value(), protocol.get_pole_pairs())
-                self._serial.send(protocol.build_set(pid, mcu_val))
-                self.param_changed.emit(pid, spin.value())
+            if pid in ro_pids or pid >= protocol.ParamId.SPD_REF:
+                continue
+            mcu_val = gui_to_mcu(pid, spin.value(), protocol.get_pole_pairs())
+            self._serial.send(protocol.build_set(pid, mcu_val))
+            self.param_changed.emit(pid, spin.value())
 
     def _save(self):
         freq_spin = self._spinboxes.get(protocol.ParamId.PWM_FREQ)
@@ -516,9 +687,30 @@ class ParamEditor(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import:\n{e}")
 
+    def _update_board_current_limits(self, board_max_i: float):
+        oc_widget = self._spinboxes.get(protocol.ParamId.OC_THR)
+        if oc_widget and hasattr(oc_widget, "setMaximum"):
+            oc_widget.setMaximum(board_max_i)
+        m_max_widget = self._spinboxes.get(protocol.ParamId.M_MAX_I)
+        if m_max_widget and hasattr(m_max_widget, "setMaximum"):
+            m_max_widget.setMaximum(board_max_i)
+            m_max_widget.setColorThresholds(0.80 * board_max_i, 0.90 * board_max_i)
+
+    def _update_motor_current_limits(self, motor_max_i: float):
+        if motor_max_i <= 0.0:
+            return
+        protocol.set_max_current(motor_max_i)
+        for pid in (protocol.ParamId.I_STRT, protocol.ParamId.I_ALGN):
+            w = self._spinboxes.get(pid)
+            if w and hasattr(w, "setMaximum"):
+                w.setMaximum(motor_max_i)
+
     def _on_params_received(self, params: dict):
-        if protocol.ParamId.M_POLES in params:
-            protocol.set_pole_pairs(params[protocol.ParamId.M_POLES])
+        if protocol.ParamId.BOARD_MAX_I in params:
+            self._update_board_current_limits(float(params[protocol.ParamId.BOARD_MAX_I]))
+        if protocol.ParamId.M_MAX_I in params:
+            m_max_val = mcu_to_gui(protocol.ParamId.M_MAX_I, params[protocol.ParamId.M_MAX_I], protocol.get_pole_pairs())
+            self._update_motor_current_limits(float(m_max_val))
         for pid, val in params.items():
             spin = self._spinboxes.get(pid)
             if spin:
@@ -528,8 +720,11 @@ class ParamEditor(QWidget):
                 spin.blockSignals(False)
 
     def _on_value_received(self, pid: int, val: float):
-        if pid == protocol.ParamId.M_POLES:
-            protocol.set_pole_pairs(val)
+        if pid == protocol.ParamId.BOARD_MAX_I:
+            self._update_board_current_limits(float(val))
+        if pid == protocol.ParamId.M_MAX_I:
+            gui_m_max = mcu_to_gui(pid, val, protocol.get_pole_pairs())
+            self._update_motor_current_limits(float(gui_m_max))
         if pid == protocol.ParamId.ID_RS_MEAS:
             self._measured_rs = val
             return
@@ -570,13 +765,24 @@ class ParamEditor(QWidget):
             
         state = status.get('state', 0)
         
-        # State 9 is FOC_STATE_SELF_COMMISSION (IDENT), 1 is FOC_STATE_CALIBRATION
-        # State 5 is FOC_STATE_STARTUP, 10 is FOC_STATE_COAST_FLUX_ID
-        # State 6 is FOC_STATE_RUN (used for Inertia ID)
-        if state in (1, 5, 6, 9, 10):
+        if state == protocol.FocState.FAULT:
+            self._reset_measure_state()
+            QMessageBox.warning(self, "Failed", "Motor fault detected.")
+            return
+
+        # Active measuring states: CALIBRATION, STARTUP, RUN (Inertia ID), SELF_COMMISSION (RL ID), COAST_FLUX_ID (Flux ID)
+        if state in (
+            protocol.FocState.CALIBRATION,
+            protocol.FocState.STARTUP,
+            protocol.FocState.RUN,
+            protocol.FocState.SELF_COMMISSION,
+            protocol.FocState.COAST_FLUX_ID
+        ):
             self._has_started_measuring = True
             
-        if state == 0 and getattr(self, '_has_started_measuring', False):
+        if state == protocol.FocState.IDLE and getattr(self, '_has_started_measuring', False):
+            if hasattr(self, '_measure_timeout_timer'):
+                self._measure_timeout_timer.stop()
             # Done measuring
             self._is_measuring = False
             self._has_started_measuring = False
@@ -608,6 +814,12 @@ class ParamEditor(QWidget):
     def _check_apply_identification(self):
         if getattr(self, '_is_measuring_inertia', False):
             if self._measured_inertia is not None and self._measured_b0 is not None:
+                if self._measured_inertia <= 0.0 or self._measured_b0 <= 0.0:
+                    QMessageBox.warning(self, "Failed", "Inertia identification failed.")
+                    self._measured_inertia = None
+                    self._measured_b0 = None
+                    return
+
                 msg = (f"Inertia Identification Complete!\n\n"
                        f"Measured Parameters:\n"
                        f"• Rotor Inertia (J): {self._measured_inertia:.8e} kg*m²\n"
@@ -638,6 +850,12 @@ class ParamEditor(QWidget):
 
         elif getattr(self, '_is_measuring_flux', False):
             if self._measured_flux is not None and self._measured_kv is not None:
+                if self._measured_flux <= 0.0 or self._measured_kv <= 0.0:
+                    QMessageBox.warning(self, "Failed", "Flux identification failed.")
+                    self._measured_flux = None
+                    self._measured_kv = None
+                    return
+
                 msg = (f"Hand Spin Flux Identification Complete!\n\n"
                        f"Measured Parameters:\n"
                        f"• Permanent Magnet Flux: {self._measured_flux:.6f} Wb\n"
@@ -672,6 +890,14 @@ class ParamEditor(QWidget):
                 ls = self._measured_ls or 0.0
                 isat = self._measured_isat or 0.0
                 alpha = self._measured_alpha or 0.0
+
+                if rs <= 0.0 or ls <= 0.0:
+                    QMessageBox.warning(self, "Failed", "Motor identification failed.")
+                    self._measured_rs = None
+                    self._measured_ls = None
+                    self._measured_isat = None
+                    self._measured_alpha = None
+                    return
                 
                 msg = (f"Motor Identification Complete!\n\n"
                        f"Measured Parameters:\n"

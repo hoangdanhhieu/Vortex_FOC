@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "flash_config.h"
+#include "foc_beep.h"
 #include "ladrc_controller.h"
 #include "pi_controller.h"
 #include "response_profiler.h"
@@ -26,11 +27,11 @@ typedef enum {
     FOC_STATE_ALIGN,           /**< Rotor alignment */
     FOC_STATE_STARTUP,         /**< Open-loop ramp-up */
     FOC_STATE_RUN,             /**< Closed-loop FOC running */
+    FOC_STATE_ZERO_CROSS,      /**< Seamless 4-quadrant zero-crossing virtual commutation bridge */
     FOC_STATE_STOP,            /**< Controlled stop */
     FOC_STATE_FAULT,           /**< Fault condition */
     FOC_STATE_SELF_COMMISSION, /**< Motor parameter identification */
     FOC_STATE_COAST_FLUX_ID,   /**< Freewheeling BEMF measurement */
-    FOC_STATE_BRAKE,           /**< Active dynamic braking for reverse flying start recovery */
     FOC_STATE_BEEP             /**< Power-on beep sequence (ESC-style) */
 } FOC_State_t;
 
@@ -62,10 +63,6 @@ typedef struct {
     float reverse;         /**< Motor rotation direction [dimensionless: 1.0 = FWD, -1.0 = REV] */
     uint8_t in_transition; /**< Open-loop to closed-loop handoff flag [0 = Normal, 1 = Blending] */
     uint32_t run_counter;  /**< Control loop execution tick counter */
-    /*--- Power-on beep sequencer ---*/
-    uint8_t beep_seg;      /**< Beep sequence segment index [0..6] */
-    uint32_t beep_tick;    /**< Ticks elapsed within the current beep segment */
-    uint32_t beep_total;   /**< Total ticks since beep start (hard-timeout watchdog) */
 } FOC_Status_t;
 
 typedef struct {
@@ -77,15 +74,16 @@ typedef struct {
     float Vd, Vq;        /**< Park rotating frame control voltages (d-axis, q-axis) [V] */
     float Iq_ref_cmd;    /**< Slew-rate limited active Iq current command [A] */
     float Valpha, Vbeta; /**< Inverse Park stationary frame output voltages [V] */
-    float Valpha_applied, Vbeta_applied; /**< Voltages physically applied to motor during previous PWM period [V] */
-    float theta_park;    /**< Electrical rotor position angle for Park transform (no hardware delay
-                            compensation) */
-    float theta_elec;    /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0,
-                            where 1.0 = +pi rad] */
-    float omega_elec;    /**< Electrical angular velocity [rad/s] */
-    float Vbus;          /**< DC bus supply voltage [V] */
-    float Vbus_inv;      /**< Inverse of DC bus voltage (1.0 / Vbus) [1/V] */
-    float Ibus;          /**< Total DC bus consumed current [A] */
+    float Valpha_applied,
+        Vbeta_applied; /**< Voltages physically applied to motor during previous PWM period [V] */
+    float theta_park;  /**< Electrical rotor position angle for Park transform (no hardware delay
+             compensation) */
+    float theta_elec;  /**< Electrical rotor position angle for PWM [normalized: -1.0 to 1.0,
+             where 1.0 = +pi rad] */
+    float omega_elec;  /**< Electrical angular velocity [rad/s] */
+    float Vbus;        /**< DC bus supply voltage [V] */
+    float Vbus_inv;    /**< Inverse of DC bus voltage (1.0 / Vbus) [1/V] */
+    float Ibus;        /**< Total DC bus consumed current [A] */
     float duty_a, duty_b, duty_c; /**< Inverter phase PWM duty cycles [dimensionless: 0.0 to 1.0] */
     float i_scale;                /**< ADC raw count to phase current conversion factor [A/count] */
     float v_scale;                /**< ADC raw count to phase voltage conversion factor [V/count] */
@@ -108,6 +106,26 @@ typedef struct {
     float Vq_ref_target; /**< Commanded normalized voltage target [normalized: 0.0 to 1.0, 1.0 =
                             SVPWM circle limit] */
 } FOC_Cmd_t;
+
+typedef struct {
+    float user_plot1; /**< Custom debug variable 1 to route to GUI */
+    float user_plot2; /**< Custom debug variable 2 to route to GUI */
+    float user_plot3; /**< Custom debug variable 3 to route to GUI */
+} FOC_Plot_t;
+
+typedef struct {
+    float bridge_dir;          /**< Virtual commutation sweep direction (+1.0 or -1.0) */
+    float bridge_omega;        /**< Virtual electrical speed (rad/s) */
+    float bridge_theta;        /**< Virtual electrical angle [normalized: -1.0 to 1.0] */
+    float bridge_target_omega; /**< Target handoff speed (rad/s) */
+    float bridge_slew_rate;    /**< Dynamic acceleration of virtual bridge (rad/s^2) */
+    float id_current;          /**< Ramped d-axis current for soft magnetic well entry (A) */
+    float iq_current;          /**< Ramped q-axis current in bridge (A) */
+    uint16_t debounce_cnt;     /**< Debounce counter for zero-cross entry (samples) */
+    uint16_t lockout_cnt;      /**< Lockout timer preventing rapid re-triggering (samples) */
+    uint16_t grace_counter;    /**< Observer settling grace counter post-handoff (samples) */
+    uint8_t was_reversing;     /**< Voltage-mode reversal edge tracking flag */
+} FOC_ZeroCross_t;
 
 /*===========================================================================*/
 /* FOC Control Structure                                                     */
@@ -142,35 +160,11 @@ typedef struct {
         uint32_t counter; /**< Startup stage step/timer counter [ISR samples] */
     } startup;
 
+    /*--- Zero-Crossing State (Internal FSM Context) ---*/
+    FOC_ZeroCross_t zc; /**< Seamless 4-quadrant zero-crossing bridge context */
+
     /*--- Configuration (Directly from Flash) ---*/
     FlashConfig_t cfg; /**< Persistent motor and control parameters loaded from Flash */
-
-    /*--- ADC Calibration & Offsets ---*/
-    struct {
-        int32_t offset_a; /**< Phase A current ADC zero-crossing offset [ADC counts: 0 to 4095] */
-        int32_t offset_b; /**< Phase B current ADC zero-crossing offset [ADC counts: 0 to 4095] */
-        int32_t offset_c_pb1; /**< Phase C current offset measured on ADC1 via PB1 [ADC counts: 0 to
-                                 4095] */
-        int32_t offset_c_opamp3; /**< Phase C current offset measured on ADC2 via VOPAMP3 [ADC
-                                    counts: 0 to 4095] */
-        int32_t offset_vphase_a; /**< Phase A voltage ADC zero-crossing offset [ADC counts: 0 to
-                                    4095] */
-        int32_t offset_vphase_b; /**< Phase B voltage ADC zero-crossing offset [ADC counts: 0 to
-                                    4095] */
-        int32_t offset_vphase_c; /**< Phase C voltage ADC zero-crossing offset [ADC counts: 0 to
-                                    4095] */
-        uint16_t cal_samples;    /**< Calibration sample accumulation count [samples] */
-    } adc_cal;
-
-    /*--- Board Noise Profile & Signal Integrity ---*/
-    struct {
-        float noise_rms;       /**< Current measurement RMS noise floor [A] */
-        float noise_pk_pk;     /**< Current measurement Peak-to-Peak noise [A] */
-        float is_flat_thr;     /**< Auto-adapted settling threshold for Motor ID [A] */
-        float i_inj_min;       /**< Minimum AC injection current for SNR > 20dB [A] */
-        float bemf_noise_sq;   /**< BEMF magnitude noise floor threshold [V^2] */
-        uint8_t health_status; /**< Hardware health: 0=EXCELLENT, 1=GOOD, 2=NOISY, 3=FAULT */
-    } noise_profile;
 
     /*--- Dynamic Timing & Hardware Timer ---*/
     uint32_t timer_arr;   /**< TIM1 Auto-Reload value based on pwm_frequency */
@@ -184,11 +178,7 @@ typedef struct {
     uint32_t isr_time_cycles; /**< ADC ISR execution time [CPU clock cycles @ 170MHz] */
 
     /*--- Plotting (Telemetry Snapshot) ---*/
-    struct {
-        float user_plot1; /**< Custom debug variable 1 to route to GUI */
-        float user_plot2; /**< Custom debug variable 2 to route to GUI */
-        float user_plot3; /**< Custom debug variable 3 to route to GUI */
-    } plot;
+    FOC_Plot_t plot;
 
 } FOC_Control_t;
 
@@ -209,29 +199,21 @@ static inline const FOC_Data_t* FOC_GetData(void) {
 /**
  * @brief Resolved overcurrent trip threshold [A].
  *
- *        fault_oc_threshold <= 0.0f -> AUTO: 1.25 x motor_max_curr
- *        fault_oc_threshold  > 0.0f -> exact value; may intentionally be set
- *        below motor_max_curr (test mode: current commands above the
- *        threshold will trip FAULT_OVERCURRENT).
+ *        fault_oc_threshold <= 0.001f -> 0.0f (Protection disabled / OFF)
+ *        fault_oc_threshold  > 0.001f -> exact value in [0.1A, BOARD_MAX_CURRENT]
  *
- *        Single source of truth shared by the HW AWD configuration
- *        (FOC_ConfigureAWD) and the SW fast-OC in the 48 kHz ISR.
+ *        Single source of truth shared by the HW AWD configuration (FOC_ConfigureAWD).
  */
 static inline float FOC_GetOCThreshold(void) {
     float thr = g_foc.cfg.fault_oc_threshold;
-    if (thr <= 1.0f) {
-        thr = 1.25f * g_foc.cfg.motor_max_curr;
-        if (thr < 1.0f) thr = 1.0f;
+    if (thr <= 0.001f) {
+        return 0.0f;
     }
-    return thr;
+    return clampf(thr, 0.1f, BOARD_MAX_CURRENT);
 }
 
 static inline const FOC_Status_t* FOC_GetStatus(void) {
     return &g_foc.status;
-}
-
-static inline FOC_State_t FOC_GetState(void) {
-    return g_foc.status.state;
 }
 
 static inline FOC_Fault_t FOC_GetFault(void) {
@@ -311,7 +293,7 @@ void FOC_SetSpeedRef(float speed_rad);
 
 /**
  * @brief Set torque reference (Iq)
- * @param torque_percent Torque as percentage of max current (0 to 100)
+ * @param torque_percent Torque as percentage of max current (-100 to 100)
  */
 void FOC_SetTorqueRef(float torque_percent);
 
@@ -323,32 +305,16 @@ void FOC_SetTorqueCurrent(float iq_target_amp);
 
 /**
  * @brief Set voltage reference (Vq)
- * @param voltage_percent Voltage as percentage of Vbus / sqrt(3) (0 to 100)
+ * @param voltage_percent Voltage as percentage of Vbus / sqrt(3) (-1 to 1)
  */
 void FOC_SetVoltageRef(float voltage_percent);
-
-/**
- * @brief Set control mode
- * @param mode FOC_MODE_SPEED or FOC_MODE_TORQUE
- */
-void FOC_SetControlMode(FOC_ControlMode_t mode);
-
-FOC_ControlMode_t FOC_GetControlMode(void);
-float FOC_GetMaxCurrent(void);
-float FOC_GetMaxSpeed(void);
-float FOC_GetMinSpeed(void);
-float FOC_GetInputMinSpd(void);
-float FOC_GetInputMinCur(void);
-float FOC_GetInputMinVq(void);
-uint8_t FOC_GetConfigInputSource(void);
-uint8_t FOC_GetConfigInputMode(void);
-float FOC_GetConfigInputDeadband(void);
 
 /**
  * @brief Clear fault and return to IDLE
  */
 void FOC_ClearFault(void);
 void FOC_ResetStallDetector(void);
+uint8_t FOC_IsReversalGraceActive(void);
 
 void FOC_EnableDrivers(uint8_t enable);
 void FOC_EnableDriver(uint8_t phase, uint8_t enable);
@@ -359,38 +325,20 @@ void FOC_EnableDriver(uint8_t phase, uint8_t enable);
 void FOC_StartSelfCommission(void);
 
 /**
- * @brief Set motor rotation direction
- * @param dir  1 = forward (default), -1 = reverse
- * @note  Only effective when motor is IDLE; ignored while running.
- */
-void FOC_SetDirection(int8_t dir);
-
-/**
- * @brief Get current motor direction setting
- * @return 1 = forward, -1 = reverse
- */
-int8_t FOC_GetDirection(void);
-
-/**
- * @brief Get control loop sample period
- * @return Control loop sample period in seconds
- */
-float FOC_GetDt(void);
-
-/**
  * @brief Check if the dynamic response profiler is currently active
  * @return 1 if profiler is running, 0 otherwise
  */
 uint8_t FOC_IsProfilerActive(void);
 
 /**
- * @brief Start the ESC-style power-on beep sequence
+ * @brief Start a specific ESC beep sequence by type
  *
- * No-ops unless the motor is IDLE/STOP with no active fault. The sequence
- * (3 short beeps, pause, 1 long beep, ~1.3 s) excites the motor with a small
- * open-loop voltage, then returns to IDLE. A start command, fault,
- * overvoltage, or the hard timeout aborts it immediately.
+ * No-ops unless the motor is IDLE/STOP with no active fault. Excites the motor
+ * with an impedance-compensated open-loop signal, then returns to IDLE. A start
+ * command, fault, or sequence timeout aborts it immediately.
+ *
+ * @param type Sequence identifier from FOC_BeepType_t
  */
-void FOC_PlayBeep(void);
+void FOC_PlayBeep(FOC_BeepType_t type);
 
 #endif /* FOC_STATE_MACHINE_H */

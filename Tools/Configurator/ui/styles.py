@@ -50,6 +50,11 @@ QPushButton:pressed {{
     background-color: {ACCENT};
     color: {BG_BASE};
 }}
+QPushButton:disabled {{
+    background-color: #181825;
+    border: 1px solid #313244;
+    color: #585b70;
+}}
 QPushButton#btn_start {{
     background-color: #22382c;
     border: 1px solid #386047;
@@ -102,6 +107,11 @@ QComboBox QAbstractItemView {{
     border: 1px solid {BORDER};
     selection-background-color: {ACCENT};
     selection-color: {BG_BASE};
+}}
+QComboBox:disabled {{
+    background-color: #14141e;
+    border: 1px solid #282838;
+    color: #585b70;
 }}
 QDoubleSpinBox, QSpinBox {{
     background-color: {BG_OVERLAY};
@@ -156,6 +166,39 @@ QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {{
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
     border-top: 5px solid {TEXT};
+}}
+QDoubleSpinBox:disabled, QSpinBox:disabled, QLineEdit:disabled {{
+    background-color: #14141e;
+    border: 1px solid #282838;
+    color: #6c7086;
+}}
+QDoubleSpinBox:read-only, QSpinBox:read-only, QLineEdit:read-only {{
+    background-color: #14151f;
+    border: 1px dashed #2a2c3d;
+    color: #89dceb;
+}}
+QDoubleSpinBox::up-button:read-only, QSpinBox::up-button:read-only,
+QDoubleSpinBox::down-button:read-only, QSpinBox::down-button:read-only {{
+    width: 0px;
+    border: none;
+}}
+QDoubleSpinBox:disabled QLineEdit, QSpinBox:disabled QLineEdit {{
+    background-color: #14141e;
+    color: #6c7086;
+}}
+QDoubleSpinBox::up-button:disabled, QSpinBox::up-button:disabled,
+QDoubleSpinBox::down-button:disabled, QSpinBox::down-button:disabled {{
+    background-color: #14141e;
+    border-color: #282838;
+}}
+QDoubleSpinBox::up-arrow:disabled, QSpinBox::up-arrow:disabled {{
+    border-bottom: 5px solid #45475a;
+}}
+QDoubleSpinBox::down-arrow:disabled, QSpinBox::down-arrow:disabled {{
+    border-top: 5px solid #45475a;
+}}
+QLabel:disabled {{
+    color: #6c7086;
 }}
 QTabWidget::pane {{
     border: 1px solid {BORDER};

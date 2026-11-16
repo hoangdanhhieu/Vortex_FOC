@@ -137,28 +137,69 @@ void FlashConfig_Init(void) {
 }
 
 void FlashConfig_Apply(void) {
+    /* Preserve valid runtime ADC calibration if g_config doesn't have it */
+    if (g_foc.cfg.cal_valid && !g_config.cal_valid) {
+        g_config.cal_offset_a = g_foc.cfg.cal_offset_a;
+        g_config.cal_offset_b = g_foc.cfg.cal_offset_b;
+        g_config.cal_offset_c_pb1 = g_foc.cfg.cal_offset_c_pb1;
+        g_config.cal_offset_c_op3 = g_foc.cfg.cal_offset_c_op3;
+        g_config.cal_vphase_a = g_foc.cfg.cal_vphase_a;
+        g_config.cal_vphase_c = g_foc.cfg.cal_vphase_c;
+        g_config.cal_noise_rms = g_foc.cfg.cal_noise_rms;
+        g_config.cal_noise_pk_pk = g_foc.cfg.cal_noise_pk_pk;
+        g_config.cal_is_flat_thr = g_foc.cfg.cal_is_flat_thr;
+        g_config.cal_i_inj_min = g_foc.cfg.cal_i_inj_min;
+        g_config.cal_valid = 1;
+    }
+
     memcpy(&g_foc.cfg, &g_config, sizeof(FlashConfig_t));
 
     if (g_foc.cfg.pwm_frequency < 16000.0f || g_foc.cfg.pwm_frequency > 96000.0f) {
         g_foc.cfg.pwm_frequency = 48000.0f;
     }
+    if (g_foc.cfg.beep_volume > 100U) {
+        g_foc.cfg.beep_volume = 100U;
+    }
+
+    float i_limit = g_foc.cfg.motor_max_curr;
+    float v_limit = g_foc.data.Vbus * SQRT3_INV;
+    if (g_foc.cfg.bw_cur < 1.0f) {
+        float target_bw = g_foc.cfg.pwm_frequency * (1.0f / 15.0f);
+        float noise_rms = (g_foc.cfg.cal_noise_rms > 0.01f) ? g_foc.cfg.cal_noise_rms : 0.035f;
+        float kp_limit = (0.025f * v_limit) / noise_rms;
+        float bw_noise_limit = kp_limit / (TWO_PI * g_foc.cfg.motor_ls);
+        g_foc.cfg.bw_cur = clampf(bw_noise_limit, 400.0f, target_bw);
+    }
+
+    if (g_foc.cfg.kp_id < 1e-6 || g_foc.cfg.ki_id < 1e-6 || g_foc.cfg.kp_iq < 1e-6 ||
+        g_foc.cfg.ki_iq < 1e-6) {
+        g_foc.cfg.kp_id = TWO_PI * g_foc.cfg.bw_cur * g_foc.cfg.motor_ls;
+        g_foc.cfg.ki_id = TWO_PI * g_foc.cfg.bw_cur * g_foc.cfg.motor_rs;
+        g_foc.cfg.kp_iq = g_foc.cfg.kp_id;
+        g_foc.cfg.ki_iq = g_foc.cfg.ki_id;
+    }
+
+    float bw_obs = 3000.0f;
+    if (g_foc.cfg.motor_ls > 1e-7f) {
+        float f_elec_max =
+            (g_foc.cfg.motor_kv * g_foc.data.Vbus * g_foc.cfg.motor_poles) * (1.0f / 60.0f);
+        float f_motor = g_foc.cfg.motor_rs / (TWO_PI * g_foc.cfg.motor_ls);
+        float bw_obs_target = fmaxf(2.0f * f_motor, 2.5f * f_elec_max);
+        bw_obs_target = fmaxf(bw_obs_target, 1.5f * g_foc.cfg.bw_cur);
+        float max_obs_hw = g_foc.cfg.pwm_frequency * (1.0f / 6.0f);
+        bw_obs = clampf(bw_obs_target, 1.5f * f_motor, max_obs_hw);
+    }
 
     g_foc.timer_arr = (uint32_t)((float)SYSCLK_FREQ / (2.0f * g_foc.cfg.pwm_frequency) + 0.5f);
     g_foc.timer_arr_f = (float)g_foc.timer_arr;
     g_foc.dt = 1.0f / g_foc.cfg.pwm_frequency;
-    g_foc.deadtime_duty = DEAD_TIME_NS * 1e-9f * g_foc.cfg.pwm_frequency;
-
+    g_foc.deadtime_duty = g_foc.cfg.deadtime_ns * 1e-9f * g_foc.cfg.pwm_frequency;
     if (g_foc.cfg.motor_ls > 1e-7f) {
         float f_bw = (g_foc.cfg.kp_iq / g_foc.cfg.motor_ls) * (1.0f / TWO_PI);
-        g_foc.wc_current_stf = TWO_PI * clampf(3.0f * f_bw, 1000.0f, 4000.0f);
+        g_foc.wc_current_stf = TWO_PI * clampf(3.0f * f_bw, 500.0f, 4000.0f);
     } else {
         g_foc.wc_current_stf = TWO_PI * 1500.0f;
     }
-
-    FOC_SetDirection(1);
-
-    float i_limit = g_foc.cfg.motor_max_curr;
-    float v_limit = g_foc.data.Vbus * SQRT3_INV; /* Vbus / sqrt(3) */
 
     PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
     PI_SetLimits(&g_foc.ctrl.id, -v_limit, v_limit);
@@ -183,7 +224,7 @@ void FlashConfig_Apply(void) {
 
     SMO_SetMotorParams(&g_foc.ctrl.smo, g_foc.cfg.motor_rs, g_foc.cfg.motor_ls,
                        g_foc.cfg.motor_alpha, g_foc.cfg.motor_flux, g_foc.cfg.motor_poles,
-                       g_foc.cfg.motor_max_spd);
+                       g_foc.cfg.motor_max_spd, bw_obs);
 
     /* Update hardware-level constraints (ADC trigger shifting & Max Duty) */
     float margin = g_foc.cfg.adc_margin_ticks + DEAD_TIME_NS * 1e-9f * (float)SYSCLK_FREQ;
@@ -201,6 +242,22 @@ void FlashConfig_Apply(void) {
 }
 
 int FlashConfig_Save(void) {
+    /* Auto-commit current runtime ADC calibration offsets & noise profile to Flash struct if valid
+     */
+    if (g_foc.cfg.cal_valid) {
+        g_config.cal_offset_a = g_foc.cfg.cal_offset_a;
+        g_config.cal_offset_b = g_foc.cfg.cal_offset_b;
+        g_config.cal_offset_c_pb1 = g_foc.cfg.cal_offset_c_pb1;
+        g_config.cal_offset_c_op3 = g_foc.cfg.cal_offset_c_op3;
+        g_config.cal_vphase_a = g_foc.cfg.cal_vphase_a;
+        g_config.cal_vphase_c = g_foc.cfg.cal_vphase_c;
+        g_config.cal_noise_rms = g_foc.cfg.cal_noise_rms;
+        g_config.cal_noise_pk_pk = g_foc.cfg.cal_noise_pk_pk;
+        g_config.cal_is_flat_thr = g_foc.cfg.cal_is_flat_thr;
+        g_config.cal_i_inj_min = g_foc.cfg.cal_i_inj_min;
+        g_config.cal_valid = 1;
+    }
+
     g_config.crc = config_compute_crc(&g_config);
 
     if (FLASH_CONFIG_PTR->magic == FLASH_CONFIG_MAGIC && FLASH_CONFIG_PTR->crc == g_config.crc &&

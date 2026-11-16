@@ -65,12 +65,6 @@ void DShot_DMA_IRQHandler(void);
 void DShot_DMA_ErrorRecover(void);
 
 /**
- * @brief Fast normalized throttle query for 48 kHz HF execution
- * @return Normalized throttle value (0.0f to 1.0f)
- */
-CCMRAM_FUNC float DShot_ReadFast(void);
-
-/**
  * @brief Get real-time DShot telemetry and diagnostic statistics
  * @param stats Pointer to output statistics structure
  */

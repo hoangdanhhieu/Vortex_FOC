@@ -2,8 +2,8 @@
  * @file smo_observer.c
  * @brief Sliding Mode Observer implementation
  *
- * This SMO uses a continuous sigmoid function instead of sign()
- * to reduce chattering while maintaining fast response.
+ * Uses a vector-norm continuous sigmoid function and exact discrete ZOH pole
+ * placement so phase-lag compensation remains consistent across different motors.
  */
 
 #include "smo_observer.h"
@@ -18,17 +18,8 @@
 static float omega_stf_alpha;
 static float omega_out_alpha;
 static float dt_over_pi;
-/**
- * @brief Sigmoid switching function (continuous approximation of sign)
- * @param x Input value
- * @param k Bandwidth parameter (larger = sharper transition)
- * @return Output in range (-1, 1)
- */
-CCMRAM_FUNC static inline float sigmoid(float x, float k) {
-    /* Fast sigmoid: x / (|x| + k) */
-    float abs_x = fabsf(x);
-    return x / (abs_x + k);
-}
+static float pll_cutoff_max;
+static float omega_obs_max;
 
 void SMO_Init(SMO_Observer_t* smo) {
     smo->Ialpha_est = 0.0f;
@@ -53,7 +44,7 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->pll_int_max = SMO_PLL_INT_MAX;
 
     /* Initialize Dynamic PLL parameters */
-    smo->pll_cutoff_min = 10.0f;
+    smo->pll_cutoff_min = 10.0f * TWO_PI;
     smo->pll_alpha = 0.5f; /* Speed-to-bandwidth scaling factor */
     smo->omega_est_filt = 0.0f;
     smo->omega_stf = 0.0f;
@@ -70,6 +61,12 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->current_err_sq = 0.0f;
     smo->theta_err = 0.0f;
     smo->bemf_mag = 0.0f;
+    smo->direction = 1.0f;
+    smo->omega_obs = 2000.0f;
+    omega_obs_max = 1.0f;
+    smo->phase_lag = 0.0f;
+    smo->a_zoh = 0.0f;
+    smo->b_zoh = 0.0f;
 }
 
 void SMO_Reset(SMO_Observer_t* smo) {
@@ -95,6 +92,7 @@ void SMO_Reset(SMO_Observer_t* smo) {
     smo->I_mag = 0.0f;
     smo->l_ratio = 1.0f;
     smo->enable_harmonic_comp = 0;
+    smo->direction = 1.0f;
 }
 
 void SMO_ResetStates(SMO_Observer_t* smo, float omega_init) {
@@ -103,29 +101,50 @@ void SMO_ResetStates(SMO_Observer_t* smo, float omega_init) {
     smo->omega_out = omega_init;
     smo->omega_stf = omega_init;
     smo->omega_est_filt = fabsf(omega_init);
+    smo->direction = (omega_init >= 0.0f) ? 1.0f : -1.0f;
     smo->Ac = 0.0f;
     smo->As = 0.0f;
 }
 
+void SMO_ResetStatesWithAngle(SMO_Observer_t* smo, float omega_init, float theta_norm) {
+    smo->pll_integral = omega_init;
+    smo->omega_est = omega_init;
+    smo->omega_out = omega_init;
+    smo->omega_stf = omega_init;
+    smo->omega_est_filt = fabsf(omega_init);
+    smo->theta_est = normalize_angle_norm(theta_norm);
+    smo->direction = (omega_init >= 0.0f) ? 1.0f : -1.0f;
+    smo->Ac = 0.0f;
+    smo->As = 0.0f;
+
+    /* Pre-seed BEMF states corresponding to the handoff angle and speed */
+    float cos_th, sin_th;
+    cordic_sincos(smo->theta_est, &cos_th, &sin_th);
+    float e_mag = omega_init * smo->psi;
+    smo->Ealpha = -e_mag * sin_th;
+    smo->Ebeta = e_mag * cos_th;
+    smo->Ealpha_flt = smo->Ealpha;
+    smo->Ebeta_flt = smo->Ebeta;
+
+    /* Seamless current observer handoff: seed current estimates to eliminate
+     * initial transient current error spike when returning to FOC_STATE_RUN */
+    smo->Ialpha_est = g_foc.data.Ialpha_flt;
+    smo->Ibeta_est = g_foc.data.Ibeta_flt;
+}
+
+void SMO_SetDirection(SMO_Observer_t* smo, float dir) {
+    smo->direction = (dir < 0.0f) ? -1.0f : 1.0f;
+}
+
 CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
-    const uint8_t feed = (FOC_GetState() == FOC_STATE_FLYING_START);
+    const uint8_t feed = (g_foc.status.state == FOC_STATE_FLYING_START);
 
-    float theta_bemf = cordic_atan2(-smo->Ealpha_flt, smo->Ebeta_flt);
+    /* Direction (+1.0f or -1.0f) is governed exclusively by FOC State Machine.
+     * Eliminates positive-feedback discontinuity near zero speed. */
+    float theta_bemf =
+        cordic_atan2(-smo->direction * smo->Ealpha_flt, smo->direction * smo->Ebeta_flt);
 
-    /* Phase Delay Compensation:
-     * - Full observer path (Total = 0.5 dt for Peak Update):
-     *   - With Peak register update and actual voltage V[k-2] fed into the observer,
-     *     the observer voltage exactly matches the physical motor voltage across [-1.0 dt, 0].
-     *     Therefore, voltage mismatch error is 0.
-     *   - Only Backward Euler midpoint integration lag remains: exactly 0.5 dt.
-     * - BEMF feed path: 0.3 dt hardware ADC regular sampling delay.
-     */
-    float tau_total = feed ? (0.3f * smo->dt) : ((0.5f + g_foc.cfg.comp_delay_samples) * smo->dt);
-    float x = smo->omega_est * tau_total;
-    float x_sq = x * x;
-    float phase_lag = x * (1.0f - x_sq * (0.33333333f - 0.2f * x_sq)) * (1.0f / PI);
-
-    float theta_comp = theta_bemf + phase_lag;
+    float theta_comp = theta_bemf;
     float theta_err = normalize_angle_norm(theta_comp - smo->theta_est);
     float theta_err_clean = theta_err;
     smo->theta_err = theta_err;
@@ -165,8 +184,12 @@ CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
 
     if (bemf_sq >= 1e-4f) {
         smo->pll_integral += smo->pll_ki_dt * theta_err_rad;
-        if (FOC_GetState() == FOC_STATE_STARTUP) {
-            if (smo->pll_integral < 0.0f) smo->pll_integral = 0.0f;
+        if (g_foc.status.state == FOC_STATE_STARTUP) {
+            if (smo->direction > 0.0f) {
+                if (smo->pll_integral < 0.0f) smo->pll_integral = 0.0f;
+            } else {
+                if (smo->pll_integral > 0.0f) smo->pll_integral = 0.0f;
+            }
         }
         smo->pll_integral = clampf(smo->pll_integral, smo->pll_int_min, smo->pll_int_max);
     } else {
@@ -174,8 +197,12 @@ CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
     }
 
     float omega_raw = smo->pll_kp * theta_err_rad + smo->pll_integral;
-    if (FOC_GetState() == FOC_STATE_STARTUP && omega_raw < 0.0f) {
-        omega_raw = 0.0f;
+    if (g_foc.status.state == FOC_STATE_STARTUP) {
+        if (smo->direction > 0.0f) {
+            if (omega_raw < 0.0f) omega_raw = 0.0f;
+        } else {
+            if (omega_raw > 0.0f) omega_raw = 0.0f;
+        }
     }
 
     float omega_limit = smo->pll_int_max * 1.5f;
@@ -186,6 +213,24 @@ CCMRAM_FUNC static inline void SMO_PLL_Track(SMO_Observer_t* smo) {
 
     smo->theta_est += smo->omega_est * smo->dt_over_pi;
     smo->theta_est = normalize_angle_norm(smo->theta_est);
+
+    if (feed) {
+        smo->phase_lag = smo->omega_est * (0.3f * smo->dt_over_pi);
+    } else {
+        float theta_step_norm = smo->omega_est * smo->dt_over_pi;
+        float cos_step, sin_step;
+        cordic_sincos(theta_step_norm, &cos_step, &sin_step);
+
+        /* Exact discrete ZOH pole phase lag matching vector-norm sigmoid gain */
+        float I_err_mag = (smo->current_err_sq > 0.0f) ? sqrtf(smo->current_err_sq) : 0.0f;
+        float K_eff = smo->k_slide / (I_err_mag + smo->k_sigmoid);
+        float z_pole = smo->a_zoh - smo->b_zoh * K_eff;
+        float phi_pole = cordic_atan2(sin_step, cos_step - z_pole);
+
+        /* Net timing correction: balances Type-2 PLL 1.0 dt forward step advance
+         * against 0.50 dt continuous stator BEMF midpoint integration lag. */
+        smo->phase_lag = phi_pole - 0.50f * theta_step_norm;
+    }
 }
 
 CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, float Ialpha,
@@ -193,13 +238,15 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
     /* 0. Measure total current magnitude */
     float I_sq = Ialpha * Ialpha + Ibeta * Ibeta;
 
-    /* 1. Extract BEMF from observer state (Standard high-SNR Sigmoid SMO without attenuation) */
+    /* 1. Extract BEMF via Vector-Norm Sigmoid (circular symmetry + exact K_eff match) */
     float Ialpha_err = smo->Ialpha_est - Ialpha;
     float Ibeta_err = smo->Ibeta_est - Ibeta;
     smo->current_err_sq = Ialpha_err * Ialpha_err + Ibeta_err * Ibeta_err;
 
-    smo->Ealpha = sigmoid(Ialpha_err, smo->k_sigmoid) * smo->k_slide;
-    smo->Ebeta = sigmoid(Ibeta_err, smo->k_sigmoid) * smo->k_slide;
+    float I_err_mag = (smo->current_err_sq > 0.0f) ? sqrtf(smo->current_err_sq) : 0.0f;
+    float sig_gain = smo->k_slide / (I_err_mag + smo->k_sigmoid);
+    smo->Ealpha = Ialpha_err * sig_gain;
+    smo->Ebeta = Ibeta_err * sig_gain;
 
     /* 2. Compute saturation ratio for external PI gain scheduling (do NOT modify SMO internals) */
     if (smo->sat_alpha > 0.0f) {
@@ -209,18 +256,18 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
         smo->l_ratio = 1.0f;
     }
 
-    /* Backward Euler Current Integration (using nominal L0 - observer gains are tuned for this) */
-    smo->Ialpha_est = (smo->Ialpha_est + (Valpha - smo->Ealpha) * smo->dt_over_Ls) * smo->denom_inv;
-    smo->Ibeta_est = (smo->Ibeta_est + (Vbeta - smo->Ebeta) * smo->dt_over_Ls) * smo->denom_inv;
+    /* Exact Discrete ZOH Current Integration */
+    smo->Ialpha_est = smo->a_zoh * smo->Ialpha_est + smo->b_zoh * (Valpha - smo->Ealpha);
+    smo->Ibeta_est = smo->a_zoh * smo->Ibeta_est + smo->b_zoh * (Vbeta - smo->Ebeta);
 
-    /* 3. Self-Tuning Filter (STF) for BEMF using Backward Euler with smooth frequency tracking */
+    /* 3. Self-Tuning Filter (STF) for BEMF with capped passband width */
     float target_omega =
-        (FOC_GetState() == FOC_STATE_STARTUP) ? g_foc.startup.omega : smo->omega_est;
+        (g_foc.status.state == FOC_STATE_STARTUP) ? g_foc.startup.omega : smo->omega_est;
     smo->omega_stf += omega_stf_alpha * (target_omega - smo->omega_stf);
-    float omega_stf = smo->omega_stf;
-    float wc = smo->wc_base + 0.8f * fabsf(omega_stf);
+    float wc_max = (pll_cutoff_max > smo->wc_base) ? pll_cutoff_max : smo->wc_base;
+    float wc = clampf(smo->wc_base + 0.2f * fabsf(smo->omega_stf), smo->wc_base, wc_max);
 
-    stf_filter_step(smo->Ealpha, smo->Ebeta, &smo->Ealpha_flt, &smo->Ebeta_flt, wc, omega_stf,
+    stf_filter_step(smo->Ealpha, smo->Ebeta, &smo->Ealpha_flt, &smo->Ebeta_flt, wc, smo->omega_stf,
                     smo->dt);
 
     /* 4. PLL Tracking */
@@ -228,7 +275,7 @@ CCMRAM_FUNC void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, floa
 }
 
 void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha,
-                        float flux_linkage, float poles, float max_speed_elec_rad) {
+                        float flux_linkage, float poles, float max_speed_elec_rad, float bw_cur) {
     smo->Rs = Rs;
     smo->Ls = Ls;
     smo->psi = flux_linkage;
@@ -241,10 +288,11 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha
     smo->pll_int_max = max_spd;
     smo->pll_int_min = -max_spd;
 
-    /* Update Euler coefficients */
-    smo->dt_over_Ls = smo->dt * smo->Ls_inv;
-    smo->denom_inv = 1.0f / (1.0f + smo->Rs * smo->dt_over_Ls);
-
+    /* Update Exact Discrete ZOH coefficients */
+    float tau_ratio = (smo->Rs * smo->dt) * smo->Ls_inv;
+    smo->a_zoh = expf(-tau_ratio);
+    smo->b_zoh = (1.0f - smo->a_zoh) / smo->Rs;
+    smo->bw_cur = bw_cur;
     float f_bw_min = clampf(0.5f * (smo->Rs * smo->Ls_inv * (1.0f / TWO_PI)), 20.0f, 200.0f);
     smo->wc_base = TWO_PI * f_bw_min;
 }
@@ -252,53 +300,48 @@ void SMO_SetMotorParams(SMO_Observer_t* smo, float Rs, float Ls, float sat_alpha
 void SMO_SetTiming(SMO_Observer_t* smo, float dt) {
     if (dt > 0.0f) {
         smo->dt = dt;
-        smo->dt_over_Ls = smo->dt * smo->Ls_inv;
-        smo->denom_inv = 1.0f / (1.0f + smo->Rs * smo->dt_over_Ls);
+        float tau_ratio = (smo->Rs * smo->dt) * smo->Ls_inv;
+        smo->a_zoh = expf(-tau_ratio);
+        smo->b_zoh = (1.0f - smo->a_zoh) / smo->Rs;
         smo->dt_over_pi = smo->dt * (1.0f / PI);
         smo->gamma_6th_dt = smo->gamma_6th * smo->dt;
         smo->pll_ki_dt = smo->pll_ki * smo->dt;
 
         omega_stf_alpha = (OMEGA_STF_CUTOFF * smo->dt);
         omega_out_alpha = (OMEGA_OUT_CUTOFF * smo->dt);
+        pll_cutoff_max = g_foc.cfg.pwm_frequency / 14.0f * TWO_PI;
+        omega_obs_max = TWO_PI * (g_foc.cfg.pwm_frequency / 6.0f);
         dt_over_pi = smo->dt_over_pi;
     }
 }
 
-CCMRAM_FUNC void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta) {
-    /* Self-Tuning Filter (STF) for externally supplied BEMF (Backward Euler,
-     * unconditionally stable) - same filter core as the internal SMO path. */
+void SMO_FeedBEMF(SMO_Observer_t* smo, float Ealpha, float Ebeta) {
     smo->omega_stf += omega_stf_alpha * (smo->omega_est - smo->omega_stf);
-    float wc = smo->wc_base + 0.8f * fabsf(smo->omega_stf);
+    float wc_max = (pll_cutoff_max > smo->wc_base) ? pll_cutoff_max : smo->wc_base;
+    float wc = clampf(smo->wc_base + 0.5f * fabsf(smo->omega_stf), smo->wc_base, wc_max);
     stf_filter_step(Ealpha, Ebeta, &smo->Ealpha_flt, &smo->Ebeta_flt, wc, smo->omega_stf, smo->dt);
 
-    /* Shared PLL tracking: SMO_PLL_Track detects FOC_STATE_FLYING_START and
-     * applies the 0.3 dt ADC sampling delay compensation without the
-     * observer/harmonic blocks. */
     SMO_PLL_Track(smo);
 }
 
 void SMO_SlowTask(SMO_Observer_t* smo) {
     /* 1. Dynamic PLL Cutoff Frequency based on filtered speed */
-    float spd_ref = (FOC_GetState() == FOC_STATE_STARTUP) ? g_foc.startup.omega : smo->omega_est;
+    float spd_ref =
+        (g_foc.status.state == FOC_STATE_STARTUP) ? g_foc.startup.omega : smo->omega_est;
     if (smo->omega_est_filt == 0.0f && fabsf(spd_ref) > 1.0f) {
         smo->omega_est_filt = fabsf(spd_ref);
     } else {
         smo->omega_est_filt += 0.2f * (fabsf(spd_ref) - smo->omega_est_filt);
     }
 
-    float f_elec = smo->omega_est_filt / TWO_PI;
-    float pll_cutoff_hz = smo->pll_alpha * f_elec;
-    if (pll_cutoff_hz < smo->pll_cutoff_min) pll_cutoff_hz = smo->pll_cutoff_min;
-    if (pll_cutoff_hz > 2500.0f) pll_cutoff_hz = 2500.0f;
+    float f_elec = smo->omega_est_filt;
+    float pll_cutoff = clampf(smo->pll_alpha * f_elec, smo->pll_cutoff_min, pll_cutoff_max);
 
-    float new_pll_kp = 2.0f * TWO_PI * pll_cutoff_hz;
+    float new_pll_kp = 2.0f * pll_cutoff;
     float new_pll_ki = new_pll_kp * new_pll_kp / 4.0f;
 
     float omega_motor = smo->Rs * smo->Ls_inv;
-    float omega_obs = 2.0f * PI * g_foc.cfg.bw_cur;
-    if (omega_obs < 1.5f * omega_motor) {
-        omega_obs = 1.5f * omega_motor;
-    }
+    float omega_obs = clampf(TWO_PI * smo->bw_cur, 1.5f * omega_motor, omega_obs_max);
     float R_ratio = omega_obs * smo->Ls - smo->Rs;
     if (R_ratio <= 0.01f) R_ratio = 0.01f;
 
@@ -306,22 +349,29 @@ void SMO_SlowTask(SMO_Observer_t* smo) {
     float E_est = omega_e * smo->psi;
     float new_k_slide = 1.5f * E_est + 2.0f;
 
-    float k_slide_max = 15.0f * (smo->Ls / smo->dt);
-    float safety_net = 2.0f * E_est + 5.0f;
-    if (k_slide_max < safety_net) {
-        k_slide_max = safety_net;
-    }
+    float k_slide_max = 2.0f * SQRT3_INV * g_foc.data.Vbus;
     if (new_k_slide > k_slide_max) {
         new_k_slide = k_slide_max;
     }
 
     float new_k_sigmoid = new_k_slide / R_ratio;
-    float k_sig_min = 0.001f;
+    float k_sig_min = 0.01f;
     if (new_k_sigmoid < k_sig_min) {
         new_k_sigmoid = k_sig_min;
     }
+    float delta_v = new_k_slide - E_est;
+    if (delta_v < 0.15f * new_k_slide) {
+        delta_v = 0.15f * new_k_slide;
+    }
 
-    float new_denom_inv = 1.0f / (1.0f + smo->Rs * smo->dt_over_Ls);
+    float z_target = expf(-omega_obs * smo->dt);
+    float tau_ratio = (smo->Rs * smo->dt) * smo->Ls_inv;
+    float new_a_zoh = expf(-tau_ratio);
+    float new_b_zoh = (1.0f - new_a_zoh) / smo->Rs;
+    float K_target = (new_b_zoh > 1e-9f) ? ((new_a_zoh - z_target) / new_b_zoh) : (0.5f * smo->Rs);
+    if (K_target < 0.05f * smo->Rs) {
+        K_target = 0.05f * smo->Rs;
+    }
 
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
@@ -330,7 +380,9 @@ void SMO_SlowTask(SMO_Observer_t* smo) {
     smo->pll_ki_dt = new_pll_ki * smo->dt;
     smo->k_slide = new_k_slide;
     smo->k_sigmoid = new_k_sigmoid;
-    smo->denom_inv = new_denom_inv;
+    smo->a_zoh = new_a_zoh;
+    smo->b_zoh = new_b_zoh;
+    smo->omega_obs = omega_obs;
     if (!primask) {
         __enable_irq();
     }

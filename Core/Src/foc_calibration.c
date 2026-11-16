@@ -7,6 +7,7 @@
 
 #include <math.h>
 
+#include "flash_config.h"
 #include "foc_config.h"
 #include "foc_state_machine.h"
 #include "motor_id.h"
@@ -20,6 +21,13 @@ static uint16_t s_vphase_a_min = 4096;
 static uint16_t s_vphase_a_max = 0;
 static uint16_t s_vphase_c_min = 4096;
 static uint16_t s_vphase_c_max = 0;
+
+/* Current sensing calibration accumulators */
+static uint32_t s_adc1_accum = 0;
+static uint32_t s_adc2_b_accum = 0;
+static uint32_t s_adc1_c_pb1_accum = 0;
+static uint32_t s_adc2_c_opamp3_accum = 0;
+static uint16_t s_cal_samples = 0;
 
 /* Current sensing noise characterization accumulators */
 static uint64_t s_adc1_sq_accum = 0;
@@ -39,11 +47,11 @@ extern volatile uint16_t adc_regular_buffer[3];
 extern volatile float ADC_Vref;
 
 void FOC_Calibration_Reset(void) {
-    g_foc.adc_cal.offset_a = 0;
-    g_foc.adc_cal.offset_b = 0;
-    g_foc.adc_cal.offset_c_pb1 = 0;
-    g_foc.adc_cal.offset_c_opamp3 = 0;
-    g_foc.adc_cal.cal_samples = 0;
+    s_adc1_accum = 0;
+    s_adc2_b_accum = 0;
+    s_adc1_c_pb1_accum = 0;
+    s_adc2_c_opamp3_accum = 0;
+    s_cal_samples = 0;
 
     s_vphase_a_accum = 0;
     s_vphase_c_accum = 0;
@@ -69,36 +77,36 @@ void FOC_Calibration_Reset(void) {
 void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t cal_phase) {
     switch (cal_phase) {
         case 0: /* Skip A: ADC1 measured Phase C (PB1), ADC2 measured Phase B (VOPAMP2) */
-            g_foc.adc_cal.offset_c_pb1 += adc1_data;
+            s_adc1_c_pb1_accum += adc1_data;
             s_adc1_c_pb1_sq_accum += (uint64_t)adc1_data * adc1_data;
             if (adc1_data < s_adc1_c_pb1_min) s_adc1_c_pb1_min = adc1_data;
             if (adc1_data > s_adc1_c_pb1_max) s_adc1_c_pb1_max = adc1_data;
 
-            g_foc.adc_cal.offset_b += adc2_data;
+            s_adc2_b_accum += adc2_data;
             s_adc2_b_sq_accum += (uint64_t)adc2_data * adc2_data;
             if (adc2_data < s_adc2_b_min) s_adc2_b_min = adc2_data;
             if (adc2_data > s_adc2_b_max) s_adc2_b_max = adc2_data;
             break;
 
         case 1: /* Skip B: ADC1 measured Phase A (VOPAMP1), ADC2 measured Phase C (VOPAMP3) */
-            g_foc.adc_cal.offset_a += adc1_data;
+            s_adc1_accum += adc1_data;
             s_adc1_sq_accum += (uint64_t)adc1_data * adc1_data;
             if (adc1_data < s_adc1_min) s_adc1_min = adc1_data;
             if (adc1_data > s_adc1_max) s_adc1_max = adc1_data;
 
-            g_foc.adc_cal.offset_c_opamp3 += adc2_data;
+            s_adc2_c_opamp3_accum += adc2_data;
             s_adc2_c_opamp3_sq_accum += (uint64_t)adc2_data * adc2_data;
             if (adc2_data < s_adc2_c_opamp3_min) s_adc2_c_opamp3_min = adc2_data;
             if (adc2_data > s_adc2_c_opamp3_max) s_adc2_c_opamp3_max = adc2_data;
             break;
 
         default: /* Skip C: ADC1 measured Phase A (VOPAMP1), ADC2 measured Phase B (VOPAMP2) */
-            g_foc.adc_cal.offset_a += adc1_data;
+            s_adc1_accum += adc1_data;
             s_adc1_sq_accum += (uint64_t)adc1_data * adc1_data;
             if (adc1_data < s_adc1_min) s_adc1_min = adc1_data;
             if (adc1_data > s_adc1_max) s_adc1_max = adc1_data;
 
-            g_foc.adc_cal.offset_b += adc2_data;
+            s_adc2_b_accum += adc2_data;
             s_adc2_b_sq_accum += (uint64_t)adc2_data * adc2_data;
             if (adc2_data < s_adc2_b_min) s_adc2_b_min = adc2_data;
             if (adc2_data > s_adc2_b_max) s_adc2_b_max = adc2_data;
@@ -115,34 +123,45 @@ void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t 
         if (vc < s_vphase_c_min) s_vphase_c_min = vc;
         if (vc > s_vphase_c_max) s_vphase_c_max = vc;
     }
-    g_foc.adc_cal.cal_samples++;
+    s_cal_samples++;
 }
 
 void FOC_ConfigureAWD(void) {
+    float oc_thr = FOC_GetOCThreshold();
+    if (oc_thr <= 0.001f) {
+        LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD1, 4095, 0);
+        LL_ADC_ConfigAnalogWDThresholds(ADC1, LL_ADC_AWD2, 4095, 0);
+        LL_ADC_ConfigAnalogWDThresholds(ADC2, LL_ADC_AWD1, 4095, 0);
+
+        LL_ADC_DisableIT_AWD1(ADC1);
+        LL_ADC_DisableIT_AWD2(ADC1);
+        LL_ADC_DisableIT_AWD1(ADC2);
+        return;
+    }
+
     float vref = ADC_Vref;
     if (vref < 1.0f) vref = 3.3f;
 
-    /* 1. Resolve the overcurrent threshold in LSB counts
-     *    (0 = auto 1.25 x Imax; positive = exact value, may be < Imax for tests) */
+    /* 1. Resolve the overcurrent threshold in LSB counts */
     const float gain = ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE;
     float current_to_adc = gain / vref;
-    int32_t adc_step = (int32_t)(FOC_GetOCThreshold() * current_to_adc + 0.5f);
+    int32_t adc_step = (int32_t)(oc_thr * current_to_adc + 0.5f);
 
-    int32_t hw_max_ac = g_foc.adc_cal.offset_a;
-    int32_t headroom = 4095 - g_foc.adc_cal.offset_a;
+    int32_t hw_max_ac = g_foc.cfg.cal_offset_a;
+    int32_t headroom = 4095 - g_foc.cfg.cal_offset_a;
     if (headroom < hw_max_ac) hw_max_ac = headroom;
 
-    int32_t lim_c_pb1 = g_foc.adc_cal.offset_c_pb1;
-    headroom = 4095 - g_foc.adc_cal.offset_c_pb1;
+    int32_t lim_c_pb1 = g_foc.cfg.cal_offset_c_pb1;
+    headroom = 4095 - g_foc.cfg.cal_offset_c_pb1;
     if (headroom < lim_c_pb1) lim_c_pb1 = headroom;
     if (lim_c_pb1 < hw_max_ac) hw_max_ac = lim_c_pb1;
 
-    int32_t hw_max_bc = g_foc.adc_cal.offset_b;
-    headroom = 4095 - g_foc.adc_cal.offset_b;
+    int32_t hw_max_bc = g_foc.cfg.cal_offset_b;
+    headroom = 4095 - g_foc.cfg.cal_offset_b;
     if (headroom < hw_max_bc) hw_max_bc = headroom;
-    int32_t lim_c_op3 = g_foc.adc_cal.offset_c_opamp3;
+    int32_t lim_c_op3 = g_foc.cfg.cal_offset_c_op3;
 
-    headroom = 4095 - g_foc.adc_cal.offset_c_opamp3;
+    headroom = 4095 - g_foc.cfg.cal_offset_c_op3;
     if (headroom < lim_c_op3) lim_c_op3 = headroom;
     if (lim_c_op3 < hw_max_bc) hw_max_bc = lim_c_op3;
 
@@ -159,14 +178,14 @@ void FOC_ConfigureAWD(void) {
     }
 
     /* Phase A and Phase C (ADC1 AWD1 - monitors all injected channels: VOPAMP1 and CH12) */
-    int32_t avg_offset_ac = (g_foc.adc_cal.offset_a + g_foc.adc_cal.offset_c_pb1) / 2;
+    int32_t avg_offset_ac = (g_foc.cfg.cal_offset_a + g_foc.cfg.cal_offset_c_pb1) / 2;
     int32_t high_ac = avg_offset_ac + adc_step;
     int32_t low_ac = avg_offset_ac - adc_step;
     if (high_ac > 4095) high_ac = 4095;
     if (low_ac < 0) low_ac = 0;
 
     /* Phase B and C (ADC2 AWD1 - monitors all injected channels: VOPAMP2 and VOPAMP3) */
-    int32_t avg_offset_bc = (g_foc.adc_cal.offset_b + g_foc.adc_cal.offset_c_opamp3) / 2;
+    int32_t avg_offset_bc = (g_foc.cfg.cal_offset_b + g_foc.cfg.cal_offset_c_op3) / 2;
     int32_t high_bc = avg_offset_bc + adc_step;
     int32_t low_bc = avg_offset_bc - adc_step;
     if (high_bc > 4095) high_bc = 4095;
@@ -191,19 +210,20 @@ void FOC_ConfigureAWD(void) {
 }
 
 void FOC_StateCalibration(void) {
-    if (g_foc.adc_cal.cal_samples >= CAL_SAMPLES) {
+    if (s_cal_samples >= CAL_SAMPLES) {
         float n_ab = CAL_SAMPLES * 2.0f / 3.0f;
         float n_c = CAL_SAMPLES / 3.0f;
 
-        float mean_a = (float)g_foc.adc_cal.offset_a / n_ab;
-        float mean_b = (float)g_foc.adc_cal.offset_b / n_ab;
-        float mean_c_pb1 = (float)g_foc.adc_cal.offset_c_pb1 / n_c;
-        float mean_c_opamp3 = (float)g_foc.adc_cal.offset_c_opamp3 / n_c;
+        float mean_a = (float)s_adc1_accum / n_ab;
+        float mean_b = (float)s_adc2_b_accum / n_ab;
+        float mean_c_pb1 = (float)s_adc1_c_pb1_accum / n_c;
+        float mean_c_opamp3 = (float)s_adc2_c_opamp3_accum / n_c;
 
-        g_foc.adc_cal.offset_a = (int32_t)(mean_a + 0.5f);
-        g_foc.adc_cal.offset_b = (int32_t)(mean_b + 0.5f);
-        g_foc.adc_cal.offset_c_pb1 = (int32_t)(mean_c_pb1 + 0.5f);
-        g_foc.adc_cal.offset_c_opamp3 = (int32_t)(mean_c_opamp3 + 0.5f);
+        g_foc.cfg.cal_offset_a = (int32_t)(mean_a + 0.5f);
+        g_foc.cfg.cal_offset_b = (int32_t)(mean_b + 0.5f);
+        g_foc.cfg.cal_offset_c_pb1 = (int32_t)(mean_c_pb1 + 0.5f);
+        g_foc.cfg.cal_offset_c_op3 = (int32_t)(mean_c_opamp3 + 0.5f);
+        g_foc.cfg.cal_valid = 1;
 
         /* Calculate Current Sensing RMS Noise & Peak-to-Peak Noise */
         float var_a = ((float)s_adc1_sq_accum / n_ab) - (mean_a * mean_a);
@@ -230,23 +250,10 @@ void FOC_StateCalibration(void) {
         float noise_pk_pk = pk_pk_a > pk_pk_b ? pk_pk_a : pk_pk_b;
         if (pk_pk_c > noise_pk_pk) noise_pk_pk = pk_pk_c;
 
-        g_foc.noise_profile.noise_rms = noise_rms;
-        g_foc.noise_profile.noise_pk_pk = noise_pk_pk;
-        g_foc.noise_profile.is_flat_thr =
-            clampf(0.5f * g_foc.noise_profile.noise_pk_pk, 0.003f, 0.500f);
-        g_foc.noise_profile.i_inj_min = clampf(3.0f * noise_rms, 0.020f, 1.0f);
-        g_foc.noise_profile.bemf_noise_sq = 1e-4f;
-
-        /* Hardware Health Evaluation */
-        if (noise_rms < 0.015f) {
-            g_foc.noise_profile.health_status = 0; /* EXCELLENT (< 15mA) */
-        } else if (noise_rms < 0.040f) {
-            g_foc.noise_profile.health_status = 1; /* GOOD (15 - 40mA) */
-        } else if (noise_rms < 0.100f) {
-            g_foc.noise_profile.health_status = 2; /* NOISY (40 - 100mA) */
-        } else {
-            g_foc.noise_profile.health_status = 3; /* FAULT (> 100mA) */
-        }
+        g_foc.cfg.cal_noise_rms = noise_rms;
+        g_foc.cfg.cal_noise_pk_pk = noise_pk_pk;
+        g_foc.cfg.cal_is_flat_thr = clampf(0.5f * noise_pk_pk, 0.003f, 0.500f);
+        g_foc.cfg.cal_i_inj_min = clampf(3.0f * noise_rms, 0.020f, 1.0f);
 
         /* Restore hardware to default skip C sensing after calibration */
         FOC_HW_SwitchCurrentSensing(2);
@@ -258,9 +265,25 @@ void FOC_StateCalibration(void) {
 
         uint8_t is_spinning = (diff_a > 30) || (diff_c > 30);
         if (!is_spinning) {
-            g_foc.adc_cal.offset_vphase_a = s_vphase_a_accum / CAL_SAMPLES;
-            g_foc.adc_cal.offset_vphase_c = s_vphase_c_accum / CAL_SAMPLES;
+            g_foc.cfg.cal_vphase_a = (int32_t)(s_vphase_a_accum / CAL_SAMPLES);
+            g_foc.cfg.cal_vphase_c = (int32_t)(s_vphase_c_accum / CAL_SAMPLES);
         }
+
+        /* Synchronize freshly calibrated offsets and noise floor to g_config */
+        FlashConfig_t* cfg_stored = FlashConfig_Get();
+        cfg_stored->cal_offset_a = g_foc.cfg.cal_offset_a;
+        cfg_stored->cal_offset_b = g_foc.cfg.cal_offset_b;
+        cfg_stored->cal_offset_c_pb1 = g_foc.cfg.cal_offset_c_pb1;
+        cfg_stored->cal_offset_c_op3 = g_foc.cfg.cal_offset_c_op3;
+        cfg_stored->cal_noise_rms = g_foc.cfg.cal_noise_rms;
+        cfg_stored->cal_noise_pk_pk = g_foc.cfg.cal_noise_pk_pk;
+        cfg_stored->cal_is_flat_thr = g_foc.cfg.cal_is_flat_thr;
+        cfg_stored->cal_i_inj_min = g_foc.cfg.cal_i_inj_min;
+        if (!is_spinning) {
+            cfg_stored->cal_vphase_a = g_foc.cfg.cal_vphase_a;
+            cfg_stored->cal_vphase_c = g_foc.cfg.cal_vphase_c;
+        }
+        cfg_stored->cal_valid = 1;
 
         FOC_ConfigureAWD();
 
@@ -292,7 +315,7 @@ float FOC_CalculateObserverMinSpeed(void) {
     if (pll_bw < 10.0f) pll_bw = 10.0f; /* Safety baseline */
     float f_nyquist = g_foc.cfg.pwm_frequency * 0.5f;
     float k_atten = sqrtf(pll_bw / f_nyquist);
-    float noise_in_band = g_foc.noise_profile.noise_rms * k_atten;
+    float noise_in_band = g_foc.cfg.cal_noise_rms * k_atten;
     float v_current_noise = noise_in_band * g_foc.cfg.motor_rs;
     /* 2. Effective residual deadtime voltage after active DTC (residual ~5%) */
     float v_deadtime = g_foc.deadtime_duty * g_foc.data.Vbus;

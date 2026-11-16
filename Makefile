@@ -43,6 +43,7 @@ Core/Src/pi_controller.c \
 Core/Src/ladrc_controller.c \
 Core/Src/smo_observer.c \
 Core/Src/foc_state_machine.c \
+Core/Src/foc_beep.c \
 Core/Src/foc_calibration.c \
 Core/Src/foc_flying_start.c \
 Core/Src/foc_startup.c \

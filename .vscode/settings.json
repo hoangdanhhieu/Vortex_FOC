@@ -5,5 +5,19 @@
             "binaryPath": "${workspaceFolder}/build/Vortex_FOC.elf",
             "binaryArgs": []
         }
-    ]
+    ],
+    "clangd.arguments": [
+        "--query-driver=**/*arm-none-eabi*",
+        "--header-insertion=never"
+    ],
+
+    "editor.formatOnSave": true,
+    "[c]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": true
+    },
+    "[cpp]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": true
+    }
 }

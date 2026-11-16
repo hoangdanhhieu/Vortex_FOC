@@ -54,7 +54,13 @@ CCMRAM_FUNC static inline float normalize_angle_norm(float angle) {
 }
 
 /**
- * @brief Self-Tuning Filter (STF) step in alpha-beta frame (Backward Euler)
+ * @brief Exact Discrete Rotational Self-Tuning Filter (STF) step in alpha-beta frame
+ * @details Filters input signals in stationary alpha-beta frame while tracking the fundamental
+ * frequency:
+ *          1. Rotates previous filtered state by theta_step = omega * dt.
+ *          2. Applies continuous decay exp(-wc * dt) via 3rd-order Taylor expansion.
+ *          3. Blends new input with gain (1.0 - decay).
+ *          Optimized for 48kHz ISR execution without floating-point division (vdiv.f32).
  * @param in_alpha  Alpha input signal
  * @param in_beta   Beta input signal
  * @param flt_alpha Pointer to filtered alpha state variable (updated in-place)
@@ -65,15 +71,21 @@ CCMRAM_FUNC static inline float normalize_angle_norm(float angle) {
  */
 CCMRAM_FUNC static inline void stf_filter_step(float in_alpha, float in_beta, float* flt_alpha,
                                                float* flt_beta, float wc, float omega, float dt) {
+    float theta_step = omega * dt;
+    float th_sq = theta_step * theta_step;
+    float cos_step = 1.0f - 0.5f * th_sq + (0.04166667f) * th_sq * th_sq;
+    float sin_step = theta_step * (1.0f - 0.16666667f * th_sq);
     float a = wc * dt;
-    float b = omega * dt;
-    float D_inv = 1.0f / ((1.0f + a) * (1.0f + a) + b * b);
+    float decay = 1.0f - a * (1.0f - a * (0.5f - a * 0.16666667f));
+    decay = clampf(decay, 0.0f, 1.0f);
+    float a_in = 1.0f - decay;
+    float prev_a = *flt_alpha;
+    float prev_b = *flt_beta;
+    float rot_a = cos_step * prev_a - sin_step * prev_b;
+    float rot_b = sin_step * prev_a + cos_step * prev_b;
 
-    float r_alpha = *flt_alpha + a * in_alpha;
-    float r_beta = *flt_beta + a * in_beta;
-
-    *flt_alpha = ((1.0f + a) * r_alpha - b * r_beta) * D_inv;
-    *flt_beta = (b * r_alpha + (1.0f + a) * r_beta) * D_inv;
+    *flt_alpha = decay * rot_a + a_in * in_alpha;
+    *flt_beta = decay * rot_b + a_in * in_beta;
 }
 
 /*===========================================================================*/

@@ -12,13 +12,46 @@ from core import protocol, param_defs
 from ui.styles import GREEN, RED, TEXT_DIM, YELLOW, ACCENT
 from ui.widgets import NoWheelSlider
 
-STATE_NAMES = ["IDLE", "CAL", "DETECT", "FLY_START", "ALIGN", "STARTUP", "RUN", "STOP", "FAULT", "IDENT", "COAST_ID", "BRAKE"]
 FAULT_NAMES = ["NONE", "OVERCURRENT", "OVERVOLTAGE", "UNDERVOLTAGE", "STARTUP_FAIL", "OBSERVER_FAIL", "STALL", "GROUND_FAULT"]
 STATE_COLORS = {
-    0: TEXT_DIM, 1: YELLOW, 2: YELLOW, 3: YELLOW,
-    4: YELLOW, 5: YELLOW, 6: GREEN, 7: YELLOW, 8: RED, 9: YELLOW,
-    10: YELLOW, 11: RED,
+    protocol.FocState.IDLE:            TEXT_DIM,
+    protocol.FocState.CALIBRATION:     YELLOW,
+    protocol.FocState.DETECT:          YELLOW,
+    protocol.FocState.FLYING_START:    YELLOW,
+    protocol.FocState.ALIGN:           YELLOW,
+    protocol.FocState.STARTUP:         YELLOW,
+    protocol.FocState.RUN:             GREEN,
+    protocol.FocState.ZERO_CROSS:      ACCENT,
+    protocol.FocState.STOP:            YELLOW,
+    protocol.FocState.FAULT:           RED,
+    protocol.FocState.SELF_COMMISSION: YELLOW,
+    protocol.FocState.COAST_FLUX_ID:   YELLOW,
+    protocol.FocState.BEEP:            YELLOW,
 }
+
+STYLE_DIR_ACTIVE = f"""
+QPushButton {{
+    background-color: {ACCENT};
+    color: #11111b;
+    font-weight: bold;
+    border: 1px solid #b4befe;
+    border-radius: 4px;
+    padding: 4px 8px;
+}}
+"""
+STYLE_DIR_INACTIVE = """
+QPushButton {
+    background-color: #1e1e2e;
+    color: #a6adc8;
+    border: 1px solid #313244;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+QPushButton:hover {
+    background-color: #313244;
+    color: #cdd6f4;
+}
+"""
 
 
 class ControlPanel(QGroupBox):
@@ -27,6 +60,7 @@ class ControlPanel(QGroupBox):
         self._serial = serial_thread
 
         self._active_mode = None  # 'SPEED', 'TORQUE', 'VOLTAGE', or None
+        self._active_dir = 1      # +1 = FWD, -1 = REV
         self._zero_send_count = 0
 
         # Continuous throttle streaming timer (30 Hz ~ 33 ms)
@@ -42,13 +76,13 @@ class ControlPanel(QGroupBox):
         layout.setSpacing(10)
 
         # Emergency STOP / DISARM button
-        self.btn_stop = QPushButton("■ STOP / DISARM")
+        self.btn_stop = QPushButton("STOP / DISARM")
         self.btn_stop.setObjectName("btn_stop")
         self.btn_stop.setCursor(Qt.PointingHandCursor)
         self.btn_stop.clicked.connect(self._on_stop)
         layout.addWidget(self.btn_stop)
 
-        # Base Direction
+        # Base Direction (saved to Flash)
         dir_row = QHBoxLayout()
         dir_lbl = QLabel("Base Dir:")
         dir_lbl.setStyleSheet("font-weight: 500;")
@@ -59,6 +93,28 @@ class ControlPanel(QGroupBox):
         self.dir_combo.currentIndexChanged.connect(self._on_dir_changed)
         dir_row.addWidget(self.dir_combo)
         layout.addLayout(dir_row)
+
+        # Dynamic Rotation Direction (4-Quadrant On-The-Fly Reversal)
+        rot_dir_row = QHBoxLayout()
+        rot_dir_lbl = QLabel("Rotation:")
+        rot_dir_lbl.setStyleSheet("font-weight: 500;")
+        rot_dir_row.addWidget(rot_dir_lbl)
+
+        self.btn_dir_fwd = QPushButton("↻ FWD")
+        self.btn_dir_fwd.setCursor(Qt.PointingHandCursor)
+        self.btn_dir_fwd.setStyleSheet(STYLE_DIR_ACTIVE)
+        self.btn_dir_fwd.setToolTip("Rotate Forward (positive)")
+        self.btn_dir_fwd.clicked.connect(lambda: self._set_rotation_dir(1))
+
+        self.btn_dir_rev = QPushButton("↺ REV")
+        self.btn_dir_rev.setCursor(Qt.PointingHandCursor)
+        self.btn_dir_rev.setStyleSheet(STYLE_DIR_INACTIVE)
+        self.btn_dir_rev.setToolTip("Rotate Reverse (negative) — triggers 4-quadrant zero-crossing reversal")
+        self.btn_dir_rev.clicked.connect(lambda: self._set_rotation_dir(-1))
+
+        rot_dir_row.addWidget(self.btn_dir_fwd)
+        rot_dir_row.addWidget(self.btn_dir_rev)
+        layout.addLayout(rot_dir_row)
 
         # --- Speed Slider Group ---
         spd_group = QGroupBox("Speed Control")
@@ -164,6 +220,10 @@ class ControlPanel(QGroupBox):
             if hasattr(self, '_throttle_timer') and self._throttle_timer.isActive():
                 self._throttle_timer.stop()
             self._active_mode = None
+            self._active_dir = 1
+            if hasattr(self, 'btn_dir_fwd') and hasattr(self, 'btn_dir_rev'):
+                self.btn_dir_fwd.setStyleSheet(STYLE_DIR_ACTIVE)
+                self.btn_dir_rev.setStyleSheet(STYLE_DIR_INACTIVE)
 
             # Reset sliders on disconnect for safety
             self.slider_spd.blockSignals(True)
@@ -192,11 +252,43 @@ class ControlPanel(QGroupBox):
         step = max(50, int(max_rpm / 100))
         self.slider_spd.setSingleStep(step)
         self.slider_spd.setPageStep(step * 10)
+        sign_str = "-" if self._active_dir < 0 else ""
         if curr_val > max_rpm:
             self.slider_spd.setValue(max_rpm)
-            self.lbl_spd_val.setText(f"{max_rpm:,} RPM")
+            self.lbl_spd_val.setText(f"{sign_str}{max_rpm:,} RPM")
         self.slider_spd.blockSignals(False)
         self.spd_title.setText(f"Target (Max {max_rpm:,} RPM):")
+
+    def _set_rotation_dir(self, dir_sign: int):
+        """Set active rotation direction (+1 = FWD, -1 = REV). Triggers 4-quadrant reversal if spinning."""
+        if self._active_dir == dir_sign:
+            return
+        self._active_dir = dir_sign
+        if dir_sign > 0:
+            self.btn_dir_fwd.setStyleSheet(STYLE_DIR_ACTIVE)
+            self.btn_dir_rev.setStyleSheet(STYLE_DIR_INACTIVE)
+        else:
+            self.btn_dir_fwd.setStyleSheet(STYLE_DIR_INACTIVE)
+            self.btn_dir_rev.setStyleSheet(STYLE_DIR_ACTIVE)
+
+        sign_str = "-" if self._active_dir < 0 else ""
+
+        # If motor is currently running via slider, immediately send reversed command
+        if self._active_mode == 'SPEED':
+            rpm = self.slider_spd.value()
+            self.lbl_spd_val.setText(f"{sign_str}{rpm:,} RPM")
+            if rpm > 0 and self._serial.is_connected:
+                self._serial.send(protocol.build_speed(self._active_dir * rpm))
+        elif self._active_mode == 'TORQUE':
+            pct = self.slider_trq.value() / 10.0
+            self.lbl_trq_val.setText(f"{sign_str}{pct:.1f} %")
+            if pct > 0.0 and self._serial.is_connected:
+                self._serial.send(protocol.build_torque(self._active_dir * pct))
+        elif self._active_mode == 'VOLTAGE':
+            pct = self.slider_volt.value() / 10.0
+            self.lbl_volt_val.setText(f"{sign_str}{pct:.1f} %")
+            if pct > 0.0 and self._serial.is_connected:
+                self._serial.send(protocol.build_voltage(self._active_dir * pct))
 
     def _on_params_received(self, params: dict):
         if protocol.ParamId.M_POLES in params:
@@ -245,7 +337,8 @@ class ControlPanel(QGroupBox):
         self._serial.send(protocol.build_dir(idx == 1))
 
     def _on_spd_slider_changed(self, val):
-        self.lbl_spd_val.setText(f"{val:,} RPM")
+        sign_str = "-" if self._active_dir < 0 else ""
+        self.lbl_spd_val.setText(f"{sign_str}{val:,} RPM")
         if val > 0:
             self._active_mode = 'SPEED'
             # Reset other sliders without emitting signals
@@ -262,7 +355,7 @@ class ControlPanel(QGroupBox):
             self._zero_send_count = 0
             if not self._throttle_timer.isActive():
                 if self._serial.is_connected:
-                    self._serial.send(protocol.build_speed(val))
+                    self._serial.send(protocol.build_speed(self._active_dir * val))
                 self._throttle_timer.start()
         else:
             if self._active_mode == 'SPEED':
@@ -272,7 +365,8 @@ class ControlPanel(QGroupBox):
 
     def _on_trq_slider_changed(self, val):
         pct = val / 10.0
-        self.lbl_trq_val.setText(f"{pct:.1f} %")
+        sign_str = "-" if self._active_dir < 0 else ""
+        self.lbl_trq_val.setText(f"{sign_str}{pct:.1f} %")
         if val > 0:
             self._active_mode = 'TORQUE'
             self.slider_spd.blockSignals(True)
@@ -288,7 +382,7 @@ class ControlPanel(QGroupBox):
             self._zero_send_count = 0
             if not self._throttle_timer.isActive():
                 if self._serial.is_connected:
-                    self._serial.send(protocol.build_torque(pct))
+                    self._serial.send(protocol.build_torque(self._active_dir * pct))
                 self._throttle_timer.start()
         else:
             if self._active_mode == 'TORQUE':
@@ -298,7 +392,8 @@ class ControlPanel(QGroupBox):
 
     def _on_volt_slider_changed(self, val):
         pct = val / 10.0
-        self.lbl_volt_val.setText(f"{pct:.1f} %")
+        sign_str = "-" if self._active_dir < 0 else ""
+        self.lbl_volt_val.setText(f"{sign_str}{pct:.1f} %")
         if val > 0:
             self._active_mode = 'VOLTAGE'
             self.slider_spd.blockSignals(True)
@@ -314,7 +409,7 @@ class ControlPanel(QGroupBox):
             self._zero_send_count = 0
             if not self._throttle_timer.isActive():
                 if self._serial.is_connected:
-                    self._serial.send(protocol.build_voltage(pct))
+                    self._serial.send(protocol.build_voltage(self._active_dir * (val / 1000.0)))
                 self._throttle_timer.start()
         else:
             if self._active_mode == 'VOLTAGE':
@@ -329,7 +424,7 @@ class ControlPanel(QGroupBox):
 
         if self._active_mode == 'SPEED':
             rpm = self.slider_spd.value()
-            self._serial.send(protocol.build_speed(rpm))
+            self._serial.send(protocol.build_speed(self._active_dir * rpm))
             if rpm == 0:
                 self._zero_send_count -= 1
                 if self._zero_send_count <= 0:
@@ -337,15 +432,15 @@ class ControlPanel(QGroupBox):
                     self._active_mode = None
         elif self._active_mode == 'TORQUE':
             pct = self.slider_trq.value() / 10.0
-            self._serial.send(protocol.build_torque(pct))
+            self._serial.send(protocol.build_torque(self._active_dir * pct))
             if pct <= 0.0:
                 self._zero_send_count -= 1
                 if self._zero_send_count <= 0:
                     self._throttle_timer.stop()
                     self._active_mode = None
         elif self._active_mode == 'VOLTAGE':
-            pct = self.slider_volt.value() / 10.0
-            self._serial.send(protocol.build_voltage(pct))
+            pct = self.slider_volt.value() / 1000.0
+            self._serial.send(protocol.build_voltage(self._active_dir * pct))
             if pct <= 0.0:
                 self._zero_send_count -= 1
                 if self._zero_send_count <= 0:
@@ -359,10 +454,10 @@ class ControlPanel(QGroupBox):
 
     def _update_status(self, st: dict):
         state_idx = st.get('state', 0)
-        name = STATE_NAMES[state_idx] if state_idx < len(STATE_NAMES) else "?"
+        name = protocol.STATE_NAMES[state_idx] if state_idx < len(protocol.STATE_NAMES) else f"? ({state_idx})"
 
         # Display specific fault description when in FAULT state
-        if state_idx == 8:  # FAULT
+        if state_idx == protocol.FocState.FAULT:
             fault_idx = st.get('fault', 0)
             fault_name = FAULT_NAMES[fault_idx] if fault_idx < len(FAULT_NAMES) else f"UNKNOWN ({fault_idx})"
             name = f"FAULT ({fault_name})"
@@ -378,12 +473,13 @@ class ControlPanel(QGroupBox):
         self.lbl_ibus.setText(f"Ibus: {ibus:.2f} A")
         self._last_ibus = ibus
 
-        # Update direction
+        # Update base direction combo from MCU
         dir_val = st.get('dir', 0)
         self.dir_combo.blockSignals(True)
         self.dir_combo.setCurrentIndex(dir_val)
         self.dir_combo.blockSignals(False)
-        self.dir_combo.setEnabled(state_idx in (0, 7, 8))
+        self.dir_combo.setEnabled(state_idx in (protocol.FocState.IDLE, protocol.FocState.STOP, protocol.FocState.FAULT))
 
     def request_status(self):
         self._serial.send(protocol.build_simple(protocol.CmdType.STATUS))
+

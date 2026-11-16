@@ -2,9 +2,9 @@
  * @file motor_id.h
  * @brief Motor Parameter Identification - Public API
  *
- * Rs: 2-point DC voltage injection (Settle-Ramp). Eliminates dead-time voltage via delta subtraction.
- * Ls: Dual-frequency AC sine injection with self-calibrating hardware delay compensation.
- *     The delay is solved from the constraint: Ls_compensated(f1) == Ls_compensated(f2).
+ * Rs: 2-point DC voltage injection (Settle-Ramp). Eliminates dead-time voltage via delta
+ * subtraction. Ls: Dual-frequency AC sine injection with self-calibrating hardware delay
+ * compensation. The delay is solved from the constraint: Ls_compensated(f1) == Ls_compensated(f2).
  */
 
 #ifndef MOTOR_ID_H
@@ -47,16 +47,17 @@ typedef struct {
     float measured_b0;            /* Identified system gain b0        [rad/s^2 / A] */
     float measured_inertia;       /* Identified rotor inertia J       [kg*m^2] */
     int8_t detected_direction;    /* Detected rotation: +1 = Forward, -1 = Reverse */
-    MotorID_State_t state;
-    uint32_t error_code; /* 0 = OK, 1=Rs invalid, 2=Ls invalid, 3=Fit error, 7=No delta, 8=Invalid PWM freq */
+    volatile MotorID_State_t state;
+    uint32_t error_code; /* 0 = OK, 1=Rs invalid, 2=Ls invalid, 3=Fit error, 7=No delta, 8=Invalid
+                            PWM freq */
 } MotorID_Result_t;
 
 /* Error codes for Motor ID */
-#define MOTOR_ID_ERR_NONE             0
-#define MOTOR_ID_ERR_RS_INVALID       1
-#define MOTOR_ID_ERR_LS_INVALID       2
-#define MOTOR_ID_ERR_FIT_ERROR        3
-#define MOTOR_ID_ERR_NO_DELTA         7
+#define MOTOR_ID_ERR_NONE 0
+#define MOTOR_ID_ERR_RS_INVALID 1
+#define MOTOR_ID_ERR_LS_INVALID 2
+#define MOTOR_ID_ERR_FIT_ERROR 3
+#define MOTOR_ID_ERR_NO_DELTA 7
 #define MOTOR_ID_ERR_INVALID_PWM_FREQ 8
 
 extern MotorID_Result_t id_result;
@@ -72,21 +73,12 @@ void MotorID_Stop(void);
 /**
  * @brief Check if Motor ID sequence is currently active
  */
-static inline uint8_t MotorID_IsRunning(void) {
-    return (id_result.state != MOTOR_ID_STATE_IDLE &&
-            id_result.state != MOTOR_ID_STATE_COMPLETE &&
-            id_result.state != MOTOR_ID_STATE_ERROR);
-}
+uint8_t MotorID_IsRunning(void);
 
 /**
  * @brief Initiate Offline Flux Measurement (Hand Spin)
  */
 void MotorID_MeasureFluxOffline(void);
-
-/**
- * @brief Check if currently doing offline flux measurement
- */
-uint8_t MotorID_IsFluxMeasuring(void);
 
 /**
  * @brief State handler for Hand Spin Flux Measurement (Flash)

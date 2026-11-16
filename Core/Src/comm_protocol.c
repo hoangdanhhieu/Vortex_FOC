@@ -187,6 +187,8 @@ static float get_param_value(uint8_t pid) {
             return g_foc.plot.user_plot2;
         case PID_USER_PLOT3:
             return g_foc.plot.user_plot3;
+        case PID_BOARD_MAX_I:
+            return BOARD_MAX_CURRENT;
         default:
             return 0.0f;
     }
@@ -212,6 +214,7 @@ static void set_param_value(uint8_t pid, float val) {
 }
 
 static uint8_t is_param_ro(uint8_t pid) {
+    if (pid >= PID_CAL_VALID && pid <= PID_CAL_I_INJ_MIN) return 1;
     return (pid >= PID_SPD_REF);
 }
 
@@ -307,14 +310,8 @@ CCMRAM_FUNC void Comm_StreamPush(void) {
 }
 
 /*===========================================================================*/
-/* Streaming - Drain (1kHz slow task)                                        */
+/* Streaming - Drain                                                         */
 /*===========================================================================*/
-
-/**
- * @brief Drain available sets from ring buffer and transmit as RSP_STREAM_DATA.
- *        Packet format: seq(2B) + num_sets(1B) + [ch0..ch3 fp16] x num_sets
- *        Called from FOC_SlowTask() @ 1kHz.
- */
 void Comm_StreamDrain(void) {
     if (!stream_active) return;
     if (CDC_IsTxBusy()) return;
@@ -372,8 +369,8 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
 
             /* Prohibit changing PWM frequency while motor is operating */
             if (pid == PID_PWM_FREQ) {
-                if (FOC_GetState() != FOC_STATE_IDLE && FOC_GetState() != FOC_STATE_STOP &&
-                    FOC_GetState() != FOC_STATE_FAULT) {
+                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
+                    g_foc.status.state != FOC_STATE_FAULT) {
                     send_ack(type, 1);
                     break;
                 }
@@ -451,8 +448,8 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 send_ack(type, 1);
                 break;
             }
-            if (FOC_GetState() != FOC_STATE_IDLE && FOC_GetState() != FOC_STATE_STOP &&
-                FOC_GetState() != FOC_STATE_FAULT) {
+            if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
+                g_foc.status.state != FOC_STATE_FAULT) {
                 send_ack(type, 1);
                 break;
             }
@@ -472,10 +469,10 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             memcpy(&speed_rad, payload, 4);
             if (fabsf(speed_rad) > 1.0f) {
                 FOC_Input_NotifyHostActivity(500);
-                FOC_SetControlMode(FOC_MODE_SPEED);
-                /* Clamp speed to observer-safe operating range [motor_min_spd .. motor_max_spd] */
-                float min_spd = FOC_GetMinSpeed();
-                float max_spd = FOC_GetMaxSpeed();
+                g_foc.status.control_mode = FOC_MODE_SPEED;
+
+                float min_spd = g_foc.cfg.motor_min_spd;
+                float max_spd = g_foc.cfg.motor_max_spd;
                 if (min_spd > 0.0f) {
                     if (speed_rad > 0.0f && speed_rad < min_spd) {
                         speed_rad = min_spd;
@@ -487,13 +484,13 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                     speed_rad = clampf(speed_rad, -max_spd, max_spd);
                 }
                 FOC_SetSpeedRef(speed_rad);
-                if (FOC_GetState() == FOC_STATE_IDLE || FOC_GetState() == FOC_STATE_BEEP) {
+                if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_BEEP) {
                     FOC_Start();
                 }
             } else {
                 FOC_Input_NotifyHostActivity(0);
-                if (FOC_GetState() != FOC_STATE_IDLE && FOC_GetState() != FOC_STATE_STOP &&
-                    FOC_GetState() != FOC_STATE_FAULT) {
+                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
+                    g_foc.status.state != FOC_STATE_FAULT) {
                     FOC_Stop();
                 }
             }
@@ -510,15 +507,15 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             memcpy(&pct, payload, 4);
             if (fabsf(pct) > 0.001f) {
                 FOC_Input_NotifyHostActivity(500);
-                FOC_SetControlMode(FOC_MODE_TORQUE);
-                FOC_SetTorqueRef(pct);
-                if (FOC_GetState() == FOC_STATE_IDLE || FOC_GetState() == FOC_STATE_BEEP) {
+                g_foc.status.control_mode = FOC_MODE_TORQUE;
+                FOC_SetTorqueRef(pct / 100.0f);
+                if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_BEEP) {
                     FOC_Start();
                 }
             } else {
                 FOC_Input_NotifyHostActivity(0);
-                if (FOC_GetState() != FOC_STATE_IDLE && FOC_GetState() != FOC_STATE_STOP &&
-                    FOC_GetState() != FOC_STATE_FAULT) {
+                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
+                    g_foc.status.state != FOC_STATE_FAULT) {
                     FOC_Stop();
                 }
             }
@@ -535,15 +532,15 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             memcpy(&pct, payload, 4);
             if (fabsf(pct) > 0.001f) {
                 FOC_Input_NotifyHostActivity(500);
-                FOC_SetControlMode(FOC_MODE_VOLTAGE);
+                g_foc.status.control_mode = FOC_MODE_VOLTAGE;
                 FOC_SetVoltageRef(pct);
-                if (FOC_GetState() == FOC_STATE_IDLE || FOC_GetState() == FOC_STATE_BEEP) {
+                if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_BEEP) {
                     FOC_Start();
                 }
             } else {
                 FOC_Input_NotifyHostActivity(0);
-                if (FOC_GetState() != FOC_STATE_IDLE && FOC_GetState() != FOC_STATE_STOP &&
-                    FOC_GetState() != FOC_STATE_FAULT) {
+                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
+                    g_foc.status.state != FOC_STATE_FAULT) {
                     FOC_Stop();
                 }
             }
@@ -571,7 +568,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
         }
 
         case CMD_IDENT:
-            if (FOC_GetState() != FOC_STATE_IDLE) {
+            if (g_foc.status.state != FOC_STATE_IDLE) {
                 send_ack(type, 1);
                 break;
             }
@@ -584,7 +581,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             break;
 
         case CMD_IDENT_FLUX:
-            if (FOC_GetState() != FOC_STATE_IDLE) {
+            if (g_foc.status.state != FOC_STATE_IDLE) {
                 send_ack(type, 1);
                 break;
             }
@@ -597,7 +594,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             break;
 
         case CMD_IDENT_INERTIA:
-            if (FOC_GetState() != FOC_STATE_IDLE) {
+            if (g_foc.status.state != FOC_STATE_IDLE) {
                 send_ack(type, 1);
                 break;
             }
@@ -619,8 +616,9 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 memcpy(&freq_args, &payload[9], 4);
                 Profiler_Start(&g_foc.ctrl.profiler, mode, amp_args, offset_args, freq_args);
                 if (mode != PROFILER_MODE_OFF) {
-                    FOC_SetControlMode(FOC_MODE_TORQUE);
-                    if (FOC_GetState() == FOC_STATE_IDLE || FOC_GetState() == FOC_STATE_BEEP) {
+                    g_foc.status.control_mode = FOC_MODE_TORQUE;
+                    if (g_foc.status.state == FOC_STATE_IDLE ||
+                        g_foc.status.state == FOC_STATE_BEEP) {
                         FOC_Start();
                     }
                 } else {

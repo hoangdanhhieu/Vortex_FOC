@@ -16,7 +16,6 @@ void PI_Init(PI_Controller_t* pi, float Kp, float Ki, float out_min, float out_m
     pi->dt = dt;
 }
 
-CCMRAM_FUNC void PI_Reset(PI_Controller_t* pi) {
+void PI_Reset(PI_Controller_t* pi) {
     pi->integral = 0.0f;
 }
-

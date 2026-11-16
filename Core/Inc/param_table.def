@@ -15,17 +15,17 @@
 #endif
 
 /* Current PI */
-PARAM_DEF(PID_KP_ID,      float,     kp_id,                PI_ID_KP)
-PARAM_DEF(PID_KI_ID,      float,     ki_id,                PI_ID_KI)
-PARAM_DEF(PID_KP_IQ,      float,     kp_iq,                PI_IQ_KP)
-PARAM_DEF(PID_KI_IQ,      float,     ki_iq,                PI_IQ_KI)
-PARAM_DEF(PID_BW_CUR,     float,     bw_cur,               CURRENT_LOOP_BW)
+PARAM_DEF(PID_KP_ID,      float,     kp_id,                0.0f)
+PARAM_DEF(PID_KI_ID,      float,     ki_id,                0.0f)
+PARAM_DEF(PID_KP_IQ,      float,     kp_iq,                0.0f)
+PARAM_DEF(PID_KI_IQ,      float,     ki_iq,                0.0f)
+PARAM_DEF(PID_BW_CUR,     float,     bw_cur,               0.0f)
 
 /* Speed Controller (LADRC) */
 PARAM_DEF(PID_LADRC_WC,   float,     ladrc_omega_c,        LADRC_OMEGA_C_DEFAULT)
 PARAM_DEF(PID_LADRC_WO,   float,     ladrc_omega_o,        LADRC_OMEGA_O_DEFAULT)
 PARAM_DEF(PID_LADRC_B0,   float,     ladrc_b0,             LADRC_B0_DEFAULT)
-PARAM_DEF(PID_V_RAMP,     float,     voltage_ramp_rate,    VOLTAGE_RAMP_RATE)
+PARAM_DEF(PID_V_RAMP,     float,     voltage_ramp_rate_ms,    VOLTAGE_RAMP_RATE_MS)
 
 /* Startup */
 PARAM_DEF(PID_I_STRT,     float,     startup_current,      0.0f)
@@ -37,6 +37,7 @@ PARAM_DEF(PID_HANDOFF,    float,     startup_handoff_speed, 0.0f)
 PARAM_DEF(PID_RAMP_ACC,   float,     speed_ramp_accel,     SPEED_RAMP_ACCEL)
 PARAM_DEF(PID_RAMP_DEC,   float,     speed_ramp_decel,     SPEED_RAMP_DECEL)
 PARAM_DEF(PID_I_RAMP,     float,     current_ramp_rate,    CURRENT_RAMP_RATE)
+PARAM_DEF(PID_I_CROSS,    float,     cross_current_ratio,  CROSS_CURRENT_RATIO_DEFAULT)
 
 /* Motor (0.0f = unconfigured, identified via Motor ID or loaded from Flash) */
 PARAM_DEF(PID_M_RS,       float,     motor_rs,             0.0f)
@@ -69,7 +70,9 @@ PARAM_DEF(PID_IN_MIN_VQ,   float,     input_min_vq,         INPUT_MIN_VQ_DEFAULT
 PARAM_DEF(PID_IN_DEADBAND, float,     input_deadband,       INPUT_DEADBAND_DEFAULT)
 
 /* Hardware / System */
-PARAM_DEF(PID_PWM_FREQ,    float,     pwm_frequency,        48000.0f)
+PARAM_DEF(PID_PWM_FREQ,    float,     pwm_frequency,        PWM_FREQUENCY)
+PARAM_DEF(PID_DEADTIME,    float,     deadtime_ns,          DEAD_TIME_NS)
+PARAM_DEF(PID_BEEP_VOL,    uint8_t,   beep_volume,          BEEP_DEFAULT_VOL_PCT)
 
 /* Internal Non-GUI params */
 PARAM_DEF(PID_DIRECTION,  int8_t,    direction,            1)
@@ -78,6 +81,19 @@ PARAM_DEF(PID_STALL_EN,   uint8_t,   fault_stall_enable,   FAULT_STALL_ENABLE)
 
 /* DShot */
 PARAM_DEF(PID_DSHOT_3D,    uint8_t,   dshot_3d_enable,      0)
+
+/* Calibration Offsets & Noise Profile (Persistent hardware calibration) */
+PARAM_DEF(PID_CAL_VALID,      uint8_t,   cal_valid,            0)
+PARAM_DEF(PID_CAL_OFFSET_A,   int32_t,   cal_offset_a,         2048)
+PARAM_DEF(PID_CAL_OFFSET_B,   int32_t,   cal_offset_b,         2048)
+PARAM_DEF(PID_CAL_OFFSET_C1,  int32_t,   cal_offset_c_pb1,     2048)
+PARAM_DEF(PID_CAL_OFFSET_C2,  int32_t,   cal_offset_c_op3,     2048)
+PARAM_DEF(PID_CAL_VPHASE_A,   int32_t,   cal_vphase_a,         2048)
+PARAM_DEF(PID_CAL_VPHASE_C,   int32_t,   cal_vphase_c,         2048)
+PARAM_DEF(PID_CAL_NOISE_RMS,  float,     cal_noise_rms,        0.035f)
+PARAM_DEF(PID_CAL_NOISE_PKPK, float,     cal_noise_pk_pk,      0.050f)
+PARAM_DEF(PID_CAL_IS_FLAT_THR,float,     cal_is_flat_thr,      0.025f)
+PARAM_DEF(PID_CAL_I_INJ_MIN,  float,     cal_i_inj_min,        0.075f)
 
 /* Undefine the macro so the file can be included multiple times with different definitions */
 #undef PARAM_DEF

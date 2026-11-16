@@ -107,7 +107,16 @@ class MainWindow(QMainWindow):
         self.ctrl_panel.request_status()
 
     def _on_ack(self, cmd: int, ok: bool):
-        names = {3: "Save", 4: "Load", 5: "Defaults", 6: "Start", 7: "Stop"}
+        names = {
+            3: "Save",
+            4: "Load",
+            5: "Defaults",
+            6: "Start",
+            7: "Stop",
+            0x0E: "Motor ID",
+            0x12: "Flux ID",
+            0x13: "Inertia ID",
+        }
         name = names.get(cmd, f"0x{cmd:02X}")
         status = "OK" if ok else "Failed"
         self.status_bar.showMessage(f"{name}: {status}", 3000)

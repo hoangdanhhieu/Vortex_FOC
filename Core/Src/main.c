@@ -8,6 +8,7 @@
 #include "comm_protocol.h"
 #include "flash_config.h"
 #include "foc_hardware.h"
+#include "foc_input.h"
 #include "foc_state_machine.h"
 #include "peripheral_init.h"
 
@@ -78,9 +79,11 @@ int main(void) {
     FlashConfig_Init();
     Peripheral_Init();
     FOC_Init();
+    LL_mDelay(100);
     FlashConfig_Apply();
+    FOC_Input_Init();
 
-    FOC_PlayBeep();
+    FOC_PlayBeep(FOC_BEEP_POWER_ON);
     Comm_Init();
     LL_DAC_Enable(DAC1, LL_DAC_CHANNEL_1);
 
@@ -94,7 +97,7 @@ int main(void) {
         uint32_t now = FOC_Get_1MhzCounter();
         if (now - last_wdg_check >= WDG_CHECK_TIME) {
             const float time_duration = (float)(now - last_wdg_check) * 0.000001f;
-            const uint32_t adc_target = (uint32_t)(time_duration / FOC_GetDt());
+            const uint32_t adc_target = (uint32_t)(time_duration / g_foc.dt);
             const uint32_t slow_target = (uint32_t)(time_duration / 0.001f);
             const uint32_t adc_count_min = adc_target * 85 / 100;
             const uint32_t adc_count_max = adc_target * 115 / 100;

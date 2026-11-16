@@ -103,6 +103,7 @@ enum {
     PID_USER_PLOT2,
     PID_USER_PLOT3,
     PID_THETA_ELEC,
+    PID_BOARD_MAX_I,
     PID_COUNT
 };
 

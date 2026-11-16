@@ -10,24 +10,19 @@
 /*===========================================================================*/
 
 typedef enum {
-    FOC_INPUT_SOURCE_NONE = 0,
+    FOC_INPUT_SOURCE_NONE = 0, /**< Hardware input disabled (Host GUI / USB control only) */
     FOC_INPUT_SOURCE_POT,      /**< Onboard Potentiometer (PC4) */
-    FOC_INPUT_SOURCE_CUSTOM,   /**< Pluggable external/custom driver */
-    FOC_INPUT_SOURCE_UART_USB, /**< Host GUI via USB Virtual COM Port (Override) */
-    FOC_INPUT_SOURCE_DSHOT,    /**< DShot digital protocol input (PB7 / TIM4_CH2) */
+    FOC_INPUT_SOURCE_DSHOT,    /**< DShot digital protocol input*/
 } FOC_InputSource_t;
 
 /**
  * @brief Standardized normalized command produced by any physical input driver
  */
 typedef struct {
-    float throttle;    /**< Normalized command: 0.0f to 1.0f */
     uint8_t is_active; /**< 1 if driver hardware is active and valid, 0 if disconnected/failsafe */
     uint8_t arm_req;   /**< 1 if requesting motor run, 0 if requesting motor stop */
-    int8_t dir_req;    /**< Direction: +1 = FWD, -1 = REV, 0 = Keep current.
-                             Consumed by the input layer at 1 kHz: only changeable while
-                             stopped; a mismatch while running stops the motor and it
-                             restarts in the requested direction shortly after. */
+    uint8_t is_armed_ready; /**< 1 if startup zero-throttle arming hold has latched */
+    uint8_t beacon_req;     /**< Non-zero (1..5) when DShot Beacon command is requested */
 } FOC_InputCmd_t;
 
 /**
@@ -35,11 +30,10 @@ typedef struct {
  */
 typedef struct {
     const char* name;
-    uint8_t is_high_speed; /**< 1 if driver supports high-speed streaming / ISR ingestion */
     void (*init)(void);
-    void (*read)(FOC_InputCmd_t* cmd);
-    float (*read_fast)(
-        void); /**< Optional fast hook returning normalized throttle (0.0f to 1.0f) */
+    void (*deinit)(void);
+    void (*update)(FOC_InputCmd_t* cmd);
+    float (*read_throttle)(void);
 } FOC_InputDriver_t;
 
 /*===========================================================================*/
@@ -48,9 +42,8 @@ typedef struct {
 
 void FOC_Input_Init(void);
 void FOC_Input_Update(void);
-CCMRAM_FUNC void FOC_Input_Update_HF(void);
+void FOC_Input_PushThrottle(float thr);
 void FOC_Input_SelectSource(FOC_InputSource_t source);
-void FOC_Input_RegisterCustomDriver(const FOC_InputDriver_t* driver);
 void FOC_Input_SetMinVq(float vq_min);
 void FOC_Input_NotifyHostActivity(uint16_t timeout_ms);
 uint8_t FOC_Input_IsHostControlling(void);

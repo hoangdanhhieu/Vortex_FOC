@@ -12,6 +12,9 @@
 /* Place function in SRAM1 (.RamFunc)*/
 #define RAM_FUNC __attribute__((section(".RamFunc")))
 
+/* Prevent compiler from inlining cold/transient static functions into CCMRAM callers */
+#define NOINLINE_FUNC __attribute__((noinline))
+
 /*===========================================================================*/
 /* Math Constants                                                            */
 /*===========================================================================*/
@@ -53,7 +56,7 @@ extern volatile float ADC_Vref;
 #define SYSCLK_FREQ 170000000UL
 
 /** PWM switching frequency [Hz] */
-#define PWM_FREQUENCY 48000UL
+#define PWM_FREQUENCY 48000
 
 /** Control loop frequency [Hz] */
 #define CONTROL_FREQUENCY PWM_FREQUENCY
@@ -79,6 +82,8 @@ extern volatile float ADC_Vref;
  *   -> 1 ADC cycle = ADC_PRESCALER timer ticks
  *   -> no need to convert through seconds
  */
+
+#define ADC_VREF 3.3f
 #define ADC_PRESCALER 4U
 #define ADC_CLK_HZ ((float)SYSCLK_FREQ / (float)ADC_PRESCALER) /* 42.5 MHz */
 
@@ -113,7 +118,7 @@ extern volatile float ADC_Vref;
 #define CURRENT_STF_FC 1500.0f
 
 /** Shunt resistance [Ohm] */
-#define SHUNT_RESISTANCE 0.005f
+#define SHUNT_RESISTANCE 0.003f
 
 /** OPAMP gain */
 #define OPAMP_GAIN 15.0f
@@ -125,6 +130,9 @@ extern volatile float ADC_Vref;
 /** factor = Vref / (ADC_res * Gain * R_shunt) */
 /* 1.022... is an empirical calibration factor derived from measurements */
 #define ADC_TO_CURRENT (-(1 / ((float)ADC_RESOLUTION * OPAMP_GAIN * SHUNT_RESISTANCE)))
+
+/** Absolute hardware sensing clip limit before ADC saturation [A] */
+#define BOARD_MAX_CURRENT 33.0f
 
 /*===========================================================================*/
 /* Vbus Measurement Configuration                                            */
@@ -160,26 +168,20 @@ extern volatile float ADC_Vref;
 #define SPEED_RAMP_DECEL 15000.0f
 
 /** Current reference ramp rate [A/s] */
-#define CURRENT_RAMP_RATE 50.0f
+#define CURRENT_RAMP_RATE 1.0f
+
+/** Zero-crossing virtual bridge current ratio as fraction of motor_max_curr */
+#define CROSS_CURRENT_RATIO_DEFAULT 0.80f
 
 /*===========================================================================*/
 /* PI Controller Default Gains                                               */
 /*===========================================================================*/
 
-/** Current loop bandwidth [Hz]*/
-#define CURRENT_LOOP_BW 4800.0f * TWO_PI
-
-/** Voltage ramp rate default [V/s] */
-#define VOLTAGE_RAMP_RATE 50.0f
+/** Voltage ramp rate default [ms] (0 to 100% duty ramp time) */
+#define VOLTAGE_RAMP_RATE_MS 200.0f
 
 /** Voltage mode regenerative braking current limit [A] */
 #define VOLTAGE_MODE_REGEN_CURRENT_MAX 1.5f
-
-/** Current PI controller default gains (0.0f = unconfigured, loaded from FlashConfig/GUI) */
-#define PI_ID_KP 0.0f
-#define PI_ID_KI 0.0f
-#define PI_IQ_KP 0.0f
-#define PI_IQ_KI 0.0f
 
 /** Speed loop output limits [A] (0.0f = unconfigured, set dynamically by FlashConfig) */
 #define SPEED_LOOP_OUT_MAX 0.0f
@@ -231,7 +233,7 @@ extern volatile float ADC_Vref;
 #define ALIGN_DURATION_MS 300
 
 /** Default open-loop startup ramp duration [ms] */
-#define STARTUP_RAMP_MS_DEFAULT 350.0f
+#define STARTUP_RAMP_MS_DEFAULT 500.0f
 
 /** Minimum continuous lock duration required before closed-loop handoff [ms] */
 #define HANDOFF_LOCK_DURATION_MS 10.0f
@@ -241,7 +243,7 @@ extern volatile float ADC_Vref;
 #define TRANSITION_BLEND_MS 20.0f
 
 /** Startup timeout [ms] - set to 0 to disable */
-#define STARTUP_TIMEOUT_MS 1000
+#define STARTUP_TIMEOUT_MS 500
 
 /*===========================================================================*/
 /* Safety / Fault Protection                                                 */
@@ -249,10 +251,9 @@ extern volatile float ADC_Vref;
 
 /*--- Overcurrent protection ---*/
 /** Overcurrent trip threshold [A].
- *  0.0f = AUTO: resolved at runtime to 1.25 x motor_max_curr
- *  (see FOC_GetOCThreshold()). Any positive value is used exactly as-is and
- *  may intentionally be set below motor_max_curr (test mode: current
- *  commands above the threshold will trip FAULT_OVERCURRENT). */
+ *  0.0f = DISABLED (Protection OFF).
+ *  Any positive value in [0.1A, BOARD_MAX_CURRENT] configures the exact
+ *  hardware Analog Watchdog (AWD1) trip threshold. */
 #define FAULT_OVERCURRENT_THRESHOLD 0.0f
 
 /** Overcurrent deglitch: require N consecutive samples above threshold
@@ -289,32 +290,26 @@ extern volatile float ADC_Vref;
 #define DEBUG_RUN_TIMEOUT_MS 0
 
 /*===========================================================================*/
-/* Power-On Beep (ESC-style)                                                 */
+/* Power-On & Event Beep Sequencer (ESC-style)                               */
 /*===========================================================================*/
 
-/** Enable the power-on beep sequence (0 = disabled: no beep at boot) */
-#define BEEP_ENABLE 0
+/** Enable the ESC beep sequencer (0 = disabled, 1 = enabled) */
+#define BEEP_ENABLE 1
 
-/** Beep tone frequencies [Hz] (ESC-style rising chime: 3 ascending tones + ready chime) */
-#define BEEP_FREQ_TONE1_HZ 1480.0f /**< Tone 1 (low: ~D6/F#6) */
-#define BEEP_FREQ_TONE2_HZ 1980.0f /**< Tone 2 (mid: ~B6) */
-#define BEEP_FREQ_TONE3_HZ 2640.0f /**< Tone 3 (high: ~E7) */
-#define BEEP_FREQ_READY_HZ 3520.0f /**< Tone 4 (final ready chime: ~A7) */
+/** Target peak excitation current at 100% beep volume [A] */
+#define BEEP_TARGET_CURR_MAX 2.0f
 
-/** Beep excitation amplitude: peak d-axis voltage [V], open-loop (no current loop).
- *  The resulting peak phase current is
- *  I_pk ~= 1.5*V_AMP / (2*sqrt(Rs^2 + (2*pi*f*Ls)^2))
- *  ~= 0.5..2 A across the project motor set at 0.5 V / 1.5..3.5 kHz. */
-#define BEEP_V_AMP 0.5f
+/** Default user beep volume percentage [0..100%] (0 = OFF / Mute) */
+#define BEEP_DEFAULT_VOL_PCT 0U
 
-/** Beep pattern timing [ms] (ESC-style: 3 ascending beeps, pause, 1 long ready beep) */
-#define BEEP_SHORT_MS 100.0f /**< Duration of each short beep */
-#define BEEP_GAP_MS 100.0f   /**< Gap between the short beeps */
-#define BEEP_PAUSE_MS 250.0f /**< Pause before the final long beep */
-#define BEEP_LONG_MS 400.0f  /**< Duration of the final "ready" beep */
+/** Fallback d-axis voltage peak [V] when motor Rs/Ls are not yet identified */
+#define BEEP_V_AMP_FALLBACK 0.5f
 
-/** Hard safety timeout for the whole beep sequence [ms] */
-#define BEEP_MAX_TOTAL_MS 5000.0f
+/** Absolute upper voltage clamp [V] for open-loop beep excitation */
+#define BEEP_V_MAX_ABS 3.0f
+
+/** End-of-note linear fade-out duration [ms] to suppress click/pop transients */
+#define BEEP_FADE_MS 2.0f
 
 /*===========================================================================*/
 /* Motor ID Configuration - Dual-LPF & Smart Auto-Resolution                */
@@ -362,9 +357,8 @@ extern volatile float ADC_Vref;
 /*===========================================================================*/
 /* Input & Throttle Defaults                                                 */
 /*===========================================================================*/
-#define INPUT_SOURCE_DEFAULT \
-    1.0f /**< Default hardware: 0=NONE, 1=POT, 2=CUSTOM, 3=UART/USB, 4=DSHOT */
-#define INPUT_MODE_DEFAULT 2.0f /**< Default input control mode: 0=SPEED, 1=TORQUE, 2=VOLTAGE */
+#define INPUT_SOURCE_DEFAULT 1.0f /**< Default hardware: 0=NONE, 1=POT, 2=DSHOT */
+#define INPUT_MODE_DEFAULT 2.0f   /**< Default input control mode: 0=SPEED, 1=TORQUE, 2=VOLTAGE */
 #define INPUT_MIN_SPEED_DEFAULT 600.0f /**< Minimum speed for throttle setpoint [rad/s elec] */
 #define INPUT_MIN_CURRENT_DEFAULT 0.5f /**< Minimum current for throttle setpoint [A] */
 #define INPUT_MIN_VQ_DEFAULT 0.05f     /**< Minimum voltage ratio [0.0 to 1.0] */
@@ -381,27 +375,5 @@ extern volatile float ADC_Vref;
 #define DSHOT_THROTTLE_MAX 2047U     /**< Maximum throttle value */
 #define DSHOT_3D_DEADBAND 1048U      /**< 3D mode zero-throttle midpoint */
 #define DSHOT_DMA_BUF_SIZE 32U       /**< 16 bits * 2 edge timestamps */
-
-/*===========================================================================*/
-/* Flying Start & Active Braking Configuration                               */
-/*===========================================================================*/
-
-/** Minimum active dynamic brake duration [ms] to allow current to settle */
-#define BRAKE_MIN_DURATION_MS 50U
-
-/** Maximum fail-safe active dynamic brake timeout [ms] */
-#define BRAKE_MAX_DURATION_MS 1000U
-
-/** Multiplier for adaptive noise floor threshold (4-sigma = 99.994% confidence) */
-#define BRAKE_NOISE_SIGMA_MULT 4.0f
-
-/** Lower clamp for exit current threshold [A] (well above 10-30mA ADC DC offset floor) */
-#define BRAKE_EXIT_CURR_MIN 0.15f
-
-/** Upper clamp for exit current threshold [A] */
-#define BRAKE_EXIT_CURR_MAX 0.50f
-
-/** Debounce duration [ms] confirming motor has stopped before transitioning to ALIGN */
-#define BRAKE_DEBOUNCE_MS 10U
 
 #endif /* FOC_CONFIG_H */

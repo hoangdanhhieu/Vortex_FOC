@@ -79,9 +79,8 @@ CCMRAM_FUNC void foc_apply_deadtime_compensation(float* out_a, float* out_b, flo
     if (dt_comp <= 0.0f) return;
 
     if (g_foc.status.state == FOC_STATE_SELF_COMMISSION ||
-        g_foc.status.state == FOC_STATE_CALIBRATION || g_foc.status.state == FOC_STATE_BRAKE ||
-        g_foc.status.state == FOC_STATE_BEEP || g_foc.status.state == FOC_STATE_STARTUP ||
-        g_foc.status.state == FOC_STATE_ALIGN) {
+        g_foc.status.state == FOC_STATE_CALIBRATION || g_foc.status.state == FOC_STATE_BEEP ||
+        g_foc.status.state == FOC_STATE_STARTUP || g_foc.status.state == FOC_STATE_ALIGN) {
         return;
     }
 
@@ -96,8 +95,12 @@ CCMRAM_FUNC void foc_apply_deadtime_compensation(float* out_a, float* out_b, flo
     }
     if (dt_comp <= 0.0001f) return;
 
+    float cos_th, sin_th;
+    cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
+    float Ialpha_pred, Ibeta_pred;
+    inverse_park_transform(g_foc.data.Id, g_foc.data.Iq, cos_th, sin_th, &Ialpha_pred, &Ibeta_pred);
     float Ia, Ib, Ic;
-    inverse_clarke_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, &Ia, &Ib, &Ic);
+    inverse_clarke_transform(Ialpha_pred, Ibeta_pred, &Ia, &Ib, &Ic);
 
     float inv_i_th = g_foc.data.inv_i_th;
     *out_a = deadtime_compensate_phase(*out_a, Ia, inv_i_th, dt_comp, max_limit);

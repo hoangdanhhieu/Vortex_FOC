@@ -19,33 +19,26 @@ static uint32_t ov_count = 0;            /* OV debounce counter (1 ms ticks) */
 static uint32_t uv_count = 0;            /* UV debounce counter (1 ms ticks) */
 static uint32_t overspeed_count = 0;     /* Overspeed/NaN debounce counter (1 ms ticks) */
 
-/* Multi-layer stall detector filter states */
-static float s_p_em_flt = 0.0f;         /* Filtered electromechanical power [W] */
-static float s_s_app_flt = 0.0f;        /* Filtered apparent power [VA] */
+/* Scale-invariant physical stall & desync detector states */
 static float s_stall_risk_accum = 0.0f; /* Leaky stall risk accumulator [0.0 to 1.0] */
-static float s_omega_prev = 0.0f;       /* Previous electrical speed (stall dynamics gate) */
+static float s_bemf_peak = 0.0f;        /* 1kHz online BEMF envelope peak tracker [V] */
+static float s_bemf_valley = 0.0f;      /* 1kHz online BEMF envelope valley tracker [V] */
 
 extern volatile float ADC_Vref;
 
 void FOC_ResetStallDetector(void) {
-    s_p_em_flt = 0.0f;
-    s_s_app_flt = 0.0f;
     s_stall_risk_accum = 0.0f;
-    s_omega_prev = 0.0f;
+    s_bemf_peak = 0.0f;
+    s_bemf_valley = 0.0f;
     g_foc.data.stall_risk = 0.0f;
-    g_foc.data.eta_em = 1.0f;
+    g_foc.data.eta_em = 10.0f;
     g_foc.data.d_desync = 0.0f;
     g_foc.data.r_bemf = 1.0f;
 }
 
 void FOC_Safety() {
-    /* Software OV/UV protection (replaces hardware AWD2).
-     * 10 ms debounce: the 16 Hz Vbus IIR already smooths single-sample
-     * glitches; the window rejects load-sag / connector transients.
-     * BRAKE/ALIGN included: regenerative braking is where OV actually
-     * happens. */
     if (g_foc.status.state == FOC_STATE_RUN || g_foc.status.state == FOC_STATE_STARTUP ||
-        g_foc.status.state == FOC_STATE_BRAKE || g_foc.status.state == FOC_STATE_ALIGN) {
+        g_foc.status.state == FOC_STATE_ALIGN) {
         if (g_foc.data.Vbus > g_foc.cfg.fault_ov_threshold) {
             if (ov_count < 10) ov_count++;
             if (ov_count >= 10) {
@@ -77,20 +70,15 @@ void FOC_Safety() {
     }
 
     if (g_foc.status.state == FOC_STATE_RUN) {
-        /* 1. Ground fault protection: intentionally NOT implemented.
-         * With 2-shunt sensing the third phase is reconstructed as
-         * Ic = -(Ia + Ib), so (Ia + Ib + Ic) is identically zero and a
-         * sum-of-phases check can never fire; a real ground-fault current
-         * also bypasses the phase shunts. (Layer removed, kept as a note
-         * for protection-inventory traceability.) */
+        uint8_t reversal_grace = FOC_IsReversalGraceActive();
 
-        /* 2. Observer Integrity & Overspeed Protection (NaN/Inf + 5 ms debounce) */
-        {
+        /* 1. Observer Integrity & Overspeed Protection (NaN/Inf + 5 ms debounce) */
+        if (!reversal_grace) {
             float omega_abs = fabsf(g_foc.data.omega_elec);
             if (!isfinite(omega_abs) ||
                 (g_foc.cfg.motor_max_spd > 0.0f && omega_abs > g_foc.cfg.motor_max_spd * 1.25f)) {
-                if (overspeed_count < 5) overspeed_count++;
-                if (overspeed_count >= 5) {
+                if (overspeed_count < 10) overspeed_count++;
+                if (overspeed_count >= 10) {
                     FOC_EnableDrivers(0);
                     g_foc.status.fault = FOC_FAULT_OBSERVER_FAIL;
                     g_foc.status.state = FOC_STATE_FAULT;
@@ -99,96 +87,124 @@ void FOC_Safety() {
             } else if (overspeed_count > 0) {
                 overspeed_count--;
             }
+        } else {
+            overspeed_count = 0;
         }
 
-        /* 3. Advanced 4-Layer Stall & Desynchronization Protection */
-        if (g_foc.cfg.fault_stall_enable) {
-            float i_max = g_foc.cfg.motor_max_curr;
-            float v_bus = g_foc.data.Vbus;
+        /* 2. Advanced 3-Pillar & Scale-Invariant Stall/Desync Protection (Hardware Noise Adaptive)
+         */
+        if (g_foc.cfg.fault_stall_enable && !reversal_grace) {
+            float v_d = g_foc.data.Vd;
+            float v_q = g_foc.data.Vq;
+            float i_d = g_foc.data.Id;
+            float i_q = g_foc.data.Iq;
+            float i_mag = sqrtf(i_d * i_d + i_q * i_q);
             float rs = g_foc.cfg.motor_rs;
             float flux = g_foc.cfg.motor_flux;
+            float omega_est = g_foc.data.omega_elec;
+            float speed_abs = fabsf(omega_est);
+            float handoff_speed = g_foc.cfg.startup_handoff_speed;
 
-            /* Adaptive minimum sensing speed: 70% of handoff speed */
-            float handoff_omega = g_foc.cfg.startup_handoff_speed;
-            if (handoff_omega < 70.0f) handoff_omega = 500.0f;
-            float omega_stall_min_elec = 0.70f * handoff_omega;
+            /* Active current floor: dynamically adapts to calibrated peak-to-peak hardware noise */
+            float active_current_floor = fmaxf(2.0f * g_foc.cfg.cal_noise_pk_pk, 0.50f);
+            uint8_t has_active_current = (i_mag >= active_current_floor);
 
-            float i_stall_thr = 0.20f * i_max;
-            if (i_stall_thr < 0.80f) i_stall_thr = 0.80f;
+            /* --- 1. Scale-Invariant Dimensionless Metrics Calculation --- */
+            /* Power Ratio: P_in / P_loss_cu (Conservation of Energy - universally applied across
+             * all modes) */
+            float p_in = 1.5f * (v_d * i_d + v_q * i_q);
+            float p_cu_cfg = 1.5f * rs * (i_mag * i_mag);
+            float power_ratio = (p_cu_cfg > 0.05f) ? (p_in / p_cu_cfg) : 10.0f;
 
-            float s_floor = 0.03f * v_bus * i_max;
-            float e_floor = 0.35f * (omega_stall_min_elec * flux);
+            /* d-axis cross-coupling leakage ratio: |Id| / I_mag */
+            float id_ratio = (i_mag > 0.10f) ? (fabsf(i_d) / i_mag) : 0.0f;
 
-            /* --- Layer 1: Universal Electromechanical Power Conversion Ratio (eta_em) --- */
-            float p_in = 1.5f * (g_foc.data.Vd * g_foc.data.Id + g_foc.data.Vq * g_foc.data.Iq);
-            float p_cu =
-                1.5f * rs * (g_foc.data.Id * g_foc.data.Id + g_foc.data.Iq * g_foc.data.Iq);
-            float p_em = p_in - p_cu;
-            float v_mag = sqrtf(g_foc.data.Vd * g_foc.data.Vd + g_foc.data.Vq * g_foc.data.Vq);
-            float i_mag = sqrtf(g_foc.data.Id * g_foc.data.Id + g_foc.data.Iq * g_foc.data.Iq);
-            float s_app = 1.5f * v_mag * i_mag;
-
-            /* 5 ms Low-Pass Filter (alpha = dt / (dt + tau) = 0.001 / 0.006 = 0.1667f) */
-            s_p_em_flt += 0.1667f * (p_em - s_p_em_flt);
-            s_s_app_flt += 0.1667f * (s_app - s_s_app_flt);
-
-            float eta_em = (s_s_app_flt > s_floor) ? (s_p_em_flt / s_s_app_flt) : 0.50f;
-            if (eta_em > 1.0f) eta_em = 1.0f;
-            if (eta_em < -1.0f) eta_em = -1.0f;
-
-            /* --- Layer 2: Vector Orthogonality Check (D_desync) --- */
-            /* Read synchronous BEMF magnitude and PLL angle tracking error directly from ISR */
+            /* BEMF tracking ratio: BEMF_mag / (omega_est * flux) */
             float e_obs_mag = g_foc.ctrl.smo.bemf_mag;
-            float d_desync =
-                (e_obs_mag > e_floor) ? fabsf(sinf(g_foc.ctrl.smo.theta_err * PI)) : 0.0f;
+            float e_expected = speed_abs * flux;
+            float bemf_ratio = (e_expected > 0.10f) ? (e_obs_mag / e_expected) : 1.0f;
 
-            /* --- Layer 3: Back-EMF Residual Ratio (R_bemf / Hallucination Buster) --- */
-            float speed_elec_abs = fabsf(g_foc.data.omega_elec);
-            float e_expect = flux * speed_elec_abs;
-            float r_bemf = 1.0f;
-            if (speed_elec_abs > omega_stall_min_elec) {
-                float denom = (e_expect > e_floor) ? e_expect : e_floor;
-                r_bemf = e_obs_mag / denom;
-                if (r_bemf > 1.0f) r_bemf = 1.0f;
+            /* 1 kHz online BEMF peak/valley envelope tracker for cyclical ripple estimation */
+            if (e_obs_mag > s_bemf_peak) {
+                s_bemf_peak = e_obs_mag;
+            } else {
+                s_bemf_peak -= 0.03f * (s_bemf_peak - e_obs_mag);
             }
+            if (e_obs_mag < s_bemf_valley) {
+                s_bemf_valley = e_obs_mag;
+            } else {
+                s_bemf_valley += 0.03f * (e_obs_mag - s_bemf_valley);
+            }
+            float ripple_cyclic =
+                (s_bemf_peak > 0.05f) ? ((s_bemf_peak - s_bemf_valley) / s_bemf_peak) : 0.0f;
 
-            /* Record real-time diagnostic telemetry */
-            g_foc.data.eta_em = eta_em;
-            g_foc.data.d_desync = d_desync;
-            g_foc.data.r_bemf = r_bemf;
+            /* --- Real-Time Telemetry Logging --- */
+            g_foc.data.eta_em = power_ratio;
+            g_foc.data.d_desync = id_ratio;
+            g_foc.data.r_bemf = bemf_ratio;
             g_foc.data.stall_risk = s_stall_risk_accum;
 
-            /* --- Layer 4: Multi-Condition Synthesis & Leaky Risk Accumulator --- */
-            float i_active_thr = 0.08f * i_max;
-            if (i_active_thr < 0.80f) i_active_thr = 0.80f;
-            uint8_t has_active_current = (i_mag >= i_active_thr || s_app >= 5.0f);
-            uint8_t has_stall_current = (i_mag >= i_stall_thr || s_app >= s_floor);
-            uint8_t is_motoring = (g_foc.data.omega_elec * g_foc.data.Iq > 0.0f);
+            /* --- 2. 4-Quadrant Smart Regenerative Braking Lockout --- */
+            float dir_sign = g_foc.status.reverse;
+            uint8_t is_braking = 0;
 
-            /* Condition A: Observer Hallucination & High-Speed Desynchronization */
-            /* Observer reports high electrical speed (rad/s elec), but physical Back-EMF is absent (R_bemf < 0.20).
-             * Gated only on active current, never gated on eta_em to avoid decoupling power
-             * artifacts */
-            uint8_t is_hallucination = has_active_current &&
-                                       (speed_elec_abs > 1.2f * omega_stall_min_elec) &&
-                                       (r_bemf < 0.20f);
+            if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
+                uint8_t is_braking_phys = ((omega_est * dir_sign) > handoff_speed) &&
+                                          ((i_q * dir_sign) < -active_current_floor);
+                float vq_tgt = g_foc.cmd.Vq_ref_target;
+                uint8_t rev_req = (fabsf(vq_tgt) > 1e-3f) && ((vq_tgt * dir_sign) < 0.0f);
+                uint8_t zero_stop =
+                    (fabsf(vq_tgt) <= 1e-3f) && ((i_q * dir_sign) < -active_current_floor);
+                is_braking = is_braking_phys || rev_req || zero_stop;
+            } else if (g_foc.status.control_mode == FOC_MODE_SPEED) {
+                uint8_t zero_spd_cmd = (fabsf(g_foc.cmd.speed_ref) <= 1.0f) &&
+                                       (fabsf(g_foc.cmd.speed_ref_target) <= 1.0f);
+                is_braking = ((g_foc.cmd.Iq_ref * dir_sign) < -0.05f) || zero_spd_cmd;
+            } else { /* FOC_MODE_TORQUE */
+                is_braking = ((g_foc.cmd.Iq_ref * dir_sign) < -0.05f);
+            }
 
-            /* Condition B: Sudden Mechanical Jam / Hard Stall */
-            uint8_t is_hard_jam =
-                has_stall_current && is_motoring && (eta_em < 0.15f) &&
-                (d_desync > 0.40f || r_bemf < 0.30f || speed_elec_abs < omega_stall_min_elec);
+            uint8_t fault_candidate = 0;
+            uint8_t is_catastrophic = 0;
 
-            /* Condition C: Low-Speed Overload Stall (disabled when regenerative braking) */
-            uint8_t is_overload_stall = has_stall_current && is_motoring &&
-                                        (speed_elec_abs < omega_stall_min_elec) && (eta_em < 0.20f);
+            /* Branch 0: Numerical explosion / Observer clamping runaway (Physical speed ceiling
+             * exceeded) */
+            if (speed_abs > 1.35f * g_foc.cfg.motor_max_spd) {
+                fault_candidate = 1;
+                is_catastrophic = 1;
+            } else if (!is_braking) {
+                /* Branch 1: Mechanical power collapse / Rotor stall / Observer hallucination
+                 * (Conservation of Energy) */
+                if (power_ratio <= 1.85f && has_active_current) {
+                    fault_candidate = 1;
+                    is_catastrophic = 1;
+                }
+                /* Branch 2: Kinematic pole slip / Forced reverse rotation (Rotor jerked backward by
+                   external load) */
+                else if ((omega_est * dir_sign) < -100.0f && has_active_current) {
+                    fault_candidate = 1;
+                    is_catastrophic = 1;
+                }
+                /* Branch 3: Broken phase (A/B/C disconnect) or severe elliptical BEMF distortion */
+                else if (ripple_cyclic > 0.25f && id_ratio > 0.25f && has_active_current) {
+                    fault_candidate = 1;
+                    is_catastrophic = 1;
+                }
+                /* Branch 4: Progressive overload pulling down rotor speed */
+                else if (power_ratio <= 1.95f && has_active_current) {
+                    fault_candidate = 1;
+                }
+            }
 
             float risk_rate;
-            if (is_hallucination || is_hard_jam) {
-                risk_rate = 0.035f; /* Catastrophic trip in ~28-35 ms */
-            } else if (is_overload_stall) {
-                risk_rate = 0.020f; /* Progressive overload trip in ~50 ms */
+            if (fault_candidate) {
+                if (is_catastrophic) {
+                    risk_rate = 0.030f;
+                } else {
+                    risk_rate = 0.015f;
+                }
             } else {
-                risk_rate = -0.015f; /* Healthy operation: leak back to zero */
+                risk_rate = -0.020f;
             }
 
             s_stall_risk_accum += risk_rate;
@@ -226,7 +242,7 @@ void FOC_Safety() {
 }
 
 void FOC_SlowTask(void) {
-    if (FOC_GetState() == FOC_STATE_IDLE && !FOC_IsInitialized()) return;
+    if (g_foc.status.state == FOC_STATE_IDLE && !FOC_IsInitialized()) return;
     if (!FOC_IsInitialized()) return;
 
     FOC_Input_Update();
@@ -241,16 +257,9 @@ void FOC_SlowTask(void) {
         if (g_foc.data.Vbus < 1.0f) g_foc.data.Vbus = 1.0f;
         g_foc.data.Vbus_inv = 1.0f / g_foc.data.Vbus;
 
-        float i_th_noise = g_foc.noise_profile.noise_pk_pk * 1.5f;
-        float i_th_ripple = 0.0f;
-        if (g_foc.cfg.motor_ls > 1e-7f) {
-            i_th_ripple = g_foc.data.Vbus / (4.0f * g_foc.cfg.pwm_frequency * g_foc.cfg.motor_ls);
-        }
-        float i_th_min = g_foc.cfg.motor_max_curr * 0.03f;
-        float i_th = i_th_noise;
-        if (i_th_ripple > i_th) i_th = i_th_ripple;
-        if (i_th_min > i_th) i_th = i_th_min;
-        if (i_th < 0.050f) i_th = 0.050f;
+        float i_th_noise = g_foc.cfg.cal_noise_pk_pk * 3.0f;
+        float i_th_min = g_foc.cfg.motor_max_curr * 0.02f;
+        float i_th = (i_th_noise > i_th_min) ? i_th_noise : i_th_min;
         g_foc.data.inv_i_th = 1.0f / i_th;
     }
 
@@ -258,14 +267,14 @@ void FOC_SlowTask(void) {
         g_foc.status.state == FOC_STATE_ALIGN) {
         float p_elec = 1.5f * (g_foc.data.Vd * g_foc.data.Id + g_foc.data.Vq * g_foc.data.Iq);
         float ibus_raw = (g_foc.data.Vbus > 1.0f) ? (p_elec * g_foc.data.Vbus_inv) : 0.0f;
-        g_foc.data.Ibus = g_foc.data.Ibus + 0.01f * (ibus_raw - g_foc.data.Ibus);
+        g_foc.data.Ibus = g_foc.data.Ibus + 0.02f * (ibus_raw - g_foc.data.Ibus);
     } else {
         g_foc.data.Ibus = 0.0f;
     }
     FOC_Safety();
 
     if (g_foc.status.state == FOC_STATE_RUN) {
-        MotorID_InertiaSlowTask(); /* Offline inertia measurement hook */
+        MotorID_InertiaSlowTask();
 
         if (g_foc.status.control_mode == FOC_MODE_SPEED) {
             if (!g_foc.status.in_transition) {
@@ -288,8 +297,8 @@ void FOC_SlowTask(void) {
             float target_iq =
                 LADRC_Update(&g_foc.ctrl.speed, g_foc.cmd.speed_ref, g_foc.data.omega_elec);
 
-            g_foc.cmd.Iq_ref = target_iq;
-            LADRC_SetActualOutput(&g_foc.ctrl.speed, g_foc.cmd.Iq_ref);
+            g_foc.cmd.Iq_ref_target = target_iq;
+            LADRC_SetActualOutput(&g_foc.ctrl.speed, g_foc.cmd.Iq_ref_target);
         }
     }
 
