@@ -28,7 +28,6 @@ typedef enum {
     FOC_STATE_STARTUP,         /**< Open-loop ramp-up */
     FOC_STATE_RUN,             /**< Closed-loop FOC running */
     FOC_STATE_ZERO_CROSS,      /**< Seamless 4-quadrant zero-crossing virtual commutation bridge */
-    FOC_STATE_STOP,            /**< Controlled stop */
     FOC_STATE_FAULT,           /**< Fault condition */
     FOC_STATE_SELF_COMMISSION, /**< Motor parameter identification */
     FOC_STATE_COAST_FLUX_ID,   /**< Freewheeling BEMF measurement */
@@ -293,7 +292,7 @@ void FOC_Stop(void);
 void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data);
 
 /**
- * @brief Set FOC control mode (only allowed when motor is IDLE, STOP, or BEEP, or already in mode)
+ * @brief Set FOC control mode (only allowed when motor is IDLE or BEEP, or already in mode)
  * @param mode Target control mode
  * @return 1 if mode is active/updated, 0 if rejected
  */
@@ -347,7 +346,7 @@ uint8_t FOC_IsProfilerActive(void);
 /**
  * @brief Start a specific ESC beep sequence by type
  *
- * No-ops unless the motor is IDLE/STOP with no active fault. Excites the motor
+ * No-ops unless the motor is IDLE with no active fault. Excites the motor
  * with an impedance-compensated open-loop signal, then returns to IDLE. A start
  * command, fault, or sequence timeout aborts it immediately.
  *

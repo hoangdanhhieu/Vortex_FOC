@@ -22,7 +22,6 @@ STATE_COLORS = {
     protocol.FocState.STARTUP:         YELLOW,
     protocol.FocState.RUN:             GREEN,
     protocol.FocState.ZERO_CROSS:      ACCENT,
-    protocol.FocState.STOP:            YELLOW,
     protocol.FocState.FAULT:           RED,
     protocol.FocState.SELF_COMMISSION: YELLOW,
     protocol.FocState.COAST_FLUX_ID:   YELLOW,
@@ -312,9 +311,10 @@ class ControlPanel(QGroupBox):
         if pid == protocol.ParamId.M_MAX_SPD and gui_val > 0:
             self.set_max_speed(int(round(gui_val)))
 
-    def _on_stop(self):
+    def _reset_sliders_to_zero(self):
         self._throttle_timer.stop()
         self._active_mode = None
+        self._zero_send_count = 0
 
         self.slider_spd.blockSignals(True)
         self.slider_spd.setValue(0)
@@ -331,6 +331,8 @@ class ControlPanel(QGroupBox):
         self.lbl_volt_val.setText("0.0 %")
         self.slider_volt.blockSignals(False)
 
+    def _on_stop(self):
+        self._reset_sliders_to_zero()
         self._serial.send(protocol.build_simple(protocol.CmdType.STOP))
 
     def _on_dir_changed(self, idx):
@@ -450,14 +452,18 @@ class ControlPanel(QGroupBox):
             self._throttle_timer.stop()
 
     def _on_clear(self):
+        self._reset_sliders_to_zero()
         self._serial.send(protocol.build_simple(protocol.CmdType.CLEAR))
 
     def _update_status(self, st: dict):
         state_idx = st.get('state', 0)
         name = protocol.STATE_NAMES[state_idx] if state_idx < len(protocol.STATE_NAMES) else f"? ({state_idx})"
 
-        # Display specific fault description when in FAULT state
+        # Display specific fault description and immediately disarm throttle sliders on FAULT
         if state_idx == protocol.FocState.FAULT:
+            if (self._active_mode is not None or self.slider_spd.value() != 0
+                    or self.slider_trq.value() != 0 or self.slider_volt.value() != 0):
+                self._reset_sliders_to_zero()
             fault_idx = st.get('fault', 0)
             fault_name = FAULT_NAMES[fault_idx] if fault_idx < len(FAULT_NAMES) else f"UNKNOWN ({fault_idx})"
             name = f"FAULT ({fault_name})"
@@ -478,7 +484,7 @@ class ControlPanel(QGroupBox):
         self.dir_combo.blockSignals(True)
         self.dir_combo.setCurrentIndex(dir_val)
         self.dir_combo.blockSignals(False)
-        self.dir_combo.setEnabled(state_idx in (protocol.FocState.IDLE, protocol.FocState.STOP, protocol.FocState.FAULT))
+        self.dir_combo.setEnabled(state_idx in (protocol.FocState.IDLE, protocol.FocState.FAULT))
 
     def request_status(self):
         self._serial.send(protocol.build_simple(protocol.CmdType.STATUS))

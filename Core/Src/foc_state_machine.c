@@ -229,7 +229,12 @@ void FOC_Stop(void) {
     __disable_irq();
 
     FOC_EnableDrivers(0);
-    g_foc.status.state = FOC_STATE_IDLE;
+    if (g_foc.cfg.fault_oc_threshold > 0.001f) {
+        FOC_HW_EnableAWD();
+    }
+    if (g_foc.status.state != FOC_STATE_FAULT) {
+        g_foc.status.state = FOC_STATE_IDLE;
+    }
     FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
 
     FOC_Beep_Stop();
@@ -280,27 +285,6 @@ NOINLINE_FUNC static void FOC_StateIdle(void) {
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
-}
-
-NOINLINE_FUNC static void FOC_StateStop(void) {
-    FOC_EnableDrivers(0);
-    if (g_foc.cfg.fault_oc_threshold > 0.001f) {
-        FOC_HW_EnableAWD();
-    }
-    g_foc.data.duty_a = 0.5f;
-    g_foc.data.duty_b = 0.5f;
-    g_foc.data.duty_c = 0.5f;
-    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
-    g_foc.data.omega_elec = 0.0f;
-    g_foc.data.Ialpha_flt = 0.0f;
-    g_foc.data.Ibeta_flt = 0.0f;
-    g_foc.data.I_sq_flt = 0.0f;
-    g_foc.data.l_inc_ratio = 1.0f;
-    g_foc.data.l_app_ratio = 1.0f;
-    g_foc.status.was_transition = 0;
-    if (g_foc.status.state != FOC_STATE_FAULT) {
-        g_foc.status.state = FOC_STATE_IDLE;
-    }
 }
 
 NOINLINE_FUNC static void FOC_StateFault(void) {
@@ -415,7 +399,7 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
 #if DEBUG_RUN_TIMEOUT_MS > 0
             if (g_foc.status.run_counter >=
                 (uint32_t)(DEBUG_RUN_TIMEOUT_MS * 0.001f * g_foc.cfg.pwm_frequency)) {
-                FOC_StateStop();
+                FOC_Stop();
                 Comm_StreamPush();
                 return;
             }
@@ -434,11 +418,6 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
                 return;
             }
             break;
-
-        case FOC_STATE_STOP:
-            FOC_StateStop();
-            Comm_StreamPush();
-            return;
 
         case FOC_STATE_SELF_COMMISSION:
             FOC_StateSelfCommission();
@@ -838,7 +817,7 @@ NOINLINE_FUNC static void FOC_StateSelfCommission(void) {
     if (id_result.state == MOTOR_ID_STATE_COMPLETE || id_result.state == MOTOR_ID_STATE_ERROR) {
         FOC_BeepType_t tone =
             (id_result.state == MOTOR_ID_STATE_COMPLETE) ? FOC_BEEP_SUCCESS : FOC_BEEP_ERROR;
-        FOC_StateStop();
+        FOC_Stop();
         FOC_PlayBeep(tone);
     }
 }
@@ -849,8 +828,7 @@ NOINLINE_FUNC static void FOC_StateSelfCommission(void) {
 uint8_t FOC_SetControlMode(FOC_ControlMode_t mode) {
     if (mode > FOC_MODE_VOLTAGE) return 0U;
     if (g_foc.status.control_mode == mode) return 1U;
-    if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
-        g_foc.status.state != FOC_STATE_BEEP) {
+    if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_BEEP) {
         return 0U;
     }
     g_foc.status.control_mode = mode;
@@ -858,24 +836,20 @@ uint8_t FOC_SetControlMode(FOC_ControlMode_t mode) {
 }
 
 CCMRAM_FUNC void FOC_SetSpeedRef(float speed_rad) {
-    if (g_foc.status.state == FOC_STATE_STOP) return;
     g_foc.cmd.speed_ref_target = speed_rad;
 }
 
 CCMRAM_FUNC void FOC_SetTorqueRef(float torque_percent) {
-    if (g_foc.status.state == FOC_STATE_STOP) return;
     float pct = clampf(torque_percent, -1.0f, 1.0f);
     g_foc.cmd.Iq_ref_target = pct * g_foc.cfg.motor_max_curr;
 }
 
 CCMRAM_FUNC void FOC_SetTorqueCurrent(float iq_target_amp) {
-    if (g_foc.status.state == FOC_STATE_STOP) return;
     g_foc.cmd.Iq_ref_target =
         clampf(iq_target_amp, -g_foc.cfg.motor_max_curr, g_foc.cfg.motor_max_curr);
 }
 
 CCMRAM_FUNC void FOC_SetVoltageRef(float voltage_percent) {
-    if (g_foc.status.state == FOC_STATE_STOP) return;
     float pct = clampf(voltage_percent, -1.0f, 1.0f);
     g_foc.cmd.Vq_ref_target = pct;
 }
@@ -924,7 +898,7 @@ void FOC_EnableDriver(uint8_t phase, uint8_t enable) {
 }
 
 void FOC_StartSelfCommission(void) {
-    if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_STOP) {
+    if (g_foc.status.state == FOC_STATE_IDLE) {
         MotorID_Start();
         FOC_Start();
         FOC_EnableDrivers(0);
@@ -970,7 +944,7 @@ void FOC_PlayBeep(FOC_BeepType_t type) {
     if (g_foc.cfg.beep_volume == 0U) {
         return;
     }
-    if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP) {
+    if (g_foc.status.state != FOC_STATE_IDLE) {
         return;
     }
     if (g_foc.status.fault != FOC_FAULT_NONE) {

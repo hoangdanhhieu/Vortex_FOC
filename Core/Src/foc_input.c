@@ -150,7 +150,7 @@ void FOC_Input_Update(void) {
         } else {
             s_host_controlling = 0;
             FOC_State_t state = g_foc.status.state;
-            if (state != FOC_STATE_IDLE && state != FOC_STATE_STOP && state != FOC_STATE_FAULT) {
+            if (state != FOC_STATE_IDLE && state != FOC_STATE_FAULT) {
                 FOC_Input_DoStop();
             }
         }
@@ -216,8 +216,8 @@ void FOC_Input_Update(void) {
         } else if (active_rise && s_input_source == FOC_INPUT_SOURCE_DSHOT) {
             FOC_PlayBeep(FOC_BEEP_SIGNAL_LOCK);
         }
-    } else if (state != FOC_STATE_IDLE && state != FOC_STATE_FAULT && state != FOC_STATE_STOP &&
-               state != FOC_STATE_BEEP && !s_armed) {
+    } else if (state != FOC_STATE_IDLE && state != FOC_STATE_FAULT && state != FOC_STATE_BEEP &&
+               !s_armed) {
         FOC_Input_DoStop();
     } else if (s_armed && s_input_source == FOC_INPUT_SOURCE_POT) {
         FOC_Input_MapThrottle(s_throttle_active);

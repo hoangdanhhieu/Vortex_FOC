@@ -241,8 +241,7 @@ void FlashConfig_Apply(void) {
     LADRC_SetLimits(&g_foc.ctrl.speed, -i_limit, i_limit);
 
     /* Update SMO Observer - Only re-init if motor is stopped */
-    if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_STOP ||
-        g_foc.status.state == FOC_STATE_FAULT) {
+    if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_FAULT) {
         SMO_Init(&g_foc.ctrl.smo);
     }
     SMO_SetTiming(&g_foc.ctrl.smo, g_foc.dt);

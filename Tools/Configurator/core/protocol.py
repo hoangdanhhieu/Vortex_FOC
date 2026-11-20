@@ -115,16 +115,15 @@ class FocState(IntEnum):
     STARTUP         = 5
     RUN             = 6
     ZERO_CROSS      = 7
-    STOP            = 8
-    FAULT           = 9
-    SELF_COMMISSION = 10
-    COAST_FLUX_ID   = 11
-    BEEP            = 12
+    FAULT           = 8
+    SELF_COMMISSION = 9
+    COAST_FLUX_ID   = 10
+    BEEP            = 11
 
 
 STATE_NAMES = [
     "IDLE", "CAL", "DETECT", "FLY_START", "ALIGN", "STARTUP",
-    "RUN", "ZERO_CROSS", "STOP", "FAULT", "IDENT", "COAST_ID",
+    "RUN", "ZERO_CROSS", "FAULT", "IDENT", "COAST_ID",
     "BEEP"
 ]
 

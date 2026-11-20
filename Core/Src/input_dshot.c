@@ -318,10 +318,10 @@ static uint16_t DShot_PrepareTelemetryFrame(uint16_t arr_ticks, uint16_t* out_bu
     float abs_speed = (omega_elec >= 0.0f) ? omega_elec : -omega_elec;
     FOC_State_t foc_state = FOC_GetStatus()->state;
 
-    uint8_t motor_stopped = (foc_state == FOC_STATE_IDLE || foc_state == FOC_STATE_STOP ||
-                             foc_state == FOC_STATE_FAULT || foc_state == FOC_STATE_BEEP ||
-                             foc_state == FOC_STATE_CALIBRATION || foc_state == FOC_STATE_ALIGN ||
-                             foc_state == FOC_STATE_DETECT || abs_speed < 10.0f);
+    uint8_t motor_stopped =
+        (foc_state == FOC_STATE_IDLE || foc_state == FOC_STATE_FAULT ||
+         foc_state == FOC_STATE_BEEP || foc_state == FOC_STATE_CALIBRATION ||
+         foc_state == FOC_STATE_ALIGN || foc_state == FOC_STATE_DETECT || abs_speed < 10.0f);
 
     if (motor_stopped) {
         data12 = 0x0FFFU; /* Standard Betaflight motor stopped convention */

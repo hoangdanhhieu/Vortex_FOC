@@ -469,8 +469,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
 
             /* Prohibit changing PWM frequency while motor is operating */
             if (pid == PID_PWM_FREQ) {
-                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
-                    g_foc.status.state != FOC_STATE_FAULT) {
+                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_FAULT) {
                     send_ack(type, 1);
                     break;
                 }
@@ -548,8 +547,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 send_ack(type, 1);
                 break;
             }
-            if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
-                g_foc.status.state != FOC_STATE_FAULT) {
+            if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_FAULT) {
                 send_ack(type, 1);
                 break;
             }
@@ -591,8 +589,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 }
             } else {
                 FOC_Input_NotifyHostActivity(0);
-                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
-                    g_foc.status.state != FOC_STATE_FAULT) {
+                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_FAULT) {
                     FOC_Stop();
                 }
             }
@@ -618,8 +615,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 }
             } else {
                 FOC_Input_NotifyHostActivity(0);
-                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
-                    g_foc.status.state != FOC_STATE_FAULT) {
+                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_FAULT) {
                     FOC_Stop();
                 }
             }
@@ -645,8 +641,7 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 }
             } else {
                 FOC_Input_NotifyHostActivity(0);
-                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
-                    g_foc.status.state != FOC_STATE_FAULT) {
+                if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_FAULT) {
                     FOC_Stop();
                 }
             }
