@@ -144,7 +144,16 @@ CCMRAM_FUNC static inline float foc_adc_to_vphase_absolute(uint16_t adc_value) {
 }
 
 /**
- * @brief Apply centralized deadtime compensation to duty cycles.
+ * @brief Apply centralized deadtime compensation to 3-phase duty cycles.
+ *
+ * Reconstructs predicted phase currents at 1.5*dt forward angle to determine
+ * true current polarity for zero-lag deadtime distortion elimination.
+ *
+ * @pre svpwm_calculate() must be called prior in the same ISR cycle to cache cos/sin(theta_elec).
+ *
+ * @param[in,out] out_a Pointer to Phase A duty cycle (0.0 to max_duty)
+ * @param[in,out] out_b Pointer to Phase B duty cycle (0.0 to max_duty)
+ * @param[in,out] out_c Pointer to Phase C duty cycle (0.0 to max_duty)
  */
 void foc_apply_deadtime_compensation(float* out_a, float* out_b, float* out_c);
 

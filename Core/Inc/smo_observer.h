@@ -52,11 +52,10 @@ typedef struct {
     float omega_stf;      /**< LPF filtered speed for STF center frequency [rad/s] */
 
     /* 6th Harmonic Adaptive Compensator parameters */
-    float Ac;                     /**< Cosine 6th harmonic coefficient */
-    float As;                     /**< Sine 6th harmonic coefficient */
-    float gamma_6th;              /**< Adaptive learning rate */
-    float max_comp_norm;          /**< Maximum compensation angle (normalized) */
-    uint8_t enable_harmonic_comp; /**< Flag to enable/disable 6th harmonic compensator */
+    float Ac;            /**< Cosine 6th harmonic coefficient */
+    float As;            /**< Sine 6th harmonic coefficient */
+    float gamma_6th;     /**< Adaptive learning rate */
+    float max_comp_norm; /**< Maximum compensation angle (normalized) */
 
     /* Motor parameters (cached) */
     float Rs;        /**< Phase resistance */
@@ -74,22 +73,30 @@ typedef struct {
     float bemf_mag;       /**< Instantaneous Back-EMF vector magnitude [V] */
 
     /* Precomputed Exact Discrete ZOH coefficients */
-    float a_zoh; /**< Discrete pole exp(-Rs * dt / Ls) */
-    float b_zoh; /**< Discrete input gain (1.0 - a_zoh) / Rs */
-
-    /* Dynamic load current magnitude & saturation */
-    float I_mag;   /**< Measured phase current magnitude [A] */
-    float l_ratio; /**< Real-time L(I)/L0 saturation ratio (shared with current loop) */
+    float a_zoh;       /**< Discrete pole exp(-Rs * dt / Ls) */
+    float b_zoh;       /**< Discrete input gain (1.0 - a_zoh) / Rs */
+    float Rs_inv;      /**< Precomputed 1.0 / Rs [1/Ohm] */
+    float tau_ratio_0; /**< Precomputed nominal (Rs * dt) / Ls */
 
     /* Precomputed constants for zero-cycle-overhead 48kHz execution */
-    float dt_over_pi;   /**< Precomputed dt / PI */
-    float gamma_6th_dt; /**< Precomputed gamma_6th * dt */
-    float pll_ki_dt;    /**< Precomputed pll_ki * dt */
-    float wc_base;      /**< Precomputed base cutoff frequency for STF BEMF filter [rad/s] */
+    float dt_over_pi;      /**< Precomputed dt / PI */
+    float gamma_6th_dt;    /**< Precomputed gamma_6th * dt */
+    float pll_ki_dt;       /**< Precomputed pll_ki * dt */
+    float omega_stf_alpha; /**< Precomputed STF center-frequency LPF alpha */
+    float omega_out_alpha; /**< Precomputed speed output LPF alpha */
+    float pll_cutoff_max;  /**< Maximum PLL / STF cutoff angular frequency [rad/s] */
+    float omega_obs_max;   /**< Maximum observer bandwidth [rad/s] */
+    float wc_base;         /**< Precomputed base cutoff frequency for STF BEMF filter [rad/s] */
     float bw_cur;
     float omega_obs;
     float phase_lag;
 } SMO_Observer_t;
+
+/* SMO_Update option flags */
+#define SMO_OPT_NONE 0x00U
+#define SMO_OPT_STARTUP 0x01U /**< Clamp PLL speed to rotation direction & track ref_omega in STF \
+                               */
+#define SMO_OPT_HARM_COMP 0x02U /**< Enable adaptive 6th-harmonic angle error compensator */
 
 /**
  * @brief Initialize SMO observer with default parameters
@@ -104,19 +111,35 @@ void SMO_Init(SMO_Observer_t* smo);
 void SMO_Reset(SMO_Observer_t* smo);
 
 /**
- * @brief Seed SMO observer speed states at handoff (open-loop to closed-loop)
- * @param smo Pointer to SMO structure
- * @param omega_init Initial electrical speed in rad/s
- */
-void SMO_ResetStates(SMO_Observer_t* smo, float omega_init);
-
-/**
- * @brief Seed SMO observer speed and angle states (e.g. exiting zero-crossing bridge)
+ * @brief Seed SMO observer speed, angle, and current states (e.g. exiting zero-crossing bridge)
  * @param smo Pointer to SMO structure
  * @param omega_init Initial electrical speed in rad/s
  * @param theta_norm Initial electrical angle in [-1, 1) representing [-pi, pi)
+ * @param Ialpha_init Initial alpha current estimate [A]
+ * @param Ibeta_init Initial beta current estimate [A]
  */
-void SMO_ResetStatesWithAngle(SMO_Observer_t* smo, float omega_init, float theta_norm);
+void SMO_ResetStatesWithAngle(SMO_Observer_t* smo, float omega_init, float theta_norm,
+                              float Ialpha_init, float Ibeta_init);
+
+/**
+ * @brief Seed SMO PLL/speed states and gains when entering Flying Start from Detect
+ * @param smo Pointer to SMO structure
+ * @param theta_norm Initial electrical angle in [-1, 1) representing [-pi, pi)
+ * @param omega_elec Estimated electrical speed [rad/s]
+ * @param dir Rotation direction (+1.0f or -1.0f)
+ * @param vbus Current DC bus voltage [V]
+ */
+void SMO_SeedFlyingStart(SMO_Observer_t* smo, float theta_norm, float omega_elec, float dir,
+                         float vbus);
+
+/**
+ * @brief Seed SMO current estimate onto the sliding surface from filtered BEMF (Flying Start ->
+ * RUN)
+ * @param smo Pointer to SMO structure
+ * @param Ialpha_init Measured/filtered alpha current [A]
+ * @param Ibeta_init Measured/filtered beta current [A]
+ */
+void SMO_SeedCurrentFromBEMF(SMO_Observer_t* smo, float Ialpha_init, float Ibeta_init);
 
 /**
  * @brief Set SMO active rotation direction
@@ -132,13 +155,23 @@ void SMO_SetDirection(SMO_Observer_t* smo, float dir);
  * @param Vbeta Beta voltage command [V]
  * @param Ialpha Measured alpha current [A]
  * @param Ibeta Measured beta current [A]
+ * @param l_app_ratio Apparent inductance saturation ratio L_app(I)/L0 in (0, 1]
+ * @param opts Bitmask of SMO_OPT_* flags
+ * @param ref_omega Reference electrical speed [rad/s] used when SMO_OPT_STARTUP is set
  */
-void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, float Ialpha, float Ibeta);
+void SMO_Update(SMO_Observer_t* smo, float Valpha, float Vbeta, float Ialpha, float Ibeta,
+                float l_app_ratio, uint8_t opts, float ref_omega);
 
 /**
- * @brief 1 kHz SMO adaptation task (adjust pll_kp, pll_ki, k_slide and k_sigmoid).
+ * @brief 1 kHz SMO adaptation task (adjust pll_kp, pll_ki, k_slide, k_sigmoid, and bemf_mag).
+ * @param smo Pointer to SMO structure
+ * @param is_active Non-zero when observer adaptation should run
+ * @param is_startup Non-zero when open-loop startup reference speed should be used
+ * @param startup_omega Open-loop startup electrical speed [rad/s]
+ * @param vbus Current DC bus voltage [V]
  */
-void SMO_SlowTask(SMO_Observer_t* smo);
+void SMO_SlowTask(SMO_Observer_t* smo, uint8_t is_active, uint8_t is_startup, float startup_omega,
+                  float vbus);
 
 #include "foc.h"
 

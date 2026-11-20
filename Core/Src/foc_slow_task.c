@@ -242,7 +242,6 @@ void FOC_Safety() {
 }
 
 void FOC_SlowTask(void) {
-    if (g_foc.status.state == FOC_STATE_IDLE && !FOC_IsInitialized()) return;
     if (!FOC_IsInitialized()) return;
 
     FOC_Input_Update();
@@ -256,7 +255,7 @@ void FOC_SlowTask(void) {
         g_foc.data.Vbus = VBUS_IIR_ALPHA * g_foc.data.Vbus + (1.0f - VBUS_IIR_ALPHA) * vbus_new;
         if (g_foc.data.Vbus < 1.0f) g_foc.data.Vbus = 1.0f;
         g_foc.data.Vbus_inv = 1.0f / g_foc.data.Vbus;
-
+        g_foc.v_max = g_foc.data.Vbus * g_foc.v_max_scale;
         float i_th_noise = g_foc.cfg.cal_noise_pk_pk * 3.0f;
         float i_th_min = g_foc.cfg.motor_max_curr * 0.02f;
         float i_th = (i_th_noise > i_th_min) ? i_th_noise : i_th_min;
@@ -309,4 +308,14 @@ void FOC_SlowTask(void) {
     if (g_foc.status.state == FOC_STATE_IDLE) {
         g_foc.cmd.Vq_ref = 0.0f;
     }
+
+    FOC_State_t cur_state = g_foc.status.state;
+    uint8_t is_obs_active =
+        (cur_state == FOC_STATE_RUN || cur_state == FOC_STATE_STARTUP ||
+         cur_state == FOC_STATE_FLYING_START || cur_state == FOC_STATE_ALIGN ||
+         cur_state == FOC_STATE_DETECT)
+            ? 1U
+            : 0U;
+    SMO_SlowTask(&g_foc.ctrl.smo, is_obs_active, (cur_state == FOC_STATE_STARTUP) ? 1U : 0U,
+                 g_foc.startup.omega, g_foc.data.Vbus);
 }

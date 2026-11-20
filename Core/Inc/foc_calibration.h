@@ -20,8 +20,11 @@ void FOC_Calibration_Reset(void);
  * @param adc1_data Raw ADC1 measurement
  * @param adc2_data Raw ADC2 measurement
  * @param cal_phase Active calibration phase skip index (0 = Skip A, 1 = Skip B, 2 = Skip C)
+ * @param reg_va Snapshot of regular ADC phase A voltage sample taken prior to re-trigger
+ * @param reg_vc Snapshot of regular ADC phase C voltage sample taken prior to re-trigger
  */
-void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t cal_phase);
+void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t cal_phase,
+                                uint16_t reg_va, uint16_t reg_vc);
 
 /**
  * @brief State handler for FOC_STATE_CALIBRATION (computes offsets, noise profile and configures

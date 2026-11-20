@@ -179,6 +179,15 @@ class ParamId(AutoZeroEnum):
     USER_PLOT1 = auto(); USER_PLOT2 = auto(); USER_PLOT3 = auto()
     THETA_ELEC = auto()
     BOARD_MAX_I = auto()
+    # Live Extended Telemetry
+    EALPHA_FLT = auto(); EBETA_FLT = auto(); BEMF_MAG = auto()
+    THETA_ERR = auto(); CURRENT_ERR_SQ = auto(); PHASE_LAG = auto(); L_RATIO = auto()
+    LADRC_DIST = auto(); LADRC_SPD = auto(); SPD_TARGET = auto()
+    IALPHA_FLT = auto(); IBETA_FLT = auto()
+    VPHASE_A = auto(); VPHASE_B = auto(); VPHASE_C = auto(); IBUS = auto(); ID_REF = auto()
+    THETA_PARK = auto(); DIR_ACTIVE = auto(); ZC_OMEGA = auto()
+    STALL_RISK = auto(); D_DESYNC = auto(); ETA_EM = auto(); R_BEMF = auto()
+    ISR_CYCLES = auto()
     PID_COUNT = auto()
 
 

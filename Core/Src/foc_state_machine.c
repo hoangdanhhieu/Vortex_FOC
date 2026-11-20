@@ -42,6 +42,7 @@ extern volatile uint16_t adc_regular_buffer[3];
 extern volatile float ADC_Vref;
 static float s_valpha_active = 0.0f;
 static float s_vbeta_active = 0.0f;
+
 static void FOC_StateRun(void);
 static void FOC_StateZeroCross(void);
 NOINLINE_FUNC static void FOC_ZeroCross_Init(float target_dir, float omega_cross);
@@ -109,7 +110,11 @@ void FOC_Init(void) {
     g_foc.cmd.speed_ref = 0.0f;
     g_foc.data.theta_elec = 0.0f;
     g_foc.data.omega_elec = 0.0f;
+    g_foc.data.I_sq_flt = 0.0f;
+    g_foc.data.l_inc_ratio = 1.0f;
+    g_foc.data.l_app_ratio = 1.0f;
     g_foc.status.in_transition = 0;
+    g_foc.status.was_transition = 0;
 
     g_foc.startup.theta = 0.0f;
     g_foc.startup.omega = 0.0f;
@@ -120,6 +125,7 @@ void FOC_Init(void) {
     g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.5f;
 
     g_foc.dt = (g_foc.cfg.pwm_frequency > 0.0f) ? (1.0f / g_foc.cfg.pwm_frequency) : CONTROL_PERIOD;
+    g_foc.i_sq_lpf_alpha = clampf(480.0f * g_foc.dt, 0.002f, 0.25f);
 
     PI_Init(&g_foc.ctrl.id, 0.0f, 0.0f, -0.0f, 0.0f, g_foc.dt);
     PI_SetIntLimits(&g_foc.ctrl.id, -12.0f, 12.0f);
@@ -134,7 +140,7 @@ void FOC_Init(void) {
     Profiler_Init(&g_foc.ctrl.profiler);
 
     g_foc.status.run_counter = 0;
-    g_foc.isr_time_cycles = 0;
+    g_foc.isr_time_cycles = 0.0f;
     g_foc.data.i_scale = ADC_Vref * (ADC_TO_CURRENT);
     FOC_EnableDrivers(0);
 
@@ -149,6 +155,10 @@ void FOC_Start(void) {
     if (!FOC_IsConfigValid() && !MotorID_IsRunning()) {
         return;
     }
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
     if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_BEEP) {
         if (g_foc.status.state == FOC_STATE_BEEP) {
             FOC_Beep_Stop();
@@ -156,6 +166,7 @@ void FOC_Start(void) {
             g_foc.data.duty_a = 0.5f;
             g_foc.data.duty_b = 0.5f;
             g_foc.data.duty_c = 0.5f;
+            FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
         }
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
@@ -168,6 +179,13 @@ void FOC_Start(void) {
 
         FOC_Startup_Reset();
         g_foc.cmd.Iq_ref = 0.0f;
+        g_foc.data.omega_elec = 0.0f;
+        g_foc.data.Ialpha_flt = 0.0f;
+        g_foc.data.Ibeta_flt = 0.0f;
+        g_foc.data.I_sq_flt = 0.0f;
+        g_foc.data.l_inc_ratio = 1.0f;
+        g_foc.data.l_app_ratio = 1.0f;
+        g_foc.status.was_transition = 0;
 
         FOC_FlyingStart_Init();
         FOC_Calibration_Reset();
@@ -191,19 +209,29 @@ void FOC_Start(void) {
         s_cal_phase = 2;
         FOC_HW_SwitchCurrentSensing(s_skip_phase);
 
-        g_foc.status.run_counter = 0;
-        g_foc.status.state = FOC_STATE_CALIBRATION;
-
         float v_limit = g_foc.data.Vbus * SQRT3_INV;
         PI_SetLimits(&g_foc.ctrl.id, -v_limit, v_limit);
         PI_SetIntLimits(&g_foc.ctrl.id, -v_limit, v_limit);
         PI_SetLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
         PI_SetIntLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
+
+        g_foc.status.run_counter = 0;
+        g_foc.status.state = FOC_STATE_CALIBRATION;
+    }
+
+    if (!primask) {
+        __enable_irq();
     }
 }
 
 void FOC_Stop(void) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
     FOC_EnableDrivers(0);
+    g_foc.status.state = FOC_STATE_IDLE;
+    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
+
     FOC_Beep_Stop();
     MotorID_Stop();
     g_foc.zc.was_reversing = 0;
@@ -212,6 +240,12 @@ void FOC_Stop(void) {
     g_foc.data.duty_c = 0.5f;
     g_foc.data.Valpha = g_foc.data.Vbeta = 0.0f;
     g_foc.data.Valpha_applied = g_foc.data.Vbeta_applied = 0.0f;
+    g_foc.data.omega_elec = 0.0f;
+    g_foc.data.Ialpha_flt = 0.0f;
+    g_foc.data.Ibeta_flt = 0.0f;
+    g_foc.data.I_sq_flt = 0.0f;
+    g_foc.data.l_inc_ratio = 1.0f;
+    g_foc.data.l_app_ratio = 1.0f;
     s_valpha_active = s_vbeta_active = 0.0f;
 
     g_foc.cmd.Id_ref = 0.0f;
@@ -229,11 +263,15 @@ void FOC_Stop(void) {
     FOC_Startup_Reset();
     FOC_ResetStallDetector();
 
+    g_foc.status.was_transition = 0;
     g_foc.status.run_counter = 0;
     g_foc.zc.debounce_cnt = 0;
     g_foc.zc.lockout_cnt = 0;
     g_foc.zc.grace_counter = 0;
-    g_foc.status.state = FOC_STATE_IDLE;
+
+    if (!primask) {
+        __enable_irq();
+    }
 }
 
 NOINLINE_FUNC static void FOC_StateIdle(void) {
@@ -242,9 +280,6 @@ NOINLINE_FUNC static void FOC_StateIdle(void) {
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
-
-    g_foc.data.Ialpha_flt = 0.0f;
-    g_foc.data.Ibeta_flt = 0.0f;
 }
 
 NOINLINE_FUNC static void FOC_StateStop(void) {
@@ -255,6 +290,14 @@ NOINLINE_FUNC static void FOC_StateStop(void) {
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
+    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
+    g_foc.data.omega_elec = 0.0f;
+    g_foc.data.Ialpha_flt = 0.0f;
+    g_foc.data.Ibeta_flt = 0.0f;
+    g_foc.data.I_sq_flt = 0.0f;
+    g_foc.data.l_inc_ratio = 1.0f;
+    g_foc.data.l_app_ratio = 1.0f;
+    g_foc.status.was_transition = 0;
     if (g_foc.status.state != FOC_STATE_FAULT) {
         g_foc.status.state = FOC_STATE_IDLE;
     }
@@ -265,6 +308,7 @@ NOINLINE_FUNC static void FOC_StateFault(void) {
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
+    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
 }
 
 /*===========================================================================*/
@@ -273,52 +317,44 @@ NOINLINE_FUNC static void FOC_StateFault(void) {
 
 CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     if (!foc_initialized) return;
-    if (g_foc.status.state != FOC_STATE_RUN) {
-        g_foc.ctrl.smo.enable_harmonic_comp = 0;
-    }
 
     /* Demux ADC data based on which phase was configured last ISR */
-    uint16_t adc_ia = 0, adc_ib = 0, adc_ic = 0;
-
+    float i_scale = g_foc.data.i_scale;
+    float ia, ib, ic;
     switch (s_skip_phase) {
         case 0:
-            adc_ib = adc2_data; /* ADC2 measured Phase B */
-            adc_ic = adc1_data; /* ADC1 measured Phase C (PB1) */
-            g_foc.data.Ib = ((float)adc_ib - (float)g_foc.cfg.cal_offset_b) * g_foc.data.i_scale;
-            g_foc.data.Ic =
-                ((float)adc_ic - (float)g_foc.cfg.cal_offset_c_pb1) * g_foc.data.i_scale;
-            g_foc.data.Ia = -(g_foc.data.Ib + g_foc.data.Ic);
+            ib = (float)((int32_t)adc2_data - (int32_t)g_foc.cfg.cal_offset_b) * i_scale;
+            ic = (float)((int32_t)adc1_data - (int32_t)g_foc.cfg.cal_offset_c_pb1) * i_scale;
+            ia = -(ib + ic);
             break;
         case 1:
-            adc_ia = adc1_data; /* ADC1 measured Phase A */
-            adc_ic = adc2_data; /* ADC2 measured Phase C (VOPAMP3) */
-            g_foc.data.Ia = ((float)adc_ia - (float)g_foc.cfg.cal_offset_a) * g_foc.data.i_scale;
-            g_foc.data.Ic =
-                ((float)adc_ic - (float)g_foc.cfg.cal_offset_c_op3) * g_foc.data.i_scale;
-            g_foc.data.Ib = -(g_foc.data.Ia + g_foc.data.Ic);
+            ia = (float)((int32_t)adc1_data - (int32_t)g_foc.cfg.cal_offset_a) * i_scale;
+            ic = (float)((int32_t)adc2_data - (int32_t)g_foc.cfg.cal_offset_c_op3) * i_scale;
+            ib = -(ia + ic);
             break;
         default:
-            adc_ia = adc1_data; /* ADC1 measured Phase A */
-            adc_ib = adc2_data; /* ADC2 measured Phase B */
-            g_foc.data.Ia = ((float)adc_ia - (float)g_foc.cfg.cal_offset_a) * g_foc.data.i_scale;
-            g_foc.data.Ib = ((float)adc_ib - (float)g_foc.cfg.cal_offset_b) * g_foc.data.i_scale;
-            g_foc.data.Ic = -(g_foc.data.Ia + g_foc.data.Ib);
+            ia = (float)((int32_t)adc1_data - (int32_t)g_foc.cfg.cal_offset_a) * i_scale;
+            ib = (float)((int32_t)adc2_data - (int32_t)g_foc.cfg.cal_offset_b) * i_scale;
+            ic = -(ia + ib);
             break;
     }
-
     g_foc.status.run_counter++;
-
     if (g_foc.cfg.direction < 0.0f) {
-        float t = g_foc.data.Ib;
-        g_foc.data.Ib = g_foc.data.Ic;
-        g_foc.data.Ic = t;
+        float t = ib;
+        ib = ic;
+        ic = t;
     }
+    g_foc.data.Ia = ia;
+    g_foc.data.Ib = ib;
+    g_foc.data.Ic = ic;
 
     clarke_transform(g_foc.data.Ia, g_foc.data.Ib, g_foc.data.Ic, &g_foc.data.Ialpha,
                      &g_foc.data.Ibeta);
 
-    stf_filter_step(g_foc.data.Ialpha, g_foc.data.Ibeta, &g_foc.data.Ialpha_flt,
-                    &g_foc.data.Ibeta_flt, g_foc.wc_current_stf, g_foc.data.omega_elec, g_foc.dt);
+    /* Snapshot regular ADC phase-voltage pair BEFORE re-triggering DMA scan */
+    uint16_t reg_va = adc_regular_buffer[0];
+    uint16_t reg_vc = adc_regular_buffer[1];
+    FOC_TriggerRegularADC();
 
     if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_FAULT) {
         if (g_foc.status.state == FOC_STATE_IDLE) {
@@ -326,15 +362,31 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         } else {
             FOC_StateFault();
         }
-
         Comm_StreamPush();
-        FOC_TriggerRegularADC();
         return;
     }
+
+    stf_filter_step(g_foc.data.Ialpha, g_foc.data.Ibeta, &g_foc.data.Ialpha_flt,
+                    &g_foc.data.Ibeta_flt, g_foc.wc_current_stf, g_foc.data.omega_elec, g_foc.dt);
+
+    /* Continuous physical magnetic saturation ratios L_inc(I)/L0 and L_app(I)/L0 */
+    if (g_foc.cfg.motor_alpha > 0.0f) {
+        float I_sq_clean = g_foc.data.Ialpha_flt * g_foc.data.Ialpha_flt +
+                           g_foc.data.Ibeta_flt * g_foc.data.Ibeta_flt;
+        g_foc.data.I_sq_flt += g_foc.i_sq_lpf_alpha * (I_sq_clean - g_foc.data.I_sq_flt);
+        float x_sq = g_foc.cfg.motor_alpha * g_foc.data.I_sq_flt;
+        g_foc.data.l_inc_ratio = clampf(1.0f / (1.0f + x_sq), 0.20f, 1.0f);
+        g_foc.data.l_app_ratio = clampf(1.0f / (1.0f + 0.33333333f * x_sq), 0.35f, 1.0f);
+    } else {
+        g_foc.data.I_sq_flt = 0.0f;
+        g_foc.data.l_inc_ratio = 1.0f;
+        g_foc.data.l_app_ratio = 1.0f;
+    }
+
     if (g_foc.status.state == FOC_STATE_DETECT || g_foc.status.state == FOC_STATE_FLYING_START ||
         g_foc.status.state == FOC_STATE_COAST_FLUX_ID) {
-        float va = foc_adc_to_vphase(adc_regular_buffer[0], g_foc.cfg.cal_vphase_a);
-        float vc = foc_adc_to_vphase(adc_regular_buffer[1], g_foc.cfg.cal_vphase_c);
+        float va = foc_adc_to_vphase(reg_va, g_foc.cfg.cal_vphase_a);
+        float vc = foc_adc_to_vphase(reg_vc, g_foc.cfg.cal_vphase_c);
         float vb = -(va + vc);
 
         g_foc.data.Vphase_a = va;
@@ -342,14 +394,9 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         g_foc.data.Vphase_c = vc;
     }
 
-    FOC_TriggerRegularADC();
-
     switch (g_foc.status.state) {
-        case FOC_STATE_IDLE:
-            FOC_StateIdle();
-            break;
         case FOC_STATE_CALIBRATION:
-            FOC_Calibration_Accumulate(adc1_data, adc2_data, s_cal_phase);
+            FOC_Calibration_Accumulate(adc1_data, adc2_data, s_cal_phase, reg_va, reg_vc);
             FOC_StateCalibration();
             break;
         case FOC_STATE_DETECT:
@@ -368,8 +415,9 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
 #if DEBUG_RUN_TIMEOUT_MS > 0
             if (g_foc.status.run_counter >=
                 (uint32_t)(DEBUG_RUN_TIMEOUT_MS * 0.001f * g_foc.cfg.pwm_frequency)) {
-                g_foc.status.state = FOC_STATE_STOP;
-                break;
+                FOC_StateStop();
+                Comm_StreamPush();
+                return;
             }
 #endif
             FOC_StateRun();
@@ -382,16 +430,14 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         case FOC_STATE_BEEP:
             FOC_StateBeep();
             if (g_foc.status.state != FOC_STATE_BEEP) {
+                Comm_StreamPush();
                 return;
             }
             break;
 
         case FOC_STATE_STOP:
             FOC_StateStop();
-            return;
-
-        case FOC_STATE_FAULT:
-            FOC_StateFault();
+            Comm_StreamPush();
             return;
 
         case FOC_STATE_SELF_COMMISSION:
@@ -402,73 +448,58 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
             FOC_StateCoastFluxID();
             Comm_StreamPush();
             return;
+
+        default:
+            break;
     }
 
     /* Continuous streaming telemetry */
     Comm_StreamPush();
 
-    float out_a = g_foc.data.duty_a;
-    float out_b = g_foc.data.duty_b;
-    float out_c = g_foc.data.duty_c;
-
-    foc_apply_deadtime_compensation(&out_a, &out_b, &out_c);
+    /* Map to physical inverter bridge duties (single direction check) */
+    float da = g_foc.data.duty_a;
+    float db = g_foc.data.duty_b;
+    float dc = g_foc.data.duty_c;
+    if (g_foc.cfg.direction < 0.0f) {
+        float tmp = db;
+        db = dc;
+        dc = tmp;
+    }
 
     /*=======================================================================*/
     /* ADC Channel Switching for NEXT trigger (duty-based + hysteresis)      */
     /*=======================================================================*/
-    uint8_t do_switch_sensing = 0;
-    uint8_t next_sensing_phase = s_skip_phase;
-
     if (g_foc.status.state == FOC_STATE_RUN || g_foc.status.state == FOC_STATE_ZERO_CROSS) {
-        /* Map duties to physical inverter bridges A, B, C (accounts for reverse direction) */
-        float phys_duties[3];
-        phys_duties[0] = out_a;
-        if (g_foc.cfg.direction > 0.0f) {
-            phys_duties[1] = out_b;
-            phys_duties[2] = out_c;
-        } else {
-            phys_duties[1] = out_c;
-            phys_duties[2] = out_b;
-        }
-
-        /* Find phase with true maximum physical duty */
         uint8_t max_phase = 0;
-        float max_duty = phys_duties[0];
-        if (phys_duties[1] > max_duty) {
-            max_duty = phys_duties[1];
+        float max_duty = da;
+        if (db > max_duty) {
+            max_duty = db;
             max_phase = 1;
         }
-        if (phys_duties[2] > max_duty) {
-            max_duty = phys_duties[2];
+        if (dc > max_duty) {
+            max_duty = dc;
             max_phase = 2;
         }
 
-        if (max_phase != s_skip_phase && max_duty > phys_duties[s_skip_phase] + SKIP_HYSTERESIS) {
-            s_skip_phase = max_phase;
-            next_sensing_phase = s_skip_phase;
-            do_switch_sensing = 1;
+        if (max_phase != s_skip_phase) {
+            float cur_duty = (s_skip_phase == 0) ? da : ((s_skip_phase == 1) ? db : dc);
+            if (max_duty > cur_duty + SKIP_HYSTERESIS) {
+                s_skip_phase = max_phase;
+                FOC_HW_SwitchCurrentSensing(s_skip_phase);
+            }
         }
     } else if (g_foc.status.state == FOC_STATE_SELF_COMMISSION) {
         if (s_skip_phase != 2) {
             s_skip_phase = 2;
-            next_sensing_phase = 2;
-            do_switch_sensing = 1;
+            FOC_HW_SwitchCurrentSensing(2);
         }
     } else if (g_foc.status.state == FOC_STATE_CALIBRATION) {
         s_cal_phase = (s_cal_phase == 2) ? 0 : (s_cal_phase + 1);
-        next_sensing_phase = s_cal_phase;
-        do_switch_sensing = 1;
+        FOC_HW_SwitchCurrentSensing(s_cal_phase);
     }
 
-    if (do_switch_sensing) {
-        FOC_HW_SwitchCurrentSensing(next_sensing_phase);
-    }
-
-    if (g_foc.cfg.direction > 0.0f) {
-        FOC_HW_SetPWMDuty(out_a, out_b, out_c);
-    } else {
-        FOC_HW_SetPWMDuty(out_a, out_c, out_b);
-    }
+    /* Apply physical duties directly to hardware PWM timer */
+    FOC_HW_SetPWMDuty(da, db, dc);
 
     /* 2-cycle pipeline voltage tracking for Peak update:
      * Shift applied voltage so SMO receives the exact voltage applied during [-1.0 dt, 0] */
@@ -495,14 +526,61 @@ NOINLINE_FUNC static void FOC_ZeroCross_Init(float target_dir, float omega_cross
     float i_cross = cross_ratio * safe_max_curr;
     float b0 = g_foc.cfg.ladrc_b0;
     if (b0 < 10.0f) {
-        b0 = g_foc.ctrl.speed.b0;
-    }
-    if (b0 < 10.0f) {
         b0 = 1000.0f;
     }
 
     float calc_slew = 0.50f * b0 * (0.7071f * i_cross);
     g_foc.zc.bridge_slew_rate = clampf(calc_slew, 500.0f, 100000.0f);
+}
+
+CCMRAM_FUNC static inline void FOC_ApplyCurrentLoop(float omega_Ls, float ff_q,
+                                                    uint8_t is_direct_voltage, float vq_cmd_volts) {
+    float l_inc_ratio = g_foc.data.l_inc_ratio;
+    g_foc.ctrl.id.Kp = g_foc.cfg.kp_id * l_inc_ratio;
+    g_foc.ctrl.iq.Kp = g_foc.cfg.kp_iq * l_inc_ratio;
+
+    float max_v = g_foc.v_max;
+    g_foc.ctrl.id.out_max = max_v;
+    g_foc.ctrl.id.out_min = -max_v;
+    PI_SetIntLimits(&g_foc.ctrl.id, -max_v, max_v);
+
+    /* D-axis PI current controller with decoupling */
+    float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
+    g_foc.data.Vd =
+        saturatef(PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq, max_v);
+
+    /* Dynamic voltage headroom for Q-axis */
+    float vq_max_sq = max_v * max_v - g_foc.data.Vd * g_foc.data.Vd;
+    float vq_max = (vq_max_sq > 0.0f) ? sqrtf(vq_max_sq) : 0.0f;
+
+    /* Q-axis voltage calculation & anti-windup clamping */
+    float iq_out_min, iq_out_max, vq_ff;
+    if (is_direct_voltage) {
+        float vq_cmd_sat = clampf(vq_cmd_volts, -vq_max, vq_max);
+        if (g_foc.data.Iq >= 0.0f) {
+            g_foc.cmd.Iq_ref = g_foc.cfg.motor_max_curr;
+            iq_out_min = -vq_max;
+            iq_out_max = vq_cmd_sat;
+        } else {
+            g_foc.cmd.Iq_ref = -g_foc.cfg.motor_max_curr;
+            iq_out_min = vq_cmd_sat;
+            iq_out_max = vq_max;
+        }
+        vq_ff = 0.0f;
+    } else {
+        iq_out_min = -vq_max - ff_q;
+        iq_out_max = vq_max - ff_q;
+        vq_ff = ff_q;
+    }
+
+    g_foc.ctrl.iq.out_min = iq_out_min;
+    g_foc.ctrl.iq.out_max = iq_out_max;
+    PI_SetIntLimits(&g_foc.ctrl.iq, iq_out_min, iq_out_max);
+
+    float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
+    g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + vq_ff;
+    svpwm_calculate(g_foc.data.theta_elec);
+    foc_apply_deadtime_compensation(&g_foc.data.duty_a, &g_foc.data.duty_b, &g_foc.data.duty_c);
 }
 
 CCMRAM_FUNC static void FOC_StateZeroCross(void) {
@@ -541,43 +619,21 @@ CCMRAM_FUNC static void FOC_StateZeroCross(void) {
     g_foc.zc.iq_current += clampf(iq_err, -iq_ramp_step, iq_ramp_step);
     g_foc.cmd.Iq_ref = g_foc.zc.iq_current;
 
-    float l_ratio = g_foc.ctrl.smo.l_ratio;
-    g_foc.ctrl.id.Kp = g_foc.cfg.kp_id * l_ratio;
-    g_foc.ctrl.iq.Kp = g_foc.cfg.kp_iq * l_ratio;
-
-    float ff_gain = 0.9f;
-    float omega_Ls = ff_gain * g_foc.data.omega_elec * (g_foc.cfg.motor_ls * l_ratio);
-    float E_bemf = ff_gain * g_foc.data.omega_elec * g_foc.cfg.motor_flux;
-    float max_v = SQRT3_INV * 2.0f * (g_foc.max_duty - 0.5f) * g_foc.data.Vbus;
-
-    /* Enforce strict d-axis voltage headroom limit to prevent q-axis starvation */
-    g_foc.ctrl.id.out_max = max_v;
-    g_foc.ctrl.id.out_min = -max_v;
-    PI_SetIntLimits(&g_foc.ctrl.id, -max_v, max_v);
-
-    float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
-    g_foc.data.Vd =
-        saturatef(PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq, max_v);
-
-    /* Guaranteed q-axis voltage headroom: vq_max >= 0.866 * max_v */
-    float vq_max_sq = max_v * max_v - g_foc.data.Vd * g_foc.data.Vd;
-    float vq_max = (vq_max_sq > 0.0f) ? sqrtf(vq_max_sq) : 0.0f;
-
-    float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
+    float omega = g_foc.data.omega_elec;
+    float omega_Ls = (0.9f * g_foc.cfg.motor_ls * g_foc.data.l_app_ratio) * omega;
+    float E_bemf = (0.9f * g_foc.cfg.motor_flux) * omega;
     float ff_q = omega_Ls * g_foc.data.Id + E_bemf;
-    g_foc.ctrl.iq.out_max = vq_max - ff_q;
-    g_foc.ctrl.iq.out_min = -vq_max - ff_q;
-    PI_SetIntLimits(&g_foc.ctrl.iq, -vq_max - ff_q, vq_max - ff_q);
-    g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + ff_q;
 
-    svpwm_calculate(g_foc.data.theta_elec);
+    FOC_ApplyCurrentLoop(omega_Ls, ff_q, 0U, 0.0f);
 
     uint8_t has_crossed =
         (g_foc.zc.bridge_dir < 0.0f && g_foc.zc.bridge_omega <= g_foc.zc.bridge_target_omega) ||
         (g_foc.zc.bridge_dir > 0.0f && g_foc.zc.bridge_omega >= g_foc.zc.bridge_target_omega);
 
     if (has_crossed) {
-        SMO_ResetStatesWithAngle(&g_foc.ctrl.smo, g_foc.zc.bridge_omega, g_foc.zc.bridge_theta);
+        float max_v = g_foc.v_max;
+        SMO_ResetStatesWithAngle(&g_foc.ctrl.smo, g_foc.zc.bridge_omega, g_foc.zc.bridge_theta,
+                                 g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt);
         if (g_foc.status.control_mode == FOC_MODE_SPEED) {
             g_foc.cmd.speed_ref = g_foc.zc.bridge_omega;
             LADRC_SeedState(&g_foc.ctrl.speed, g_foc.zc.bridge_omega, 0.0f);
@@ -600,7 +656,7 @@ CCMRAM_FUNC static void FOC_StateZeroCross(void) {
 
         g_foc.status.state = FOC_STATE_RUN;
         g_foc.zc.grace_counter = 120;
-        g_foc.zc.lockout_cnt = (uint32_t)(g_foc.cfg.pwm_frequency / 3.0f);
+        g_foc.zc.lockout_cnt = (uint16_t)(g_foc.cfg.pwm_frequency * 0.3f);
         g_foc.zc.debounce_cnt = 0;
         g_foc.zc.was_reversing = 0;
     }
@@ -618,14 +674,14 @@ uint8_t FOC_IsReversalGraceActive(void) {
 }
 
 CCMRAM_FUNC static void FOC_StateRun(void) {
+    uint8_t in_transition = FOC_IsInTransition();
+    uint8_t smo_opts = (!in_transition) ? SMO_OPT_HARM_COMP : SMO_OPT_NONE;
     SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha_applied, g_foc.data.Vbeta_applied,
-               g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt);
-
+               g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, g_foc.data.l_app_ratio, smo_opts, 0.0f);
     float smo_theta_park = SMO_GetParkAngle(&g_foc.ctrl.smo);
     float smo_theta_pwm = SMO_GetPWMAngle(&g_foc.ctrl.smo);
     float smo_omega = SMO_GetSpeed(&g_foc.ctrl.smo);
 
-    g_foc.ctrl.smo.enable_harmonic_comp = 0;
     uint8_t enter_crossing = 0;
     float cross_speed = g_foc.cfg.motor_min_spd;
 
@@ -645,16 +701,16 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     }
 
     /* Only track steady-state running direction when NOT actively requesting reversal.
-     * During reversal, g_foc.status.reverse  must remain locked to the prior direction until
+     * During reversal, g_foc.status.reverse must remain locked to the prior direction until
      * zero-crossing is explicitly completed! */
     float actual_dir = (g_foc.data.omega_elec >= 0.0f) ? 1.0f : -1.0f;
     if (actual_dir == target_dir && fabsf(g_foc.data.omega_elec) > cross_speed) {
         g_foc.status.reverse = actual_dir;
     }
 
-    if (FOC_IsInTransition()) {
+    if (in_transition) {
         FOC_Transition_Update(smo_theta_park, smo_theta_pwm, smo_omega);
-        g_foc.zc.lockout_cnt = (uint32_t)(g_foc.cfg.pwm_frequency * 0.1f);
+        g_foc.zc.lockout_cnt = (uint16_t)(g_foc.cfg.pwm_frequency * 0.3f);
         g_foc.zc.debounce_cnt = 0;
         g_foc.status.reverse = (g_foc.data.omega_elec >= 0.0f) ? 1.0f : -1.0f;
     } else {
@@ -686,10 +742,8 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
             }
         }
     }
-
     float sin_th, cos_th;
     cordic_sincos(g_foc.data.theta_park, &cos_th, &sin_th);
-
     park_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, cos_th, sin_th, &g_foc.data.Id,
                    &g_foc.data.Iq);
 
@@ -701,107 +755,71 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
         g_foc.cmd.Id_ref = 0.0f;
     }
 
-    float l_ratio = g_foc.ctrl.smo.l_ratio;
-    g_foc.ctrl.id.Kp = g_foc.cfg.kp_id * l_ratio;
-    g_foc.ctrl.iq.Kp = g_foc.cfg.kp_iq * l_ratio;
-
-    float ff_gain = 0.9f;
-    float omega_Ls = ff_gain * g_foc.data.omega_elec * (g_foc.cfg.motor_ls * l_ratio);
-    float E_bemf = ff_gain * g_foc.data.omega_elec * g_foc.cfg.motor_flux;
+    /* Decoupling feed-forward terms */
+    float omega = g_foc.data.omega_elec;
+    float omega_Ls = (0.9f * g_foc.cfg.motor_ls * g_foc.data.l_app_ratio) * omega;
+    float E_bemf = (0.9f * g_foc.cfg.motor_flux) * omega;
     float ff_q = omega_Ls * g_foc.data.Id + E_bemf;
-    float max_v = SQRT3_INV * 2.0f * (g_foc.max_duty - 0.5f) * g_foc.data.Vbus;
-    g_foc.ctrl.id.out_max = max_v;
-    g_foc.ctrl.id.out_min = -max_v;
-    PI_SetIntLimits(&g_foc.ctrl.id, -max_v, max_v);
+    float max_v = g_foc.v_max;
 
-    float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
-    g_foc.data.Vd =
-        saturatef(PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq, max_v);
-
-    float vq_max_sq = max_v * max_v - g_foc.data.Vd * g_foc.data.Vd;
-    float vq_max = (vq_max_sq > 0.0f) ? sqrtf(vq_max_sq) : 0.0f;
-
+    /* Reversal edge tracking (Fast-path: 1 compare, zero SRAM stores during steady run) */
     uint8_t is_reversing = (target_dir != g_foc.status.reverse);
-    uint8_t rev_started = (is_reversing && !g_foc.zc.was_reversing);
-    uint8_t rev_ended = (!is_reversing && g_foc.zc.was_reversing);
-    g_foc.zc.was_reversing = is_reversing;
-    if (rev_started) {
+    if (is_reversing != g_foc.zc.was_reversing) {
+        g_foc.zc.was_reversing = is_reversing;
         if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
-            g_foc.cmd.Iq_ref = g_foc.data.Iq;
-            g_foc.ctrl.iq.integral = g_foc.data.Vq - ff_q;
-        }
-    } else if (rev_ended) {
-        if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
-            g_foc.ctrl.iq.integral = g_foc.data.Vq;
-            if (max_v > 1.0f) {
-                g_foc.cmd.Vq_ref = clampf(g_foc.data.Vq / max_v, -1.0f, 1.0f);
+            if (is_reversing) {
+                g_foc.cmd.Iq_ref = g_foc.data.Iq;
+                g_foc.ctrl.iq.integral = g_foc.data.Vq - ff_q;
+            } else {
+                g_foc.ctrl.iq.integral = g_foc.data.Vq;
+                if (max_v > 1.0f) {
+                    g_foc.cmd.Vq_ref = clampf(g_foc.data.Vq / max_v, -1.0f, 1.0f);
+                }
             }
         }
     }
 
-    uint8_t in_transition = FOC_IsInTransition();
-    static uint8_t s_was_transition = 0;
-    if (s_was_transition && !in_transition) {
-        if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
+    /* Transition edge tracking */
+    if (g_foc.status.was_transition != in_transition) {
+        if (!in_transition && g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
             float vq_norm = (max_v > 1.0f) ? (g_foc.data.Vq / max_v) : 0.0f;
             g_foc.cmd.Vq_ref = clampf(vq_norm, -1.0f, 1.0f);
             g_foc.ctrl.iq.integral = g_foc.data.Vq;
         }
-    }
-    s_was_transition = in_transition;
-
-    if (is_reversing) {
-        float i_brake_target =
-            target_dir * g_foc.cfg.cross_current_ratio * g_foc.cfg.motor_max_curr;
-        float iq_ramp_step = g_foc.cfg.current_ramp_rate * g_foc.dt;
-        float ramp_error = i_brake_target - g_foc.cmd.Iq_ref;
-        g_foc.cmd.Iq_ref += clampf(ramp_error, -iq_ramp_step, iq_ramp_step);
-        g_foc.cmd.Iq_ref = saturatef(g_foc.cmd.Iq_ref, g_foc.cfg.motor_max_curr);
-    } else if (g_foc.status.control_mode == FOC_MODE_TORQUE ||
-               g_foc.status.control_mode == FOC_MODE_SPEED || in_transition) {
-        float iq_ramp_step = 1000.0f * g_foc.dt;
-        if (g_foc.status.control_mode == FOC_MODE_TORQUE) {
-            iq_ramp_step = g_foc.cfg.current_ramp_rate * g_foc.dt;
-        }
-        float ramp_error = g_foc.cmd.Iq_ref_target - g_foc.cmd.Iq_ref;
-        g_foc.cmd.Iq_ref += clampf(ramp_error, -iq_ramp_step, iq_ramp_step);
-        g_foc.cmd.Iq_ref = saturatef(g_foc.cmd.Iq_ref, g_foc.cfg.motor_max_curr);
+        g_foc.status.was_transition = in_transition;
     }
 
-    float iq_out_min, iq_out_max, vq_ff;
-    if (g_foc.status.control_mode == FOC_MODE_VOLTAGE && !is_reversing && !in_transition) {
+    /* Unified Iq / Vq reference ramp generator */
+    uint8_t is_direct_voltage =
+        (g_foc.status.control_mode == FOC_MODE_VOLTAGE && !is_reversing && !in_transition) ? 1U
+                                                                                           : 0U;
+    float vq_cmd_volts = 0.0f;
+
+    if (is_direct_voltage) {
         float ramp_time_s = g_foc.cfg.voltage_ramp_rate_ms * 0.001f;
-        if (ramp_time_s < 0.005f) ramp_time_s = 0.005f;
         float volt_ramp_step = g_foc.dt / ramp_time_s;
         float ramp_v_err = g_foc.cmd.Vq_ref_target - g_foc.cmd.Vq_ref;
         g_foc.cmd.Vq_ref += clampf(ramp_v_err, -volt_ramp_step, volt_ramp_step);
-        float vq_cmd = g_foc.cmd.Vq_ref * max_v;
-        float vq_cmd_sat = clampf(vq_cmd, -vq_max, vq_max);
-
-        if (g_foc.data.Iq >= 0.0f) {
-            g_foc.cmd.Iq_ref = g_foc.cfg.motor_max_curr;
-            iq_out_min = -vq_max;
-            iq_out_max = vq_cmd_sat;
-        } else {
-            g_foc.cmd.Iq_ref = -g_foc.cfg.motor_max_curr;
-            iq_out_min = vq_cmd_sat;
-            iq_out_max = vq_max;
-        }
-        vq_ff = 0.0f;
+        vq_cmd_volts = g_foc.cmd.Vq_ref * max_v;
     } else {
-        iq_out_min = -vq_max - ff_q;
-        iq_out_max = vq_max - ff_q;
-        vq_ff = ff_q;
+        float target_iq;
+        float iq_ramp_step;
+        if (is_reversing) {
+            target_iq = target_dir * g_foc.cfg.cross_current_ratio * g_foc.cfg.motor_max_curr;
+            iq_ramp_step = g_foc.cfg.current_ramp_rate * g_foc.dt;
+        } else {
+            target_iq = g_foc.cmd.Iq_ref_target;
+            float rate = (g_foc.status.control_mode == FOC_MODE_TORQUE)
+                             ? g_foc.cfg.current_ramp_rate
+                             : 1000.0f;
+            iq_ramp_step = rate * g_foc.dt;
+        }
+        float ramp_error = target_iq - g_foc.cmd.Iq_ref;
+        g_foc.cmd.Iq_ref += clampf(ramp_error, -iq_ramp_step, iq_ramp_step);
+        g_foc.cmd.Iq_ref = saturatef(g_foc.cmd.Iq_ref, g_foc.cfg.motor_max_curr);
     }
 
-    g_foc.ctrl.iq.out_min = iq_out_min;
-    g_foc.ctrl.iq.out_max = iq_out_max;
-    PI_SetIntLimits(&g_foc.ctrl.iq, iq_out_min, iq_out_max);
-
-    float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
-    g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + vq_ff;
-
-    svpwm_calculate(g_foc.data.theta_elec);
+    FOC_ApplyCurrentLoop(omega_Ls, ff_q, is_direct_voltage, vq_cmd_volts);
 }
 
 NOINLINE_FUNC static void FOC_StateSelfCommission(void) {
@@ -828,6 +846,17 @@ NOINLINE_FUNC static void FOC_StateSelfCommission(void) {
 /*===========================================================================*/
 /* API Functions                                                             */
 /*===========================================================================*/
+uint8_t FOC_SetControlMode(FOC_ControlMode_t mode) {
+    if (mode > FOC_MODE_VOLTAGE) return 0U;
+    if (g_foc.status.control_mode == mode) return 1U;
+    if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_STOP &&
+        g_foc.status.state != FOC_STATE_BEEP) {
+        return 0U;
+    }
+    g_foc.status.control_mode = mode;
+    return 1U;
+}
+
 CCMRAM_FUNC void FOC_SetSpeedRef(float speed_rad) {
     if (g_foc.status.state == FOC_STATE_STOP) return;
     g_foc.cmd.speed_ref_target = speed_rad;
@@ -852,6 +881,9 @@ CCMRAM_FUNC void FOC_SetVoltageRef(float voltage_percent) {
 }
 
 void FOC_ClearFault(void) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
     if (g_foc.status.state == FOC_STATE_FAULT) {
         FOC_HW_ClearAWDFlags();
 
@@ -859,11 +891,23 @@ void FOC_ClearFault(void) {
         g_foc.status.state = FOC_STATE_IDLE;
         FOC_ResetStallDetector();
 
+        g_foc.data.omega_elec = 0.0f;
+        g_foc.data.Ialpha_flt = 0.0f;
+        g_foc.data.Ibeta_flt = 0.0f;
+        g_foc.data.I_sq_flt = 0.0f;
+        g_foc.data.l_inc_ratio = 1.0f;
+        g_foc.data.l_app_ratio = 1.0f;
+        g_foc.status.was_transition = 0;
+
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
         LADRC_Reset(&g_foc.ctrl.speed);
         SMO_Reset(&g_foc.ctrl.smo);
         FOC_Startup_Reset();
+    }
+
+    if (!primask) {
+        __enable_irq();
     }
 }
 

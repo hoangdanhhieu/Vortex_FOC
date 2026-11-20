@@ -1066,14 +1066,15 @@ static float s_inertia_w_start_down = 0.0f;
 static float s_inertia_w_end_down = 0.0f;
 
 void MotorID_MeasureInertiaOffline(void) {
-    if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_STOP ||
-        g_foc.status.state == FOC_STATE_FAULT) {
+    if (g_foc.status.state == FOC_STATE_IDLE) {
+        if (!FOC_SetControlMode(FOC_MODE_SPEED)) {
+            return;
+        }
         id_result.state = MOTOR_ID_STATE_MEASURE_INERTIA;
         s_inertia_sub = 0;
         s_inertia_pending = 1;
 
         /* Force Speed Mode for Inertia Measurement */
-        g_foc.status.control_mode = FOC_MODE_SPEED;
         g_foc.cmd.speed_ref = 0.0f;
         g_foc.cmd.speed_ref_target = 0.0f;
 

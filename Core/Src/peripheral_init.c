@@ -775,6 +775,11 @@ void MX_IWDG_Init(void) {
     LL_IWDG_ReloadCounter(IWDG);
 }
 
+void DWT_Init(void) {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
 /* ========================================================================== */
 /*                       OPAMP & ADC Calibration / Control                    */
 /* ========================================================================== */
@@ -1036,7 +1041,7 @@ void Peripheral_Init(void) {
     MX_TIM4_Init();
     MX_USART3_UART_Init();
     MX_USB_Device_Init();
-
+    DWT_Init();
     /* Stabilization delay */
     LL_mDelay(500);
 

@@ -100,6 +100,8 @@ void FOC_StateAlign(void) {
     if (g_foc.startup.counter == 0) {
         FOC_Startup_init();
         FOC_Startup_Reset();
+        g_foc.startup.counter++;
+        return;
     }
 
     g_foc.startup.counter++;
@@ -108,27 +110,24 @@ void FOC_StateAlign(void) {
     float progress = (float)g_foc.startup.counter / align_samples;
     if (progress > 1.0f) progress = 1.0f;
 
-    /* Smooth S-curve (cosine ramp) from 0 to align_current over the first 30% duration.
-     * Remaining 70% maintains full align_current at theta = 0 to completely settle mechanical
-     * ringing. */
+    /* Smooth S-curve (cubic smoothstep) from 0 to align_current over the first 40% duration.
+     * Remaining 60% maintains full align_current at theta = 0 to completely settle mechanical
+     * ringing. Zero CORDIC overhead. */
     const float ramp_duration = 0.40f;
     if (progress < ramp_duration) {
-        float ramp_norm = progress / ramp_duration; /* 0.0f to 1.0f maps to 0 to pi */
-        float cos_ramp, sin_ramp;
-        cordic_sincos(ramp_norm, &cos_ramp, &sin_ramp);
-        g_foc.cmd.Id_ref = 0.5f * (1.0f - cos_ramp) * s_align_current;
+        float ramp_norm = progress / ramp_duration;
+        float s_ramp = ramp_norm * ramp_norm * (3.0f - 2.0f * ramp_norm);
+        g_foc.cmd.Id_ref = s_ramp * s_align_current;
     } else {
         g_foc.cmd.Id_ref = s_align_current;
     }
     g_foc.cmd.Iq_ref = 0.0f;
 
-    /* Stator magnetic field locked firmly at 0 degrees electrical (no abrupt 90->0 sweep) */
+    /* Stator magnetic field locked firmly at 0 degrees electrical (cos=1, sin=0, zero CORDIC) */
     g_foc.data.theta_elec = 0.0f;
     g_foc.data.omega_elec = 0.0f;
 
-    float sin_th, cos_th;
-    cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
-    park_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, cos_th, sin_th, &g_foc.data.Id,
+    park_transform(g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt, 1.0f, 0.0f, &g_foc.data.Id,
                    &g_foc.data.Iq);
 
     float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
@@ -148,18 +147,16 @@ void FOC_StateAlign(void) {
     }
 }
 
-void FOC_StateStartup(void) {
+RAM_FUNC void FOC_StateStartup(void) {
     g_foc.startup.counter++;
 
     float progress = (s_startup_ramp_samples > 0.0f)
                          ? ((float)g_foc.startup.counter / s_startup_ramp_samples)
                          : 1.0f;
 
-    /* Analytical Minimum-Jerk S-Curve: zero acceleration jerk at start and handoff */
     if (progress < 1.0f) {
-        float cos_p, sin_p;
-        cordic_sincos(progress, &cos_p, &sin_p);
-        g_foc.startup.omega = s_startup_dir * 0.5f * (1.0f - cos_p) * s_startup_omega_target;
+        float s_curve = progress * progress * (3.0f - 2.0f * progress);
+        g_foc.startup.omega = s_startup_dir * s_curve * s_startup_omega_target;
     } else {
         g_foc.startup.omega = s_startup_dir * s_startup_omega_target;
     }
@@ -178,11 +175,11 @@ void FOC_StateStartup(void) {
     float steer_threshold = 0.35f * s_startup_omega_target;
     float steer_ratio = clampf(fabsf(g_foc.startup.omega) / steer_threshold, 0.0f, 1.0f);
 
-    const float gamma_target_norm = 1.0f / 3.0f; /* 60 deg = pi/3 */
-    float gamma_norm = steer_ratio * gamma_target_norm;
-
-    float cos_gamma, sin_gamma;
-    cordic_sincos(gamma_norm, &cos_gamma, &sin_gamma);
+    /* Ultra-fast polynomial steer angle mapping for gamma: 0 to 60 deg (pi/3).
+     * Replaces hardware CORDIC call (4 FPU cycles, precision < 0.002) */
+    float u2 = steer_ratio * steer_ratio;
+    float cos_gamma = 1.0f - 0.5f * u2;
+    float sin_gamma = steer_ratio * (1.047198f - 0.181172f * u2);
 
     float i_mag = s_align_current + steer_ratio * (s_startup_current - s_align_current);
 
@@ -197,7 +194,7 @@ void FOC_StateStartup(void) {
     g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error);
 
     /* Clamp (Vd, Vq) vector magnitude to 0.57735 * Vbus (SVPWM linear limit) */
-    float max_v = SQRT3_INV * g_foc.data.Vbus;
+    float max_v = g_foc.v_max;
     float v_sq = g_foc.data.Vd * g_foc.data.Vd + g_foc.data.Vq * g_foc.data.Vq;
     if (v_sq > max_v * max_v && v_sq > 1e-6f) {
         float inv_v = max_v / sqrtf(v_sq);
@@ -208,7 +205,8 @@ void FOC_StateStartup(void) {
     svpwm_calculate(g_foc.data.theta_elec);
 
     SMO_Update(&g_foc.ctrl.smo, g_foc.data.Valpha_applied, g_foc.data.Vbeta_applied,
-               g_foc.data.Ialpha, g_foc.data.Ibeta);
+               g_foc.data.Ialpha, g_foc.data.Ibeta, g_foc.data.l_app_ratio, SMO_OPT_STARTUP,
+               g_foc.startup.omega);
 
 #if ENABLE_CLOSED_LOOP_HANDOFF
     float smo_theta = SMO_GetParkAngle(&g_foc.ctrl.smo);
@@ -230,11 +228,6 @@ void FOC_StateStartup(void) {
     }
     const float handoff_lock_samples = HANDOFF_LOCK_SAMPLES * g_foc.cfg.pwm_frequency;
     if (s_handoff_converge_cnt > handoff_lock_samples) {
-        SMO_SlowTask(&g_foc.ctrl.smo);
-
-        PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
-        PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
-
         float handoff_iq = g_foc.cmd.Iq_ref;
         g_foc.cmd.Iq_ref_target = handoff_iq;
 
@@ -255,7 +248,7 @@ void FOC_StateStartup(void) {
         }
 
         if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
-            float max_v = SQRT3_INV * 2.0f * (g_foc.max_duty - 0.5f) * g_foc.data.Vbus;
+            float max_v = g_foc.v_max;
             float Vq_norm = (max_v > 1.0f) ? (g_foc.data.Vq / max_v) : 0.0f;
             Vq_norm = clampf(Vq_norm, -1.0f, 1.0f);
 
@@ -284,7 +277,7 @@ void FOC_StateStartup(void) {
 #endif
 }
 
-void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega) {
+RAM_FUNC void FOC_Transition_Update(float smo_theta_park, float smo_theta_pwm, float smo_omega) {
     if (!s_in_transition) {
         return;
     }

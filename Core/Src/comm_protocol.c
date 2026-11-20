@@ -189,6 +189,56 @@ static float get_param_value(uint8_t pid) {
             return g_foc.plot.user_plot3;
         case PID_BOARD_MAX_I:
             return BOARD_MAX_CURRENT;
+        case PID_EALPHA_FLT:
+            return g_foc.ctrl.smo.Ealpha_flt;
+        case PID_EBETA_FLT:
+            return g_foc.ctrl.smo.Ebeta_flt;
+        case PID_BEMF_MAG:
+            return g_foc.ctrl.smo.bemf_mag;
+        case PID_THETA_ERR:
+            return g_foc.ctrl.smo.theta_err;
+        case PID_CURRENT_ERR_SQ:
+            return g_foc.ctrl.smo.current_err_sq;
+        case PID_PHASE_LAG:
+            return g_foc.ctrl.smo.phase_lag;
+        case PID_L_RATIO:
+            return g_foc.data.l_inc_ratio;
+        case PID_LADRC_DIST:
+            return g_foc.ctrl.speed.z2;
+        case PID_LADRC_SPD:
+            return g_foc.ctrl.speed.z1;
+        case PID_SPD_TARGET:
+            return g_foc.cmd.speed_ref_target;
+        case PID_IALPHA_FLT:
+            return g_foc.data.Ialpha_flt;
+        case PID_IBETA_FLT:
+            return g_foc.data.Ibeta_flt;
+        case PID_VPHASE_A:
+            return g_foc.data.Vphase_a;
+        case PID_VPHASE_B:
+            return g_foc.data.Vphase_b;
+        case PID_VPHASE_C:
+            return g_foc.data.Vphase_c;
+        case PID_IBUS:
+            return g_foc.data.Ibus;
+        case PID_ID_REF:
+            return g_foc.cmd.Id_ref;
+        case PID_THETA_PARK:
+            return g_foc.data.theta_park;
+        case PID_DIR_ACTIVE:
+            return g_foc.status.reverse;
+        case PID_ZC_OMEGA:
+            return g_foc.zc.bridge_omega;
+        case PID_STALL_RISK:
+            return g_foc.data.stall_risk;
+        case PID_D_DESYNC:
+            return g_foc.data.d_desync;
+        case PID_ETA_EM:
+            return g_foc.data.eta_em;
+        case PID_R_BEMF:
+            return g_foc.data.r_bemf;
+        case PID_ISR_CYCLES:
+            return g_foc.isr_time_cycles;
         default:
             return 0.0f;
     }
@@ -277,6 +327,56 @@ static const float* stream_resolve_ptr(uint8_t pid) {
             return &g_foc.plot.user_plot2;
         case PID_USER_PLOT3:
             return &g_foc.plot.user_plot3;
+        case PID_EALPHA_FLT:
+            return &g_foc.ctrl.smo.Ealpha_flt;
+        case PID_EBETA_FLT:
+            return &g_foc.ctrl.smo.Ebeta_flt;
+        case PID_BEMF_MAG:
+            return &g_foc.ctrl.smo.bemf_mag;
+        case PID_THETA_ERR:
+            return &g_foc.ctrl.smo.theta_err;
+        case PID_CURRENT_ERR_SQ:
+            return &g_foc.ctrl.smo.current_err_sq;
+        case PID_PHASE_LAG:
+            return &g_foc.ctrl.smo.phase_lag;
+        case PID_L_RATIO:
+            return &g_foc.data.l_inc_ratio;
+        case PID_LADRC_DIST:
+            return &g_foc.ctrl.speed.z2;
+        case PID_LADRC_SPD:
+            return &g_foc.ctrl.speed.z1;
+        case PID_SPD_TARGET:
+            return &g_foc.cmd.speed_ref_target;
+        case PID_IALPHA_FLT:
+            return &g_foc.data.Ialpha_flt;
+        case PID_IBETA_FLT:
+            return &g_foc.data.Ibeta_flt;
+        case PID_VPHASE_A:
+            return &g_foc.data.Vphase_a;
+        case PID_VPHASE_B:
+            return &g_foc.data.Vphase_b;
+        case PID_VPHASE_C:
+            return &g_foc.data.Vphase_c;
+        case PID_IBUS:
+            return &g_foc.data.Ibus;
+        case PID_ID_REF:
+            return &g_foc.cmd.Id_ref;
+        case PID_THETA_PARK:
+            return &g_foc.data.theta_park;
+        case PID_DIR_ACTIVE:
+            return &g_foc.status.reverse;
+        case PID_ZC_OMEGA:
+            return &g_foc.zc.bridge_omega;
+        case PID_STALL_RISK:
+            return &g_foc.data.stall_risk;
+        case PID_D_DESYNC:
+            return &g_foc.data.d_desync;
+        case PID_ETA_EM:
+            return &g_foc.data.eta_em;
+        case PID_R_BEMF:
+            return &g_foc.data.r_bemf;
+        case PID_ISR_CYCLES:
+            return &g_foc.isr_time_cycles;
         default:
             return &s_dummy_zero;
     }
@@ -469,7 +569,9 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             memcpy(&speed_rad, payload, 4);
             if (fabsf(speed_rad) > 1.0f) {
                 FOC_Input_NotifyHostActivity(500);
-                g_foc.status.control_mode = FOC_MODE_SPEED;
+                if (!FOC_SetControlMode(FOC_MODE_SPEED)) {
+                    break;
+                }
 
                 float min_spd = g_foc.cfg.motor_min_spd;
                 float max_spd = g_foc.cfg.motor_max_spd;
@@ -507,7 +609,9 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             memcpy(&pct, payload, 4);
             if (fabsf(pct) > 0.001f) {
                 FOC_Input_NotifyHostActivity(500);
-                g_foc.status.control_mode = FOC_MODE_TORQUE;
+                if (!FOC_SetControlMode(FOC_MODE_TORQUE)) {
+                    break;
+                }
                 FOC_SetTorqueRef(pct / 100.0f);
                 if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_BEEP) {
                     FOC_Start();
@@ -532,7 +636,9 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
             memcpy(&pct, payload, 4);
             if (fabsf(pct) > 0.001f) {
                 FOC_Input_NotifyHostActivity(500);
-                g_foc.status.control_mode = FOC_MODE_VOLTAGE;
+                if (!FOC_SetControlMode(FOC_MODE_VOLTAGE)) {
+                    break;
+                }
                 FOC_SetVoltageRef(pct);
                 if (g_foc.status.state == FOC_STATE_IDLE || g_foc.status.state == FOC_STATE_BEEP) {
                     FOC_Start();
@@ -614,14 +720,18 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 memcpy(&amp_args, &payload[1], 4);
                 memcpy(&offset_args, &payload[5], 4);
                 memcpy(&freq_args, &payload[9], 4);
-                Profiler_Start(&g_foc.ctrl.profiler, mode, amp_args, offset_args, freq_args);
                 if (mode != PROFILER_MODE_OFF) {
-                    g_foc.status.control_mode = FOC_MODE_TORQUE;
+                    if (!FOC_SetControlMode(FOC_MODE_TORQUE)) {
+                        send_ack(type, 1);
+                        break;
+                    }
+                    Profiler_Start(&g_foc.ctrl.profiler, mode, amp_args, offset_args, freq_args);
                     if (g_foc.status.state == FOC_STATE_IDLE ||
                         g_foc.status.state == FOC_STATE_BEEP) {
                         FOC_Start();
                     }
                 } else {
+                    Profiler_Start(&g_foc.ctrl.profiler, mode, amp_args, offset_args, freq_args);
                     FOC_Stop();
                 }
                 send_ack(type, 0);

@@ -200,9 +200,10 @@ void FOC_Input_Update(void) {
     if ((state == FOC_STATE_IDLE || (state == FOC_STATE_BEEP && has_throttle)) && s_armed) {
         uint8_t mode_val = (uint8_t)(g_foc.cfg.input_mode + 0.5f);
         if (mode_val > 2) mode_val = 2;
-        g_foc.status.control_mode = (FOC_ControlMode_t)mode_val;
-        FOC_Input_MapThrottle(s_throttle_active);
-        FOC_Start();
+        if (FOC_SetControlMode((FOC_ControlMode_t)mode_val)) {
+            FOC_Input_MapThrottle(s_throttle_active);
+            FOC_Start();
+        }
     } else if (state == FOC_STATE_IDLE && !s_armed) {
         if (cmd.beacon_req >= 1U && cmd.beacon_req <= 5U) {
             static const FOC_BeepType_t k_beacon_types[5] = {

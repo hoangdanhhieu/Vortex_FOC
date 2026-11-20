@@ -28,6 +28,8 @@ static uint32_t s_adc2_b_accum = 0;
 static uint32_t s_adc1_c_pb1_accum = 0;
 static uint32_t s_adc2_c_opamp3_accum = 0;
 static uint16_t s_cal_samples = 0;
+static uint8_t s_cal_step = 0;
+static float s_cal_avg_var = 0.0f;
 
 /* Current sensing noise characterization accumulators */
 static uint64_t s_adc1_sq_accum = 0;
@@ -43,7 +45,6 @@ static uint16_t s_adc1_c_pb1_max = 0;
 static uint16_t s_adc2_c_opamp3_min = 4096;
 static uint16_t s_adc2_c_opamp3_max = 0;
 
-extern volatile uint16_t adc_regular_buffer[3];
 extern volatile float ADC_Vref;
 
 void FOC_Calibration_Reset(void) {
@@ -52,6 +53,8 @@ void FOC_Calibration_Reset(void) {
     s_adc1_c_pb1_accum = 0;
     s_adc2_c_opamp3_accum = 0;
     s_cal_samples = 0;
+    s_cal_step = 0;
+    s_cal_avg_var = 0.0f;
 
     s_vphase_a_accum = 0;
     s_vphase_c_accum = 0;
@@ -74,7 +77,12 @@ void FOC_Calibration_Reset(void) {
     s_adc2_c_opamp3_max = 0;
 }
 
-void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t cal_phase) {
+void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t cal_phase,
+                                uint16_t reg_va, uint16_t reg_vc) {
+    if (s_cal_samples >= CAL_SAMPLES) {
+        return;
+    }
+
     switch (cal_phase) {
         case 0: /* Skip A: ADC1 measured Phase C (PB1), ADC2 measured Phase B (VOPAMP2) */
             s_adc1_c_pb1_accum += adc1_data;
@@ -114,14 +122,12 @@ void FOC_Calibration_Accumulate(uint16_t adc1_data, uint16_t adc2_data, uint8_t 
     }
 
     {
-        uint16_t va = adc_regular_buffer[0];
-        uint16_t vc = adc_regular_buffer[1];
-        s_vphase_a_accum += va;
-        s_vphase_c_accum += vc;
-        if (va < s_vphase_a_min) s_vphase_a_min = va;
-        if (va > s_vphase_a_max) s_vphase_a_max = va;
-        if (vc < s_vphase_c_min) s_vphase_c_min = vc;
-        if (vc > s_vphase_c_max) s_vphase_c_max = vc;
+        s_vphase_a_accum += reg_va;
+        s_vphase_c_accum += reg_vc;
+        if (reg_va < s_vphase_a_min) s_vphase_a_min = reg_va;
+        if (reg_va > s_vphase_a_max) s_vphase_a_max = reg_va;
+        if (reg_vc < s_vphase_c_min) s_vphase_c_min = reg_vc;
+        if (reg_vc > s_vphase_c_max) s_vphase_c_max = reg_vc;
     }
     s_cal_samples++;
 }
@@ -211,65 +217,70 @@ void FOC_ConfigureAWD(void) {
 
 void FOC_StateCalibration(void) {
     if (s_cal_samples >= CAL_SAMPLES) {
-        float n_ab = CAL_SAMPLES * 2.0f / 3.0f;
-        float n_c = CAL_SAMPLES / 3.0f;
+        const float inv_n_ab = 1.0f / (CAL_SAMPLES * (2.0f / 3.0f));
+        const float inv_n_c = 1.0f / (CAL_SAMPLES / 3.0f);
 
-        float mean_a = (float)s_adc1_accum / n_ab;
-        float mean_b = (float)s_adc2_b_accum / n_ab;
-        float mean_c_pb1 = (float)s_adc1_c_pb1_accum / n_c;
-        float mean_c_opamp3 = (float)s_adc2_c_opamp3_accum / n_c;
+        if (s_cal_step == 0) {
+            /* Step 0 (Tick 768): Compute Offsets and Variances (Pure FPU: ~25 cycles) */
+            float mean_a = (float)s_adc1_accum * inv_n_ab;
+            float mean_b = (float)s_adc2_b_accum * inv_n_ab;
+            float mean_c_pb1 = (float)s_adc1_c_pb1_accum * inv_n_c;
+            float mean_c_op3 = (float)s_adc2_c_opamp3_accum * inv_n_c;
 
-        g_foc.cfg.cal_offset_a = (int32_t)(mean_a + 0.5f);
-        g_foc.cfg.cal_offset_b = (int32_t)(mean_b + 0.5f);
-        g_foc.cfg.cal_offset_c_pb1 = (int32_t)(mean_c_pb1 + 0.5f);
-        g_foc.cfg.cal_offset_c_op3 = (int32_t)(mean_c_opamp3 + 0.5f);
-        g_foc.cfg.cal_valid = 1;
+            g_foc.cfg.cal_offset_a = (int32_t)(mean_a + 0.5f);
+            g_foc.cfg.cal_offset_b = (int32_t)(mean_b + 0.5f);
+            g_foc.cfg.cal_offset_c_pb1 = (int32_t)(mean_c_pb1 + 0.5f);
+            g_foc.cfg.cal_offset_c_op3 = (int32_t)(mean_c_op3 + 0.5f);
+            g_foc.cfg.cal_valid = 1;
 
-        /* Calculate Current Sensing RMS Noise & Peak-to-Peak Noise */
-        float var_a = ((float)s_adc1_sq_accum / n_ab) - (mean_a * mean_a);
-        float var_b = ((float)s_adc2_b_sq_accum / n_ab) - (mean_b * mean_b);
-        float var_c_pb1 = ((float)s_adc1_c_pb1_sq_accum / n_c) - (mean_c_pb1 * mean_c_pb1);
-        float var_c_opamp3 =
-            ((float)s_adc2_c_opamp3_sq_accum / n_c) - (mean_c_opamp3 * mean_c_opamp3);
-        if (var_a < 0.0f) var_a = 0.0f;
-        if (var_b < 0.0f) var_b = 0.0f;
-        if (var_c_pb1 < 0.0f) var_c_pb1 = 0.0f;
-        if (var_c_opamp3 < 0.0f) var_c_opamp3 = 0.0f;
+            float var_a = ((float)s_adc1_sq_accum * inv_n_ab) - (mean_a * mean_a);
+            float var_b = ((float)s_adc2_b_sq_accum * inv_n_ab) - (mean_b * mean_b);
+            float var_c_pb1 = ((float)s_adc1_c_pb1_sq_accum * inv_n_c) - (mean_c_pb1 * mean_c_pb1);
+            float var_c_op3 =
+                ((float)s_adc2_c_opamp3_sq_accum * inv_n_c) - (mean_c_op3 * mean_c_op3);
+            if (var_a < 0.0f) var_a = 0.0f;
+            if (var_b < 0.0f) var_b = 0.0f;
+            if (var_c_pb1 < 0.0f) var_c_pb1 = 0.0f;
+            if (var_c_op3 < 0.0f) var_c_op3 = 0.0f;
 
+            s_cal_avg_var = (var_a + var_b + 0.5f * (var_c_pb1 + var_c_op3)) * (1.0f / 3.0f);
+
+            s_cal_step = 1;
+            return;
+        }
+
+        /* Step 1 (Tick 769): Noise Characterization, AWD Hardware Setup & Transition */
         float i_scale = ADC_Vref * fabsf(ADC_TO_CURRENT);
-        float noise_rms_a = sqrtf(var_a) * i_scale;
-        float noise_rms_b = sqrtf(var_b) * i_scale;
-        float noise_rms_c = sqrtf(0.5f * (var_c_pb1 + var_c_opamp3)) * i_scale;
-        float noise_rms = (noise_rms_a + noise_rms_b + noise_rms_c) * (1.0f / 3.0f);
+        float noise_rms = sqrtf(s_cal_avg_var) * i_scale;
 
-        float pk_pk_a = (float)(s_adc1_max - s_adc1_min) * i_scale;
-        float pk_pk_b = (float)(s_adc2_b_max - s_adc2_b_min) * i_scale;
-        float pk_pk_c_pb1 = (float)(s_adc1_c_pb1_max - s_adc1_c_pb1_min) * i_scale;
-        float pk_pk_c_opamp3 = (float)(s_adc2_c_opamp3_max - s_adc2_c_opamp3_min) * i_scale;
-        float pk_pk_c = (pk_pk_c_pb1 > pk_pk_c_opamp3) ? pk_pk_c_pb1 : pk_pk_c_opamp3;
-        float noise_pk_pk = pk_pk_a > pk_pk_b ? pk_pk_a : pk_pk_b;
-        if (pk_pk_c > noise_pk_pk) noise_pk_pk = pk_pk_c;
+        int32_t pk_a = (int32_t)s_adc1_max - (int32_t)s_adc1_min;
+        int32_t pk_b = (int32_t)s_adc2_b_max - (int32_t)s_adc2_b_min;
+        int32_t pk_c1 = (int32_t)s_adc1_c_pb1_max - (int32_t)s_adc1_c_pb1_min;
+        int32_t pk_c2 = (int32_t)s_adc2_c_opamp3_max - (int32_t)s_adc2_c_opamp3_min;
+        int32_t max_pk = (pk_a > pk_b) ? pk_a : pk_b;
+        if (pk_c1 > max_pk) max_pk = pk_c1;
+        if (pk_c2 > max_pk) max_pk = pk_c2;
+        float noise_pk_pk = (float)max_pk * i_scale;
 
         g_foc.cfg.cal_noise_rms = noise_rms;
         g_foc.cfg.cal_noise_pk_pk = noise_pk_pk;
         g_foc.cfg.cal_is_flat_thr = clampf(0.5f * noise_pk_pk, 0.003f, 0.500f);
         g_foc.cfg.cal_i_inj_min = clampf(3.0f * noise_rms, 0.020f, 1.0f);
 
-        /* Restore hardware to default skip C sensing after calibration */
+        /* Restore hardware sensing to Phase C skip */
         FOC_HW_SwitchCurrentSensing(2);
 
-        /* Check if peak-to-peak variation on any phase is above threshold (30 ADC counts)
-         * to detect if the motor is already spinning. */
+        /* Check spinning detection */
         uint16_t diff_a = s_vphase_a_max - s_vphase_a_min;
         uint16_t diff_c = s_vphase_c_max - s_vphase_c_min;
-
         uint8_t is_spinning = (diff_a > 30) || (diff_c > 30);
         if (!is_spinning) {
-            g_foc.cfg.cal_vphase_a = (int32_t)(s_vphase_a_accum / CAL_SAMPLES);
-            g_foc.cfg.cal_vphase_c = (int32_t)(s_vphase_c_accum / CAL_SAMPLES);
+            const float inv_cal_samples = 1.0f / (float)CAL_SAMPLES;
+            g_foc.cfg.cal_vphase_a = (int32_t)((float)s_vphase_a_accum * inv_cal_samples);
+            g_foc.cfg.cal_vphase_c = (int32_t)((float)s_vphase_c_accum * inv_cal_samples);
         }
 
-        /* Synchronize freshly calibrated offsets and noise floor to g_config */
+        /* Synchronize to Flash config */
         FlashConfig_t* cfg_stored = FlashConfig_Get();
         cfg_stored->cal_offset_a = g_foc.cfg.cal_offset_a;
         cfg_stored->cal_offset_b = g_foc.cfg.cal_offset_b;
@@ -285,24 +296,21 @@ void FOC_StateCalibration(void) {
         }
         cfg_stored->cal_valid = 1;
 
+        /* Configure hardware watchdog now that offsets are confirmed */
         FOC_ConfigureAWD();
 
         g_foc.startup.theta = 0.0f;
         g_foc.startup.omega = 0.0f;
         g_foc.startup.counter = 0;
+        s_cal_step = 0;
 
-        /* Auto-calculate physical minimum observer speed based on freshly calibrated noise &
-         * deadtime */
         g_foc.cfg.motor_min_spd = FOC_CalculateObserverMinSpeed();
 
         if (id_result.state != MOTOR_ID_STATE_ALIGN) {
             g_foc.status.state = FOC_STATE_DETECT;
         } else {
             FOC_EnableDrivers(1);
-
-            /* Re-initialize MotorID now that noise_rms has been properly calibrated */
             MotorID_Start();
-
             g_foc.status.state = FOC_STATE_SELF_COMMISSION;
         }
     }

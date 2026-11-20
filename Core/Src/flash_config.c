@@ -152,54 +152,79 @@ void FlashConfig_Apply(void) {
         g_config.cal_valid = 1;
     }
 
-    memcpy(&g_foc.cfg, &g_config, sizeof(FlashConfig_t));
+    FlashConfig_t tmp_cfg;
+    memcpy(&tmp_cfg, &g_config, sizeof(FlashConfig_t));
 
-    if (g_foc.cfg.pwm_frequency < 16000.0f || g_foc.cfg.pwm_frequency > 96000.0f) {
-        g_foc.cfg.pwm_frequency = 48000.0f;
+    if (tmp_cfg.pwm_frequency < 16000.0f || tmp_cfg.pwm_frequency > 96000.0f) {
+        tmp_cfg.pwm_frequency = 48000.0f;
     }
-    if (g_foc.cfg.beep_volume > 100U) {
-        g_foc.cfg.beep_volume = 100U;
+    if (tmp_cfg.beep_volume > 100U) {
+        tmp_cfg.beep_volume = 100U;
     }
 
-    float i_limit = g_foc.cfg.motor_max_curr;
+    float i_limit = tmp_cfg.motor_max_curr;
     float v_limit = g_foc.data.Vbus * SQRT3_INV;
-    if (g_foc.cfg.bw_cur < 1.0f) {
-        float target_bw = g_foc.cfg.pwm_frequency * (1.0f / 15.0f);
-        float noise_rms = (g_foc.cfg.cal_noise_rms > 0.01f) ? g_foc.cfg.cal_noise_rms : 0.035f;
+    if (tmp_cfg.bw_cur < 1.0f) {
+        float target_bw = tmp_cfg.pwm_frequency * (1.0f / 15.0f);
+        float noise_rms = (tmp_cfg.cal_noise_rms > 0.01f) ? tmp_cfg.cal_noise_rms : 0.035f;
         float kp_limit = (0.025f * v_limit) / noise_rms;
-        float bw_noise_limit = kp_limit / (TWO_PI * g_foc.cfg.motor_ls);
-        g_foc.cfg.bw_cur = clampf(bw_noise_limit, 400.0f, target_bw);
+        float bw_noise_limit = kp_limit / (TWO_PI * tmp_cfg.motor_ls);
+        tmp_cfg.bw_cur = clampf(bw_noise_limit, 400.0f, target_bw);
     }
 
-    if (g_foc.cfg.kp_id < 1e-6 || g_foc.cfg.ki_id < 1e-6 || g_foc.cfg.kp_iq < 1e-6 ||
-        g_foc.cfg.ki_iq < 1e-6) {
-        g_foc.cfg.kp_id = TWO_PI * g_foc.cfg.bw_cur * g_foc.cfg.motor_ls;
-        g_foc.cfg.ki_id = TWO_PI * g_foc.cfg.bw_cur * g_foc.cfg.motor_rs;
-        g_foc.cfg.kp_iq = g_foc.cfg.kp_id;
-        g_foc.cfg.ki_iq = g_foc.cfg.ki_id;
+    if (tmp_cfg.kp_id < 1e-6f || tmp_cfg.ki_id < 1e-6f || tmp_cfg.kp_iq < 1e-6f ||
+        tmp_cfg.ki_iq < 1e-6f) {
+        tmp_cfg.kp_id = TWO_PI * tmp_cfg.bw_cur * tmp_cfg.motor_ls;
+        tmp_cfg.ki_id = TWO_PI * tmp_cfg.bw_cur * tmp_cfg.motor_rs;
+        tmp_cfg.kp_iq = tmp_cfg.kp_id;
+        tmp_cfg.ki_iq = tmp_cfg.ki_id;
     }
 
     float bw_obs = 3000.0f;
-    if (g_foc.cfg.motor_ls > 1e-7f) {
+    if (tmp_cfg.motor_ls > 1e-7f) {
         float f_elec_max =
-            (g_foc.cfg.motor_kv * g_foc.data.Vbus * g_foc.cfg.motor_poles) * (1.0f / 60.0f);
-        float f_motor = g_foc.cfg.motor_rs / (TWO_PI * g_foc.cfg.motor_ls);
+            (tmp_cfg.motor_kv * g_foc.data.Vbus * tmp_cfg.motor_poles) * (1.0f / 60.0f);
+        float f_motor = tmp_cfg.motor_rs / (TWO_PI * tmp_cfg.motor_ls);
         float bw_obs_target = fmaxf(2.0f * f_motor, 2.5f * f_elec_max);
-        bw_obs_target = fmaxf(bw_obs_target, 1.5f * g_foc.cfg.bw_cur);
-        float max_obs_hw = g_foc.cfg.pwm_frequency * (1.0f / 6.0f);
+        bw_obs_target = fmaxf(bw_obs_target, 1.5f * tmp_cfg.bw_cur);
+        float max_obs_hw = tmp_cfg.pwm_frequency * (1.0f / 6.0f);
         bw_obs = clampf(bw_obs_target, 1.5f * f_motor, max_obs_hw);
     }
 
-    g_foc.timer_arr = (uint32_t)((float)SYSCLK_FREQ / (2.0f * g_foc.cfg.pwm_frequency) + 0.5f);
-    g_foc.timer_arr_f = (float)g_foc.timer_arr;
-    g_foc.dt = 1.0f / g_foc.cfg.pwm_frequency;
-    g_foc.deadtime_duty = g_foc.cfg.deadtime_ns * 1e-9f * g_foc.cfg.pwm_frequency;
-    if (g_foc.cfg.motor_ls > 1e-7f) {
-        float f_bw = (g_foc.cfg.kp_iq / g_foc.cfg.motor_ls) * (1.0f / TWO_PI);
-        g_foc.wc_current_stf = TWO_PI * clampf(3.0f * f_bw, 500.0f, 4000.0f);
+    uint32_t timer_arr = (uint32_t)((float)SYSCLK_FREQ / (2.0f * tmp_cfg.pwm_frequency) + 0.5f);
+    float timer_arr_f = (float)timer_arr;
+    float dt = 1.0f / tmp_cfg.pwm_frequency;
+    float deadtime_duty = tmp_cfg.deadtime_ns * 1e-9f * tmp_cfg.pwm_frequency;
+    float i_sq_lpf_alpha = clampf(480.0f * dt, 0.002f, 0.25f);
+    float wc_current_stf;
+    if (tmp_cfg.motor_ls > 1e-7f) {
+        float f_bw = (tmp_cfg.kp_iq / tmp_cfg.motor_ls) * (1.0f / TWO_PI);
+        wc_current_stf = TWO_PI * clampf(3.0f * f_bw, 500.0f, 4000.0f);
     } else {
-        g_foc.wc_current_stf = TWO_PI * 1500.0f;
+        wc_current_stf = TWO_PI * 1500.0f;
     }
+
+    /* Compute hardware-level constraints (ADC trigger shifting & Max Duty) */
+    float margin = tmp_cfg.adc_margin_ticks + DEAD_TIME_NS * 1e-9f * (float)SYSCLK_FREQ;
+    float total_sampling_ticks = margin + ADC_TICKS / 2.0f;
+    float max_duty = clampf(1.0f - total_sampling_ticks / timer_arr_f, 0.50f, MAX_DUTY_HIGH);
+    float min_duty = clampf(deadtime_duty, 0.0f, 0.05f);
+    float v_max_scale = SQRT3_INV * (max_duty - min_duty);
+    uint32_t trigger = timer_arr - ADC_TICKS / 2;
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    memcpy(&g_foc.cfg, &tmp_cfg, sizeof(FlashConfig_t));
+    g_foc.timer_arr = timer_arr;
+    g_foc.timer_arr_f = timer_arr_f;
+    g_foc.dt = dt;
+    g_foc.deadtime_duty = deadtime_duty;
+    g_foc.wc_current_stf = wc_current_stf;
+    g_foc.i_sq_lpf_alpha = i_sq_lpf_alpha;
+    g_foc.max_duty = max_duty;
+    g_foc.v_max_scale = v_max_scale;
+    g_foc.v_max = g_foc.data.Vbus * v_max_scale;
 
     PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
     PI_SetLimits(&g_foc.ctrl.id, -v_limit, v_limit);
@@ -226,16 +251,12 @@ void FlashConfig_Apply(void) {
                        g_foc.cfg.motor_alpha, g_foc.cfg.motor_flux, g_foc.cfg.motor_poles,
                        g_foc.cfg.motor_max_spd, bw_obs);
 
-    /* Update hardware-level constraints (ADC trigger shifting & Max Duty) */
-    float margin = g_foc.cfg.adc_margin_ticks + DEAD_TIME_NS * 1e-9f * (float)SYSCLK_FREQ;
-    float total_sampling_ticks = margin + ADC_TICKS / 2.0f;
-    float max_duty = 1.0f - total_sampling_ticks / g_foc.timer_arr_f;
-
-    g_foc.max_duty = clampf(max_duty, 0.50f, MAX_DUTY_HIGH);
-
-    uint32_t trigger = g_foc.timer_arr - ADC_TICKS / 2;
     LL_TIM_OC_SetCompareCH4(TIM1, trigger);
     LL_TIM_SetAutoReload(TIM1, g_foc.timer_arr);
+
+    if (!primask) {
+        __enable_irq();
+    }
 
     /* Update hardware watchdogs dynamically with the new safety limits */
     FOC_ConfigureAWD();

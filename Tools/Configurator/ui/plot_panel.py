@@ -19,24 +19,55 @@ CHANNEL_COLORS = ['#f38ba8', '#89b4fa', '#a6e3a1', '#f9e2af']
 
 # List of plottable PIDs — mirrors MCU stream_get_ch() fast-path
 PLOTABLE_PIDS = [
-    (protocol.ParamId.IA,        "Phase A Current (A)"),
-    (protocol.ParamId.IB,        "Phase B Current (A)"),
-    (protocol.ParamId.IC,        "Phase C Current (A)"),
-    (protocol.ParamId.ID_MEAS,   "Id Current (A)"),
-    (protocol.ParamId.IQ_MEAS,   "Iq Current (A)"),
-    (protocol.ParamId.TRQ_REF,   "Iq Target (A)"),
-    (protocol.ParamId.RPM,       "Speed (RPM)"),
-    (protocol.ParamId.SPD_REF,   "Speed Target (RPM)"),
-    (protocol.ParamId.VBUS,      "Bus Voltage (V)"),
-    (protocol.ParamId.DUTY_A,    "Duty Cycle A"),
-    (protocol.ParamId.DUTY_B,    "Duty Cycle B"),
-    (protocol.ParamId.DUTY_C,    "Duty Cycle C"),
-    (protocol.ParamId.VD,        "Vd Voltage (V)"),
-    (protocol.ParamId.VQ,        "Vq Voltage (V)"),
-    (protocol.ParamId.THETA_ELEC,"Elec Angle (rad)"),
-    (protocol.ParamId.USER_PLOT1,"User Plot 1"),
-    (protocol.ParamId.USER_PLOT2,"User Plot 2"),
-    (protocol.ParamId.USER_PLOT3,"User Plot 3"),
+    # Currents
+    (protocol.ParamId.IA,             "Phase A Current (A)"),
+    (protocol.ParamId.IB,             "Phase B Current (A)"),
+    (protocol.ParamId.IC,             "Phase C Current (A)"),
+    (protocol.ParamId.ID_MEAS,        "Id Current (A)"),
+    (protocol.ParamId.IQ_MEAS,        "Iq Current (A)"),
+    (protocol.ParamId.TRQ_REF,        "Iq Target (A)"),
+    (protocol.ParamId.ID_REF,         "Id Target (A)"),
+    (protocol.ParamId.IALPHA_FLT,     "Ialpha STF (A)"),
+    (protocol.ParamId.IBETA_FLT,      "Ibeta STF (A)"),
+    (protocol.ParamId.IBUS,           "DC Bus Current (A)"),
+    # Voltages
+    (protocol.ParamId.VBUS,           "Bus Voltage (V)"),
+    (protocol.ParamId.VD,             "Vd Voltage (V)"),
+    (protocol.ParamId.VQ,             "Vq Voltage (V)"),
+    (protocol.ParamId.VPHASE_A,       "Phase A Terminal (V)"),
+    (protocol.ParamId.VPHASE_B,       "Phase B Terminal (V)"),
+    (protocol.ParamId.VPHASE_C,       "Phase C Terminal (V)"),
+    (protocol.ParamId.DUTY_A,         "Duty Cycle A"),
+    (protocol.ParamId.DUTY_B,         "Duty Cycle B"),
+    (protocol.ParamId.DUTY_C,         "Duty Cycle C"),
+    # Speed & Disturbance
+    (protocol.ParamId.RPM,            "Speed (RPM)"),
+    (protocol.ParamId.SPD_REF,        "Speed Target (RPM)"),
+    (protocol.ParamId.SPD_TARGET,     "Speed Host Target (RPM)"),
+    (protocol.ParamId.LADRC_SPD,      "LADRC Speed (RPM)"),
+    (protocol.ParamId.LADRC_DIST,     "LADRC Disturbance (rad/s^2)"),
+    # Observer & Angle
+    (protocol.ParamId.THETA_ELEC,     "Elec Angle PWM (norm)"),
+    (protocol.ParamId.THETA_PARK,     "Theta Park (norm)"),
+    (protocol.ParamId.THETA_ERR,      "PLL Angle Error (norm)"),
+    (protocol.ParamId.PHASE_LAG,      "SMO Phase Lag (norm)"),
+    (protocol.ParamId.EALPHA_FLT,     "BEMF Alpha (V)"),
+    (protocol.ParamId.EBETA_FLT,      "BEMF Beta (V)"),
+    (protocol.ParamId.BEMF_MAG,       "BEMF Magnitude (V)"),
+    (protocol.ParamId.CURRENT_ERR_SQ, "Current Err Sq (A^2)"),
+    (protocol.ParamId.L_RATIO,        "Inductance Sat L(I)/L0"),
+    # Diagnostics & Transitions
+    (protocol.ParamId.STALL_RISK,     "Stall Risk Index (0-1)"),
+    (protocol.ParamId.D_DESYNC,       "Desync Index (0-1)"),
+    (protocol.ParamId.ETA_EM,         "Efficiency Ratio (0-1)"),
+    (protocol.ParamId.R_BEMF,         "Residual BEMF Ratio"),
+    (protocol.ParamId.DIR_ACTIVE,     "Active Direction (+1/-1)"),
+    (protocol.ParamId.ZC_OMEGA,       "Zero-Cross Speed (RPM)"),
+    # Performance & Debug
+    (protocol.ParamId.ISR_CYCLES,     "FOC ISR Time (cycles)"),
+    (protocol.ParamId.USER_PLOT1,     "User Plot 1"),
+    (protocol.ParamId.USER_PLOT2,     "User Plot 2"),
+    (protocol.ParamId.USER_PLOT3,     "User Plot 3"),
 ]
 
 
@@ -356,7 +387,17 @@ class PlotPanel(QWidget):
             if self.ch_enables[i].isChecked():
                 pid = self.ch_combos[i].currentData()
                 self.active_channels.append((i, pid))
-                scale = rad_to_rpm if pid in (protocol.ParamId.RPM, protocol.ParamId.SPD_REF) else 1.0
+                scale = (
+                    rad_to_rpm
+                    if pid in (
+                        protocol.ParamId.RPM,
+                        protocol.ParamId.SPD_REF,
+                        protocol.ParamId.LADRC_SPD,
+                        protocol.ParamId.SPD_TARGET,
+                        protocol.ParamId.ZC_OMEGA,
+                    )
+                    else 1.0
+                )
                 self._ch_scales.append(scale)
 
         if not self.active_channels:

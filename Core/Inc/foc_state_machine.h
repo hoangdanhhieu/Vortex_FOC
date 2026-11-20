@@ -60,9 +60,10 @@ typedef struct {
     FOC_State_t state;              /**< Current state machine state */
     FOC_ControlMode_t control_mode; /**< Control mode: Speed, Torque (Current), or Voltage */
     FOC_Fault_t fault;              /**< Active system fault code */
-    float reverse;         /**< Motor rotation direction [dimensionless: 1.0 = FWD, -1.0 = REV] */
-    uint8_t in_transition; /**< Open-loop to closed-loop handoff flag [0 = Normal, 1 = Blending] */
-    uint32_t run_counter;  /**< Control loop execution tick counter */
+    float reverse;          /**< Motor rotation direction [dimensionless: 1.0 = FWD, -1.0 = REV] */
+    uint8_t in_transition;  /**< Open-loop to closed-loop handoff flag [0 = Normal, 1 = Blending] */
+    uint8_t was_transition; /**< Previous-cycle transition flag for bumpless edge detection */
+    uint32_t run_counter;   /**< Control loop execution tick counter */
 } FOC_Status_t;
 
 typedef struct {
@@ -91,7 +92,10 @@ typedef struct {
     float stall_risk;             /**< Real-time leaky stall risk accumulator [0.0 to 1.0] */
     float eta_em;                 /**< Scale-free electromechanical power conversion ratio */
     float d_desync;               /**< Back-EMF vector desynchronization index [0.0 to 1.0] */
-    float r_bemf; /**< Residual Back-EMF ratio (Hallucination buster) [0.0 to 1.0] */
+    float r_bemf;      /**< Residual Back-EMF ratio (Hallucination buster) [0.0 to 1.0] */
+    float I_sq_flt;    /**< Filtered squared stator current magnitude [A^2] */
+    float l_inc_ratio; /**< Real-time L_inc(I)/L0 incremental saturation ratio (PI Kp) */
+    float l_app_ratio; /**< Real-time L_app(I)/L0 apparent ratio (SMO ZOH & omega*Ls) */
 } FOC_Data_t;
 
 typedef struct {
@@ -172,10 +176,13 @@ typedef struct {
     float dt;             /**< Control loop sample period [s] (1.0 / pwm_frequency) */
     float deadtime_duty;  /**< Dynamic deadtime duty compensation [dimensionless] */
     float wc_current_stf; /**< Precomputed cutoff frequency for current STF filter [rad/s] */
+    float i_sq_lpf_alpha; /**< Precomputed ~76 Hz LPF coefficient for I_sq_flt */
 
     /*--- Constraints & Performance ---*/
     float max_duty; /**< Maximum allowed PWM duty cycle clamp [dimensionless: 0.0 to 1.0] */
-    uint32_t isr_time_cycles; /**< ADC ISR execution time [CPU clock cycles @ 170MHz] */
+    float v_max_scale;
+    float v_max;
+    float isr_time_cycles; /**< ADC ISR execution time [CPU clock cycles @ 170MHz] */
 
     /*--- Plotting (Telemetry Snapshot) ---*/
     FOC_Plot_t plot;
@@ -284,6 +291,13 @@ void FOC_Stop(void);
  * @param adc2_data Raw ADC2 injected rank 1 value (phase depends on channel config)
  */
 void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data);
+
+/**
+ * @brief Set FOC control mode (only allowed when motor is IDLE, STOP, or BEEP, or already in mode)
+ * @param mode Target control mode
+ * @return 1 if mode is active/updated, 0 if rejected
+ */
+uint8_t FOC_SetControlMode(FOC_ControlMode_t mode);
 
 /**
  * @brief Set speed reference

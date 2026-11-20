@@ -46,7 +46,7 @@ static inline void get_pure_bemf(float* alpha, float* beta) {
         s_dc_alpha = raw_alpha;
         s_dc_beta = raw_beta;
     } else {
-        float alpha_dc = 15 * g_foc.dt * TWO_PI;
+        float alpha_dc = 15.0f * g_foc.dt * TWO_PI;
         s_dc_alpha += (raw_alpha - s_dc_alpha) * alpha_dc;
         s_dc_beta += (raw_beta - s_dc_beta) * alpha_dc;
     }
@@ -125,20 +125,9 @@ void FOC_StateDetect(void) {
             float sign_w = (s_cross_prod_sum >= 0.0f) ? 1.0f : -1.0f;
             est_omega *= sign_w;
 
-            if (fabsf(est_omega) > g_foc.ctrl.smo.pll_int_max) {
-                est_omega =
-                    (est_omega > 0.0f) ? g_foc.ctrl.smo.pll_int_max : -g_foc.ctrl.smo.pll_int_max;
-            }
-
             float theta_init = cordic_atan2(-E_alpha * sign_w, E_beta * sign_w);
-            g_foc.ctrl.smo.theta_est = theta_init;
-
-            g_foc.ctrl.smo.omega_est = est_omega;
-            g_foc.ctrl.smo.omega_out = est_omega;
-            g_foc.ctrl.smo.pll_integral = est_omega;
-            g_foc.data.omega_elec = est_omega;
-
-            SMO_SetDirection(&g_foc.ctrl.smo, sign_w);
+            SMO_SeedFlyingStart(&g_foc.ctrl.smo, theta_init, est_omega, sign_w, g_foc.data.Vbus);
+            g_foc.data.omega_elec = g_foc.ctrl.smo.omega_est;
 
             s_flying_start_counter = 0;
             g_foc.status.state = FOC_STATE_FLYING_START;
@@ -216,27 +205,8 @@ void FOC_StateFlyingStart(void) {
             g_foc.ctrl.iq.integral = E_bemf * (1.0f - ff_gain);
         }
 
-        /* Seed SMO current observer using inverse sigmoid so the observer starts ALREADY
-         * on the sliding surface. This prevents BEMF from collapsing to 0.0V (zero-sigmoid shock)
-         * on cycle 1 of RUN. */
-        float k_slide = g_foc.ctrl.smo.k_slide;
-        float k_sigmoid = g_foc.ctrl.smo.k_sigmoid;
-        if (k_slide > 0.1f) {
-            float inv_ks = 1.0f / k_slide;
-            float ya = clampf(g_foc.ctrl.smo.Ealpha_flt * inv_ks, -0.95f, 0.95f);
-            float yb = clampf(g_foc.ctrl.smo.Ebeta_flt * inv_ks, -0.95f, 0.95f);
-            float err_a = (k_sigmoid * ya) / (1.0f - fabsf(ya));
-            float err_b = (k_sigmoid * yb) / (1.0f - fabsf(yb));
-            g_foc.ctrl.smo.Ialpha_est = g_foc.data.Ialpha + err_a;
-            g_foc.ctrl.smo.Ibeta_est = g_foc.data.Ibeta + err_b;
-        } else {
-            g_foc.ctrl.smo.Ialpha_est = g_foc.data.Ialpha;
-            g_foc.ctrl.smo.Ibeta_est = g_foc.data.Ibeta;
-        }
-
-        /* Seed SMO raw BEMF states using clean STF-filtered BEMF vector */
-        g_foc.ctrl.smo.Ealpha = g_foc.ctrl.smo.Ealpha_flt;
-        g_foc.ctrl.smo.Ebeta = g_foc.ctrl.smo.Ebeta_flt;
+        /* Seed SMO current observer onto the sliding surface from filtered BEMF */
+        SMO_SeedCurrentFromBEMF(&g_foc.ctrl.smo, g_foc.data.Ialpha_flt, g_foc.data.Ibeta_flt);
 
         /* Set actual rotor direction for the state machine and SMO */
         float spin_dir = (omega_now >= 0.0f) ? 1.0f : -1.0f;
@@ -248,7 +218,7 @@ void FOC_StateFlyingStart(void) {
             g_foc.cmd.speed_ref = omega_now;
             LADRC_SeedState(&g_foc.ctrl.speed, omega_now, 0.0f);
         } else if (g_foc.status.control_mode == FOC_MODE_VOLTAGE) {
-            float max_v = SQRT3_INV * 2.0f * (g_foc.max_duty - 0.5f) * g_foc.data.Vbus;
+            float max_v = g_foc.v_max;
             float E_bemf_norm = (max_v > 1.0f) ? (E_bemf / max_v) : 0.0f;
             g_foc.cmd.Vq_ref = clampf(E_bemf_norm, -1.0f, 1.0f);
         }
