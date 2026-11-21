@@ -15,6 +15,7 @@
 typedef struct {
     float Kp;       /**< Proportional gain */
     float Ki;       /**< Integral gain */
+    float ki_dt;    /**< Precomputed Ki * dt */
     float integral; /**< Integral accumulator */
     float out_min;  /**< Output minimum limit */
     float out_max;  /**< Output maximum limit */
@@ -49,7 +50,7 @@ void PI_Reset(PI_Controller_t* pi);
 CCMRAM_FUNC static inline float PI_Update(PI_Controller_t* pi, float error) {
     float p_term = pi->Kp * error;
 
-    float new_integral = pi->integral + pi->Ki * error * pi->dt;
+    float new_integral = pi->integral + pi->ki_dt * error;
     new_integral = clampf(new_integral, pi->int_min, pi->int_max);
 
     float output = p_term + new_integral;
@@ -74,6 +75,12 @@ CCMRAM_FUNC static inline float PI_Update(PI_Controller_t* pi, float error) {
 static inline void PI_SetGains(PI_Controller_t* pi, float Kp, float Ki) {
     pi->Kp = Kp;
     pi->Ki = Ki;
+    pi->ki_dt = Ki * pi->dt;
+}
+
+static inline void PI_SetTiming(PI_Controller_t* pi, float dt) {
+    pi->dt = dt;
+    pi->ki_dt = pi->Ki * dt;
 }
 
 static inline void PI_SetLimits(PI_Controller_t* pi, float out_min, float out_max) {

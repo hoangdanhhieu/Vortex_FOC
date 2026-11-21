@@ -193,8 +193,8 @@ RAM_FUNC void FOC_StateStartup(void) {
     g_foc.data.Vd = PI_Update(&g_foc.ctrl.id, Id_error);
     g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error);
 
-    /* Clamp (Vd, Vq) vector magnitude to 0.57735 * Vbus (SVPWM linear limit) */
-    float max_v = g_foc.v_max;
+    /* Clamp (Vd, Vq) vector magnitude to Zone 1 SVPWM linear limit */
+    float max_v = g_foc.data.Vbus * g_foc.v_max_scale_z1;
     float v_sq = g_foc.data.Vd * g_foc.data.Vd + g_foc.data.Vq * g_foc.data.Vq;
     if (v_sq > max_v * max_v && v_sq > 1e-6f) {
         float inv_v = max_v / sqrtf(v_sq);

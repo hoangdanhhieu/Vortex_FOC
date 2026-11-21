@@ -170,18 +170,25 @@ typedef struct {
     FlashConfig_t cfg; /**< Persistent motor and control parameters loaded from Flash */
 
     /*--- Dynamic Timing & Hardware Timer ---*/
-    uint32_t timer_arr;   /**< TIM1 Auto-Reload value based on pwm_frequency */
-    float timer_arr_f;    /**< Float copy of timer_arr for fast duty cycle calculation */
-    float dt;             /**< Control loop sample period [s] (1.0 / pwm_frequency) */
-    float deadtime_duty;  /**< Dynamic deadtime duty compensation [dimensionless] */
-    float wc_current_stf; /**< Precomputed cutoff frequency for current STF filter [rad/s] */
-    float i_sq_lpf_alpha; /**< Precomputed ~76 Hz LPF coefficient for I_sq_flt */
+    uint32_t timer_arr;      /**< TIM1 Auto-Reload value based on pwm_frequency */
+    float timer_arr_f;       /**< Float copy of timer_arr for fast duty cycle calculation */
+    float dt;                /**< Control loop sample period [s] (1.0 / pwm_frequency) */
+    float deadtime_duty;     /**< Dynamic deadtime duty compensation [dimensionless] */
+    float wc_current_stf;    /**< Precomputed cutoff frequency for current STF filter [rad/s] */
+    float i_sq_lpf_alpha;    /**< Precomputed ~76 Hz LPF coefficient for I_sq_flt */
+    float current_stf_decay; /**< Precomputed exp(-wc_current_stf * dt) */
+    float current_stf_alpha; /**< Precomputed 1.0 - current_stf_decay */
+    float volt_ramp_step;    /**< Precomputed dt / (voltage_ramp_rate_ms * 0.001) */
 
     /*--- Constraints & Performance ---*/
-    float max_duty; /**< Maximum allowed PWM duty cycle clamp [dimensionless: 0.0 to 1.0] */
-    float v_max_scale;
-    float v_max;
-    float isr_time_cycles; /**< ADC ISR execution time [CPU clock cycles @ 170MHz] */
+    float max_duty;           /**< 2-phase ADC sampling upper limit [0.50 to MAX_DUTY_HIGH] */
+    float v_max_scale_z1;     /**< Zone 1 linear scale: SQRT3_INV * max_duty */
+    float v_max_scale_z2;     /**< Zone 2 DPWM1 scale: min((2/3) * max_duty, SQRT3_INV) */
+    float v_max_scale;        /**< Active voltage scale (z1 if OFF, z2 if ON) */
+    float v_max;              /**< Dynamic voltage vector limit Vbus * v_max_scale [V] */
+    float deadtime_fade_span; /**< Precomputed per-phase boundary fade width [duty] */
+    float deadtime_fade_inv;  /**< Precomputed 1.0 / deadtime_fade_span */
+    float isr_time_cycles;    /**< ADC ISR execution time [CPU clock cycles @ 170MHz] */
 
     /*--- Plotting (Telemetry Snapshot) ---*/
     FOC_Plot_t plot;
@@ -273,6 +280,11 @@ uint8_t FOC_IsConfigValid(void);
  * @brief Initialize FOC control structure
  */
 void FOC_Init(void);
+
+/**
+ * @brief Recompute derived timing, ramp, decoupling, and saturation constants in g_foc.
+ */
+void FOC_SyncDerivedParams(void);
 
 /**
  * @brief Start motor

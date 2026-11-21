@@ -8,12 +8,13 @@
 void PI_Init(PI_Controller_t* pi, float Kp, float Ki, float out_min, float out_max, float dt) {
     pi->Kp = Kp;
     pi->Ki = Ki;
+    pi->dt = dt;
+    pi->ki_dt = Ki * dt;
     pi->integral = 0.0f;
     pi->out_min = out_min;
     pi->out_max = out_max;
     pi->int_min = out_min;
     pi->int_max = out_max;
-    pi->dt = dt;
 }
 
 void PI_Reset(PI_Controller_t* pi) {

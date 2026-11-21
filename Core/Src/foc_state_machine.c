@@ -42,12 +42,32 @@ extern volatile uint16_t adc_regular_buffer[3];
 extern volatile float ADC_Vref;
 static float s_valpha_active = 0.0f;
 static float s_vbeta_active = 0.0f;
+static float s_da_active = 0.5f;
+static float s_db_active = 0.5f;
+static float s_dc_active = 0.5f;
+static uint8_t s_ovm_speed_ok = 0U;
 
 static void FOC_StateRun(void);
-static void FOC_StateZeroCross(void);
+NOINLINE_FUNC static void FOC_StateZeroCross(void);
 NOINLINE_FUNC static void FOC_ZeroCross_Init(float target_dir, float omega_cross);
 NOINLINE_FUNC static void FOC_StateSelfCommission(void);
 void FOC_StateBeep(void);
+
+void FOC_SyncDerivedParams(void) {
+    float dt = (g_foc.dt > 0.0f) ? g_foc.dt : CONTROL_PERIOD;
+
+    float decay = expf(-g_foc.wc_current_stf * dt);
+    decay = clampf(decay, 0.0f, 1.0f);
+    g_foc.current_stf_decay = decay;
+    g_foc.current_stf_alpha = 1.0f - decay;
+
+    float ramp_time_s = g_foc.cfg.voltage_ramp_rate_ms * 0.001f;
+    g_foc.volt_ramp_step = (ramp_time_s > 1e-4f) ? (dt / ramp_time_s) : 1.0f;
+
+    float fade_span = fmaxf(2.0f * g_foc.deadtime_duty, 0.03f);
+    g_foc.deadtime_fade_span = fade_span;
+    g_foc.deadtime_fade_inv = (fade_span > 1e-5f) ? (1.0f / fade_span) : 0.0f;
+}
 
 uint8_t FOC_IsInitialized(void) {
     return foc_initialized;
@@ -98,6 +118,8 @@ void FOC_Init(void) {
     g_foc.data.Valpha = g_foc.data.Vbeta = 0.0f;
     g_foc.data.Valpha_applied = g_foc.data.Vbeta_applied = 0.0f;
     s_valpha_active = s_vbeta_active = 0.0f;
+    s_da_active = s_db_active = s_dc_active = 0.5f;
+    s_ovm_speed_ok = 0U;
     g_foc.data.Vbus = 12.0f;
     g_foc.data.Vbus_inv = 1.0f / 12.0f;
     g_foc.data.Ibus = 0.0f;
@@ -124,8 +146,20 @@ void FOC_Init(void) {
 
     g_foc.data.duty_a = g_foc.data.duty_b = g_foc.data.duty_c = 0.5f;
 
-    g_foc.dt = (g_foc.cfg.pwm_frequency > 0.0f) ? (1.0f / g_foc.cfg.pwm_frequency) : CONTROL_PERIOD;
+    float pwm_freq =
+        (g_foc.cfg.pwm_frequency > 0.0f) ? g_foc.cfg.pwm_frequency : (float)PWM_FREQUENCY;
+    g_foc.timer_arr = (uint32_t)((float)SYSCLK_FREQ / (2.0f * pwm_freq) + 0.5f);
+    g_foc.timer_arr_f = (float)g_foc.timer_arr;
+    g_foc.dt = 1.0f / pwm_freq;
     g_foc.i_sq_lpf_alpha = clampf(480.0f * g_foc.dt, 0.002f, 0.25f);
+    g_foc.wc_current_stf = TWO_PI * CURRENT_STF_FC;
+    g_foc.max_duty = (float)MAX_DUTY_HIGH;
+    g_foc.v_max_scale_z1 = SQRT3_INV * g_foc.max_duty;
+    g_foc.v_max_scale_z2 = fminf((2.0f / 3.0f) * g_foc.max_duty, SQRT3_INV);
+    g_foc.v_max_scale =
+        (g_foc.cfg.overmod_enable != 0U) ? g_foc.v_max_scale_z2 : g_foc.v_max_scale_z1;
+    g_foc.v_max = g_foc.data.Vbus * g_foc.v_max_scale;
+    FOC_SyncDerivedParams();
 
     PI_Init(&g_foc.ctrl.id, 0.0f, 0.0f, -0.0f, 0.0f, g_foc.dt);
     PI_SetIntLimits(&g_foc.ctrl.id, -12.0f, 12.0f);
@@ -166,7 +200,7 @@ void FOC_Start(void) {
             g_foc.data.duty_a = 0.5f;
             g_foc.data.duty_b = 0.5f;
             g_foc.data.duty_c = 0.5f;
-            FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
+            FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f, g_foc.timer_arr_f);
         }
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
@@ -207,9 +241,12 @@ void FOC_Start(void) {
         /* Reset ADC channel switching to default (skip C) */
         s_skip_phase = 2;
         s_cal_phase = 2;
+        s_da_active = s_db_active = s_dc_active = 0.5f;
+        s_ovm_speed_ok = 0U;
         FOC_HW_SwitchCurrentSensing(s_skip_phase);
 
-        float v_limit = g_foc.data.Vbus * SQRT3_INV;
+        float v_limit = g_foc.data.Vbus * g_foc.v_max_scale;
+        g_foc.v_max = v_limit;
         PI_SetLimits(&g_foc.ctrl.id, -v_limit, v_limit);
         PI_SetIntLimits(&g_foc.ctrl.id, -v_limit, v_limit);
         PI_SetLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
@@ -235,7 +272,7 @@ void FOC_Stop(void) {
     if (g_foc.status.state != FOC_STATE_FAULT) {
         g_foc.status.state = FOC_STATE_IDLE;
     }
-    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
+    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f, g_foc.timer_arr_f);
 
     FOC_Beep_Stop();
     MotorID_Stop();
@@ -252,6 +289,8 @@ void FOC_Stop(void) {
     g_foc.data.l_inc_ratio = 1.0f;
     g_foc.data.l_app_ratio = 1.0f;
     s_valpha_active = s_vbeta_active = 0.0f;
+    s_da_active = s_db_active = s_dc_active = 0.5f;
+    s_ovm_speed_ok = 0U;
 
     g_foc.cmd.Id_ref = 0.0f;
     g_foc.cmd.Iq_ref = 0.0f;
@@ -285,6 +324,10 @@ NOINLINE_FUNC static void FOC_StateIdle(void) {
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
+    s_da_active = 0.5f;
+    s_db_active = 0.5f;
+    s_dc_active = 0.5f;
+    s_ovm_speed_ok = 0U;
 }
 
 NOINLINE_FUNC static void FOC_StateFault(void) {
@@ -292,7 +335,11 @@ NOINLINE_FUNC static void FOC_StateFault(void) {
     g_foc.data.duty_a = 0.5f;
     g_foc.data.duty_b = 0.5f;
     g_foc.data.duty_c = 0.5f;
-    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
+    s_da_active = 0.5f;
+    s_db_active = 0.5f;
+    s_dc_active = 0.5f;
+    s_ovm_speed_ok = 0U;
+    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f, g_foc.timer_arr_f);
 }
 
 /*===========================================================================*/
@@ -323,7 +370,7 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
             break;
     }
     g_foc.status.run_counter++;
-    if (g_foc.cfg.direction < 0.0f) {
+    if (g_foc.cfg.direction < 0) {
         float t = ib;
         ib = ic;
         ic = t;
@@ -332,8 +379,7 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     g_foc.data.Ib = ib;
     g_foc.data.Ic = ic;
 
-    clarke_transform(g_foc.data.Ia, g_foc.data.Ib, g_foc.data.Ic, &g_foc.data.Ialpha,
-                     &g_foc.data.Ibeta);
+    clarke_transform(ia, ib, ic, &g_foc.data.Ialpha, &g_foc.data.Ibeta);
 
     /* Snapshot regular ADC phase-voltage pair BEFORE re-triggering DMA scan */
     uint16_t reg_va = adc_regular_buffer[0];
@@ -350,8 +396,9 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         return;
     }
 
-    stf_filter_step(g_foc.data.Ialpha, g_foc.data.Ibeta, &g_foc.data.Ialpha_flt,
-                    &g_foc.data.Ibeta_flt, g_foc.wc_current_stf, g_foc.data.omega_elec, g_foc.dt);
+    stf_filter_step_coeff(g_foc.data.Ialpha, g_foc.data.Ibeta, &g_foc.data.Ialpha_flt,
+                          &g_foc.data.Ibeta_flt, g_foc.current_stf_decay, g_foc.current_stf_alpha,
+                          g_foc.data.omega_elec, g_foc.dt);
 
     /* Continuous physical magnetic saturation ratios L_inc(I)/L0 and L_app(I)/L0 */
     if (g_foc.cfg.motor_alpha > 0.0f) {
@@ -359,8 +406,10 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
                            g_foc.data.Ibeta_flt * g_foc.data.Ibeta_flt;
         g_foc.data.I_sq_flt += g_foc.i_sq_lpf_alpha * (I_sq_clean - g_foc.data.I_sq_flt);
         float x_sq = g_foc.cfg.motor_alpha * g_foc.data.I_sq_flt;
-        g_foc.data.l_inc_ratio = clampf(1.0f / (1.0f + x_sq), 0.20f, 1.0f);
-        g_foc.data.l_app_ratio = clampf(1.0f / (1.0f + 0.33333333f * x_sq), 0.35f, 1.0f);
+        float r_inc = 1.0f / (1.0f + x_sq);
+        float r_app = 1.0f / (1.0f + 0.33333333f * x_sq);
+        g_foc.data.l_inc_ratio = (r_inc > 0.20f) ? r_inc : 0.20f;
+        g_foc.data.l_app_ratio = (r_app > 0.35f) ? r_app : 0.35f;
     } else {
         g_foc.data.I_sq_flt = 0.0f;
         g_foc.data.l_inc_ratio = 1.0f;
@@ -439,32 +488,41 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
     float da = g_foc.data.duty_a;
     float db = g_foc.data.duty_b;
     float dc = g_foc.data.duty_c;
-    if (g_foc.cfg.direction < 0.0f) {
+    if (g_foc.cfg.direction < 0) {
         float tmp = db;
         db = dc;
         dc = tmp;
     }
 
     /*=======================================================================*/
-    /* ADC Channel Switching for NEXT trigger (duty-based + hysteresis)      */
+    /* ADC Channel Switching for NEXT trigger (active PWM duties)            */
     /*=======================================================================*/
     if (g_foc.status.state == FOC_STATE_RUN || g_foc.status.state == FOC_STATE_ZERO_CROSS) {
+        /* Peak UEV updates TIM1->CCR at Peak, so during the upcoming ADC trigger
+         * window right before the next Peak, MOSFETs are still running s_d*_active. */
+        float act_a = s_da_active;
+        float act_b = s_db_active;
+        float act_c = s_dc_active;
         uint8_t max_phase = 0;
-        float max_duty = da;
-        if (db > max_duty) {
-            max_duty = db;
+        float max_d = act_a;
+        if (act_b > max_d) {
+            max_d = act_b;
             max_phase = 1;
         }
-        if (dc > max_duty) {
-            max_duty = dc;
+        if (act_c > max_d) {
+            max_d = act_c;
             max_phase = 2;
         }
 
-        if (max_phase != s_skip_phase) {
-            float cur_duty = (s_skip_phase == 0) ? da : ((s_skip_phase == 1) ? db : dc);
-            if (max_duty > cur_duty + SKIP_HYSTERESIS) {
+        if (max_d > g_foc.max_duty) {
+            if (max_phase != s_skip_phase) {
                 s_skip_phase = max_phase;
                 FOC_HW_SwitchCurrentSensing(s_skip_phase);
+            }
+        } else if (max_d < g_foc.max_duty - 0.10f) {
+            if (s_skip_phase != 2) {
+                s_skip_phase = 2;
+                FOC_HW_SwitchCurrentSensing(2);
             }
         }
     } else if (g_foc.status.state == FOC_STATE_SELF_COMMISSION) {
@@ -477,11 +535,15 @@ CCMRAM_FUNC void FOC_HighFrequencyTask(uint16_t adc1_data, uint16_t adc2_data) {
         FOC_HW_SwitchCurrentSensing(s_cal_phase);
     }
 
-    /* Apply physical duties directly to hardware PWM timer */
-    FOC_HW_SetPWMDuty(da, db, dc);
+    /* Apply physical duties directly to hardware PWM timer (preloaded until next Peak UEV) */
+    FOC_HW_SetPWMDuty(da, db, dc, g_foc.timer_arr_f);
 
-    /* 2-cycle pipeline voltage tracking for Peak update:
-     * Shift applied voltage so SMO receives the exact voltage applied during [-1.0 dt, 0] */
+    /* 1-cycle active duty & 2-cycle voltage pipeline tracking for Peak update:
+     * s_d*_active holds duties active on MOSFETs during the next ADC window;
+     * s_v*_active shifts applied voltage so SMO receives exact [-1.0 dt, 0] voltage. */
+    s_da_active = da;
+    s_db_active = db;
+    s_dc_active = dc;
     g_foc.data.Valpha_applied = s_valpha_active;
     g_foc.data.Vbeta_applied = s_vbeta_active;
     s_valpha_active = g_foc.data.Valpha;
@@ -518,12 +580,19 @@ CCMRAM_FUNC static inline void FOC_ApplyCurrentLoop(float omega_Ls, float ff_q,
     g_foc.ctrl.id.Kp = g_foc.cfg.kp_id * l_inc_ratio;
     g_foc.ctrl.iq.Kp = g_foc.cfg.kp_iq * l_inc_ratio;
 
-    float max_v = g_foc.v_max;
-    g_foc.ctrl.id.out_max = max_v;
-    g_foc.ctrl.id.out_min = -max_v;
-    PI_SetIntLimits(&g_foc.ctrl.id, -max_v, max_v);
+    float omega_abs = fabsf(g_foc.data.omega_elec);
+    if (s_ovm_speed_ok) {
+        if (omega_abs < OVM_DISABLE_OMEGA_ELEC) s_ovm_speed_ok = 0U;
+    } else {
+        if (omega_abs >= OVM_ENABLE_OMEGA_ELEC) s_ovm_speed_ok = 1U;
+    }
+    uint8_t ovm_active = (g_foc.cfg.overmod_enable != 0U && g_foc.status.state == FOC_STATE_RUN &&
+                          !FOC_IsInTransition() && s_ovm_speed_ok != 0U)
+                             ? 1U
+                             : 0U;
+    float max_v = ovm_active ? g_foc.v_max : (g_foc.data.Vbus * g_foc.v_max_scale_z1);
 
-    /* D-axis PI current controller with decoupling */
+    /* D-axis PI current controller with decoupling (limits synced at 1 kHz in FOC_SlowTask) */
     float Id_error = g_foc.cmd.Id_ref - g_foc.data.Id;
     g_foc.data.Vd =
         saturatef(PI_Update(&g_foc.ctrl.id, Id_error) - omega_Ls * g_foc.data.Iq, max_v);
@@ -558,11 +627,35 @@ CCMRAM_FUNC static inline void FOC_ApplyCurrentLoop(float omega_Ls, float ff_q,
 
     float Iq_error = g_foc.cmd.Iq_ref - g_foc.data.Iq;
     g_foc.data.Vq = PI_Update(&g_foc.ctrl.iq, Iq_error) + vq_ff;
-    svpwm_calculate(g_foc.data.theta_elec);
-    foc_apply_deadtime_compensation(&g_foc.data.duty_a, &g_foc.data.duty_b, &g_foc.data.duty_c);
+
+    /* SVPWM in local FPU registers */
+    float vbus_inv = g_foc.data.Vbus_inv;
+    float cos_th, sin_th;
+    cordic_sincos(g_foc.data.theta_elec, &cos_th, &sin_th);
+
+    float max_duty = g_foc.max_duty;
+
+    float va_norm, vb_norm, da, db, dc;
+    float scale = foc_svpwm_dq(g_foc.data.Vd * vbus_inv, g_foc.data.Vq * vbus_inv, cos_th, sin_th,
+                               max_duty, ovm_active, &va_norm, &vb_norm, &da, &db, &dc);
+    if (scale < 1.0f) {
+        g_foc.data.Vd *= scale;
+        g_foc.data.Vq *= scale;
+    }
+    g_foc.data.Valpha = va_norm * g_foc.data.Vbus;
+    g_foc.data.Vbeta = vb_norm * g_foc.data.Vbus;
+
+    /* Deadtime compensation in local FPU registers (reuses cached cos_th/sin_th) */
+    foc_deadtime_compensate_dq(g_foc.data.Id, g_foc.data.Iq, cos_th, sin_th, g_foc.deadtime_duty,
+                               g_foc.deadtime_fade_span, g_foc.deadtime_fade_inv, max_duty,
+                               g_foc.data.inv_i_th, &da, &db, &dc);
+
+    g_foc.data.duty_a = da;
+    g_foc.data.duty_b = db;
+    g_foc.data.duty_c = dc;
 }
 
-CCMRAM_FUNC static void FOC_StateZeroCross(void) {
+NOINLINE_FUNC static void FOC_StateZeroCross(void) {
     g_foc.zc.bridge_omega += g_foc.zc.bridge_dir * g_foc.zc.bridge_slew_rate * g_foc.dt;
     g_foc.zc.bridge_theta = normalize_angle_norm(g_foc.zc.bridge_theta +
                                                  (g_foc.zc.bridge_omega * (1.0f / PI)) * g_foc.dt);
@@ -627,11 +720,6 @@ CCMRAM_FUNC static void FOC_StateZeroCross(void) {
         float slew_k = g_foc.zc.bridge_slew_rate * 0.001f;
         float trans_ms = (slew_k > 10.0f) ? clampf(120.0f / slew_k, 2.5f, 6.0f) : 6.0f;
         FOC_Startup_StartTransition(trans_ms, g_foc.zc.id_current);
-
-        /* Restore d-axis limits for normal run */
-        g_foc.ctrl.id.out_max = max_v;
-        g_foc.ctrl.id.out_min = -max_v;
-        PI_SetIntLimits(&g_foc.ctrl.id, -max_v, max_v);
 
         g_foc.status.state = FOC_STATE_RUN;
         g_foc.zc.grace_counter = 120;
@@ -701,8 +789,7 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
             g_foc.zc.debounce_cnt = 0;
         } else {
             uint8_t rev_requested = (target_dir != g_foc.status.reverse);
-            float zc_threshold = cross_speed;
-            uint8_t spd_reached = (fabsf(g_foc.data.omega_elec) <= zc_threshold);
+            uint8_t spd_reached = (fabsf(g_foc.data.omega_elec) <= cross_speed);
             if (rev_requested && spd_reached) {
                 if (++g_foc.zc.debounce_cnt >= 16) {
                     enter_crossing = 1;
@@ -730,7 +817,7 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
         Profiler_Update(&g_foc.ctrl.profiler, (float*)&g_foc.cmd.Iq_ref);
     }
 
-    if (!g_foc.status.in_transition) {
+    if (!in_transition) {
         g_foc.cmd.Id_ref = 0.0f;
     }
 
@@ -775,8 +862,7 @@ CCMRAM_FUNC static void FOC_StateRun(void) {
     float vq_cmd_volts = 0.0f;
 
     if (is_direct_voltage) {
-        float ramp_time_s = g_foc.cfg.voltage_ramp_rate_ms * 0.001f;
-        float volt_ramp_step = g_foc.dt / ramp_time_s;
+        float volt_ramp_step = g_foc.volt_ramp_step;
         float ramp_v_err = g_foc.cmd.Vq_ref_target - g_foc.cmd.Vq_ref;
         g_foc.cmd.Vq_ref += clampf(ramp_v_err, -volt_ramp_step, volt_ramp_step);
         vq_cmd_volts = g_foc.cmd.Vq_ref * max_v;
@@ -872,6 +958,8 @@ void FOC_ClearFault(void) {
         g_foc.data.l_inc_ratio = 1.0f;
         g_foc.data.l_app_ratio = 1.0f;
         g_foc.status.was_transition = 0;
+        s_da_active = s_db_active = s_dc_active = 0.5f;
+        s_ovm_speed_ok = 0U;
 
         PI_Reset(&g_foc.ctrl.id);
         PI_Reset(&g_foc.ctrl.iq);
@@ -956,7 +1044,8 @@ void FOC_PlayBeep(FOC_BeepType_t type) {
     }
 
     FOC_Beep_SetIdleOutputs();
-    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f);
+    s_da_active = s_db_active = s_dc_active = 0.5f;
+    FOC_HW_SetPWMDuty(0.5f, 0.5f, 0.5f, g_foc.timer_arr_f);
     FOC_EnableDrivers(1);
     g_foc.status.state = FOC_STATE_BEEP;
 }

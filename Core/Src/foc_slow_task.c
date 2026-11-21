@@ -8,6 +8,7 @@
 #include <math.h>
 
 #include "foc_config.h"
+#include "foc_hardware.h"
 #include "foc_input.h"
 #include "foc_state_machine.h"
 #include "ladrc_controller.h"
@@ -252,14 +253,26 @@ void FOC_SlowTask(void) {
         float v_scale = vref * (VBUS_DIVIDER_RATIO / 4096.0f);
         float vbus_new = (float)vbus_raw * v_scale;
 
-        g_foc.data.Vbus = VBUS_IIR_ALPHA * g_foc.data.Vbus + (1.0f - VBUS_IIR_ALPHA) * vbus_new;
-        if (g_foc.data.Vbus < 1.0f) g_foc.data.Vbus = 1.0f;
-        g_foc.data.Vbus_inv = 1.0f / g_foc.data.Vbus;
-        g_foc.v_max = g_foc.data.Vbus * g_foc.v_max_scale;
+        float vbus = VBUS_IIR_ALPHA * g_foc.data.Vbus + (1.0f - VBUS_IIR_ALPHA) * vbus_new;
+        if (vbus < 1.0f) vbus = 1.0f;
+        float vbus_inv = 1.0f / vbus;
+        float v_max = vbus * g_foc.v_max_scale;
         float i_th_noise = g_foc.cfg.cal_noise_pk_pk * 3.0f;
         float i_th_min = g_foc.cfg.motor_max_curr * 0.02f;
         float i_th = (i_th_noise > i_th_min) ? i_th_noise : i_th_min;
-        g_foc.data.inv_i_th = 1.0f / i_th;
+        float inv_i_th = 1.0f / i_th;
+
+        uint32_t primask = __get_PRIMASK();
+        __disable_irq();
+        g_foc.data.Vbus = vbus;
+        g_foc.data.Vbus_inv = vbus_inv;
+        g_foc.v_max = v_max;
+        PI_SetLimits(&g_foc.ctrl.id, -v_max, v_max);
+        PI_SetIntLimits(&g_foc.ctrl.id, -v_max, v_max);
+        g_foc.data.inv_i_th = inv_i_th;
+        if (!primask) {
+            __enable_irq();
+        }
     }
 
     if (g_foc.status.state == FOC_STATE_RUN || g_foc.status.state == FOC_STATE_STARTUP ||
@@ -310,12 +323,11 @@ void FOC_SlowTask(void) {
     }
 
     FOC_State_t cur_state = g_foc.status.state;
-    uint8_t is_obs_active =
-        (cur_state == FOC_STATE_RUN || cur_state == FOC_STATE_STARTUP ||
-         cur_state == FOC_STATE_FLYING_START || cur_state == FOC_STATE_ALIGN ||
-         cur_state == FOC_STATE_DETECT)
-            ? 1U
-            : 0U;
+    uint8_t is_obs_active = (cur_state == FOC_STATE_RUN || cur_state == FOC_STATE_STARTUP ||
+                             cur_state == FOC_STATE_FLYING_START || cur_state == FOC_STATE_ALIGN ||
+                             cur_state == FOC_STATE_DETECT)
+                                ? 1U
+                                : 0U;
     SMO_SlowTask(&g_foc.ctrl.smo, is_obs_active, (cur_state == FOC_STATE_STARTUP) ? 1U : 0U,
                  g_foc.startup.omega, g_foc.data.Vbus);
 }

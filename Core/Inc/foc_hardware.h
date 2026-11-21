@@ -25,12 +25,16 @@
  * @param duty_a Phase A duty (0.0 to 1.0)
  * @param duty_b Phase B duty (0.0 to 1.0)
  * @param duty_c Phase C duty (0.0 to 1.0)
+ * @param arr_f  Precomputed float copy of TIM1->ARR
  */
-static inline void FOC_HW_SetPWMDuty(float duty_a, float duty_b, float duty_c) {
-    float arr = (float)LL_TIM_GetAutoReload(TIM1);
-    uint32_t ccr_a = (uint32_t)(duty_a * arr);
-    uint32_t ccr_b = (uint32_t)(duty_b * arr);
-    uint32_t ccr_c = (uint32_t)(duty_c * arr);
+static inline void FOC_HW_SetPWMDuty(float duty_a, float duty_b, float duty_c, float arr_f) {
+    uint32_t arr_plus_1 = (uint32_t)arr_f + 1U;
+    uint32_t ccr_a =
+        (duty_a >= 0.9999f) ? arr_plus_1 : ((duty_a <= 0.0f) ? 0U : (uint32_t)(duty_a * arr_f));
+    uint32_t ccr_b =
+        (duty_b >= 0.9999f) ? arr_plus_1 : ((duty_b <= 0.0f) ? 0U : (uint32_t)(duty_b * arr_f));
+    uint32_t ccr_c =
+        (duty_c >= 0.9999f) ? arr_plus_1 : ((duty_c <= 0.0f) ? 0U : (uint32_t)(duty_c * arr_f));
 
     LL_TIM_OC_SetCompareCH1(TIM1, ccr_a);
     LL_TIM_OC_SetCompareCH2(TIM1, ccr_b);

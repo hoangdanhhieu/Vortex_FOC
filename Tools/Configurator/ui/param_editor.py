@@ -170,6 +170,9 @@ class ParamSlider(QWidget):
         self._special_text = text
         self._update_label(self._value)
 
+IDLE_ONLY_PARAMS = (protocol.ParamId.PWM_FREQ, protocol.ParamId.OVM_EN)
+
+
 class ParamEditor(QWidget):
     param_changed = Signal(int, float)  # pid, gui_value
 
@@ -180,6 +183,8 @@ class ParamEditor(QWidget):
         self._labels = {}     # pid -> QLabel
         self._unit_labels = {}  # pid -> QLabel
         self._set_buttons = {}  # pid -> QPushButton
+        self._mcu_state = protocol.FocState.IDLE
+        self._idle_only_editable = True
         self._measured_rs = None
         self._measured_ls = None
         self._measured_inertia = None
@@ -267,6 +272,8 @@ class ParamEditor(QWidget):
         self._fade_effect.setOpacity(1.0 if enabled else 0.4)
         if not enabled:
             self.setToolTip("Connect to MCU to edit parameters.")
+            self._mcu_state = protocol.FocState.IDLE
+            self._update_idle_only_locks(protocol.FocState.IDLE)
             
             # Clear measuring state on disconnect so the button isn't stuck
             self._is_measuring = False
@@ -605,6 +612,8 @@ class ParamEditor(QWidget):
         for pid, spin in self._spinboxes.items():
             if pid in ro_pids or pid >= protocol.ParamId.SPD_REF:
                 continue
+            if not self._idle_only_editable and pid in IDLE_ONLY_PARAMS:
+                continue
             mcu_val = gui_to_mcu(pid, spin.value(), protocol.get_pole_pairs())
             self._serial.send(protocol.build_set(pid, mcu_val))
             self.param_changed.emit(pid, spin.value())
@@ -672,6 +681,8 @@ class ParamEditor(QWidget):
             for name, data in config.items():
                 pid = name_to_pid.get(name)
                 if pid is not None:
+                    if not self._idle_only_editable and pid in IDLE_ONLY_PARAMS:
+                        continue
                     val = data["value"] if isinstance(data, dict) else data
                     spin = self._spinboxes.get(pid)
                     if spin:
@@ -759,7 +770,22 @@ class ParamEditor(QWidget):
             if pid == protocol.ParamId.PWM_FREQ:
                 self._last_saved_pwm_freq = val
 
+    def _update_idle_only_locks(self, state: int):
+        self._mcu_state = state
+        editable = state in (protocol.FocState.IDLE, protocol.FocState.FAULT)
+        if editable == self._idle_only_editable:
+            return
+        self._idle_only_editable = editable
+        for pid in IDLE_ONLY_PARAMS:
+            w = self._spinboxes.get(pid)
+            if w:
+                w.setEnabled(editable)
+            btn = self._set_buttons.get(pid)
+            if btn:
+                btn.setEnabled(editable)
+
     def _on_status_received(self, status: dict):
+        self._update_idle_only_locks(status.get('state', 0))
         if not self._is_measuring:
             return
             

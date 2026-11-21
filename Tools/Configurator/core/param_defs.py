@@ -156,12 +156,17 @@ PARAM_DEFS = [
     # System
     (ParamId.PWM_FREQ,    "PWM Frequency*", "Hz",   "System",      16000, 96000, 1000, False),
     (ParamId.BEEP_VOL,    "Beep Volume*",   "%",    "System",      0, 100, 1, False),
+    (ParamId.OVM_EN,      "Overmodulation", "on/off", "System",    0, 1, 1, False),
 ]
 
 # Parameters that should be rendered as dropdown choice boxes instead of spinboxes
 # Mapping: ParamId -> list of option labels (index corresponds to float value) or list of (label, float_val)
 CHOICE_PARAMS = {
     ParamId.STALL_EN: ["0: Disabled", "1: Enabled"],
+    ParamId.OVM_EN: [
+        "0: Disabled (Zone 1: SVPWM, 3-Phase <= max_duty)",
+        "1: Enabled (Zone 2: DPWM1 Flat-Top 100%)",
+    ],
     ParamId.IN_SOURCE: [
         "0: Disabled (Host/GUI Only)",
         "1: Potentiometer",
@@ -254,6 +259,7 @@ PARAM_TOOLTIPS = {
     ParamId.DSHOT_3D: "Enable bidirectional 3D throttle mode for DShot input.",
     ParamId.PWM_FREQ: "TIM1 switching frequency (Hz). Changing requires saving to Flash and MCU reboot.",
     ParamId.BEEP_VOL: "ESC motor beep volume (0% = OFF / Mute all tones, 100% = 2.0 A max target using ^1.5 curve).",
+    ParamId.OVM_EN: "Enable Zone 2 DPWM1 flat-top clamping (clamps top phase to 100% with zero switching edges near ADC window while keeping 2 phases <= max_duty; active above 600 Hz elec for bootstrap safety). Changeable only when IDLE/FAULT.",
 }
 
 

@@ -80,6 +80,7 @@ typedef struct {
 
     /* Precomputed constants for zero-cycle-overhead 48kHz execution */
     float dt_over_pi;      /**< Precomputed dt / PI */
+    float dt_1p5_over_pi;  /**< Precomputed 1.5 * dt / PI */
     float gamma_6th_dt;    /**< Precomputed gamma_6th * dt */
     float pll_ki_dt;       /**< Precomputed pll_ki * dt */
     float omega_stf_alpha; /**< Precomputed STF center-frequency LPF alpha */
@@ -94,8 +95,9 @@ typedef struct {
 
 /* SMO_Update option flags */
 #define SMO_OPT_NONE 0x00U
-#define SMO_OPT_STARTUP 0x01U /**< Clamp PLL speed to rotation direction & track ref_omega in STF \
-                               */
+#define SMO_OPT_STARTUP                                                       \
+    0x01U /**< Clamp PLL speed to rotation direction & track ref_omega in STF \
+           */
 #define SMO_OPT_HARM_COMP 0x02U /**< Enable adaptive 6th-harmonic angle error compensator */
 
 /**
@@ -190,7 +192,7 @@ CCMRAM_FUNC static inline float SMO_GetParkAngle(const SMO_Observer_t* smo) {
  * @return Electrical angle in [-1, 1) representing [-pi, pi)
  */
 CCMRAM_FUNC static inline float SMO_GetPWMAngle(const SMO_Observer_t* smo) {
-    float theta_advance = (smo->omega_est / PI) * (1.5f * smo->dt);
+    float theta_advance = smo->omega_est * smo->dt_1p5_over_pi;
     return normalize_angle_norm(smo->theta_est + theta_advance + smo->phase_lag);
 }
 

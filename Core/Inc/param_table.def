@@ -73,6 +73,7 @@ PARAM_DEF(PID_IN_DEADBAND, float,     input_deadband,       INPUT_DEADBAND_DEFAU
 PARAM_DEF(PID_PWM_FREQ,    float,     pwm_frequency,        PWM_FREQUENCY)
 PARAM_DEF(PID_DEADTIME,    float,     deadtime_ns,          DEAD_TIME_NS)
 PARAM_DEF(PID_BEEP_VOL,    uint8_t,   beep_volume,          BEEP_DEFAULT_VOL_PCT)
+PARAM_DEF(PID_OVM_EN,      uint8_t,   overmod_enable,       OVM_ENABLE_DEFAULT)
 
 /* Internal Non-GUI params */
 PARAM_DEF(PID_DIRECTION,  int8_t,    direction,            1)

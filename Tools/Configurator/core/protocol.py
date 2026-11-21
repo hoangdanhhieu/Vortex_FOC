@@ -155,7 +155,7 @@ class ParamId(AutoZeroEnum):
     IN_SOURCE = auto(); IN_MODE = auto(); IN_MIN_SPD = auto()
     IN_MIN_CUR = auto(); IN_MIN_VQ = auto(); IN_DEADBAND = auto()
     # Hardware / System
-    PWM_FREQ = auto(); DEADTIME = auto(); BEEP_VOL = auto()
+    PWM_FREQ = auto(); DEADTIME = auto(); BEEP_VOL = auto(); OVM_EN = auto()
     # Internal
     DIRECTION = auto(); OC_COUNT = auto(); STALL_EN = auto()
     # DShot

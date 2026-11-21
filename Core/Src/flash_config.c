@@ -161,6 +161,7 @@ void FlashConfig_Apply(void) {
     if (tmp_cfg.beep_volume > 100U) {
         tmp_cfg.beep_volume = 100U;
     }
+    tmp_cfg.overmod_enable = (tmp_cfg.overmod_enable != 0U) ? 1U : 0U;
 
     float i_limit = tmp_cfg.motor_max_curr;
     float v_limit = g_foc.data.Vbus * SQRT3_INV;
@@ -204,13 +205,14 @@ void FlashConfig_Apply(void) {
         wc_current_stf = TWO_PI * 1500.0f;
     }
 
-    /* Compute hardware-level constraints (ADC trigger shifting & Max Duty) */
+    /* Compute hardware-level constraints (ADC trigger shifting & 2-Zone Max Duty) */
     float margin = tmp_cfg.adc_margin_ticks + DEAD_TIME_NS * 1e-9f * (float)SYSCLK_FREQ;
-    float total_sampling_ticks = margin + ADC_TICKS / 2.0f;
+    float total_sampling_ticks = margin + ADC_TICKS * 2.0f / 3.0f;
     float max_duty = clampf(1.0f - total_sampling_ticks / timer_arr_f, 0.50f, MAX_DUTY_HIGH);
-    float min_duty = clampf(deadtime_duty, 0.0f, 0.05f);
-    float v_max_scale = SQRT3_INV * (max_duty - min_duty);
-    uint32_t trigger = timer_arr - ADC_TICKS / 2;
+    float v_max_scale_z1 = SQRT3_INV * max_duty;
+    float v_max_scale_z2 = fminf((2.0f / 3.0f) * max_duty, SQRT3_INV);
+    float v_max_scale = (tmp_cfg.overmod_enable != 0U) ? v_max_scale_z2 : v_max_scale_z1;
+    uint32_t trigger = timer_arr - ADC_TICKS / 3;
 
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
@@ -223,18 +225,22 @@ void FlashConfig_Apply(void) {
     g_foc.wc_current_stf = wc_current_stf;
     g_foc.i_sq_lpf_alpha = i_sq_lpf_alpha;
     g_foc.max_duty = max_duty;
+    g_foc.v_max_scale_z1 = v_max_scale_z1;
+    g_foc.v_max_scale_z2 = v_max_scale_z2;
     g_foc.v_max_scale = v_max_scale;
     g_foc.v_max = g_foc.data.Vbus * v_max_scale;
 
     PI_SetGains(&g_foc.ctrl.id, g_foc.cfg.kp_id, g_foc.cfg.ki_id);
-    PI_SetLimits(&g_foc.ctrl.id, -v_limit, v_limit);
-    PI_SetIntLimits(&g_foc.ctrl.id, -v_limit, v_limit);
-    g_foc.ctrl.id.dt = g_foc.dt;
+    PI_SetLimits(&g_foc.ctrl.id, -g_foc.v_max, g_foc.v_max);
+    PI_SetIntLimits(&g_foc.ctrl.id, -g_foc.v_max, g_foc.v_max);
+    PI_SetTiming(&g_foc.ctrl.id, g_foc.dt);
 
     PI_SetGains(&g_foc.ctrl.iq, g_foc.cfg.kp_iq, g_foc.cfg.ki_iq);
-    PI_SetLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
-    PI_SetIntLimits(&g_foc.ctrl.iq, -v_limit, v_limit);
-    g_foc.ctrl.iq.dt = g_foc.dt;
+    PI_SetLimits(&g_foc.ctrl.iq, -g_foc.v_max, g_foc.v_max);
+    PI_SetIntLimits(&g_foc.ctrl.iq, -g_foc.v_max, g_foc.v_max);
+    PI_SetTiming(&g_foc.ctrl.iq, g_foc.dt);
+
+    FOC_SyncDerivedParams();
 
     LADRC_SetGains(&g_foc.ctrl.speed, g_foc.cfg.ladrc_omega_c, g_foc.cfg.ladrc_omega_o,
                    g_foc.cfg.ladrc_b0);

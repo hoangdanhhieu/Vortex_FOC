@@ -467,8 +467,8 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
                 break;
             }
 
-            /* Prohibit changing PWM frequency while motor is operating */
-            if (pid == PID_PWM_FREQ) {
+            /* Prohibit changing PWM frequency or overmodulation while motor is operating */
+            if (pid == PID_PWM_FREQ || pid == PID_OVM_EN) {
                 if (g_foc.status.state != FOC_STATE_IDLE && g_foc.status.state != FOC_STATE_FAULT) {
                     send_ack(type, 1);
                     break;
@@ -477,6 +477,9 @@ static void handle_packet(uint8_t type, uint8_t* payload, uint8_t len) {
 
             float val;
             memcpy(&val, &payload[1], 4);
+            if (pid == PID_OVM_EN) {
+                val = (val != 0.0f) ? 1.0f : 0.0f;
+            }
             set_param_value(pid, val);
 
             if (pid < PID_SPD_REF) {

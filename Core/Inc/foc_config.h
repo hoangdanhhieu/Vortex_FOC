@@ -108,7 +108,12 @@ extern volatile float ADC_Vref;
 /** Safety margin [ticks] for ringing / settling / propagation */
 #define ADC_MARGIN_DEFAULT 1.0f
 
-#define MAX_DUTY_HIGH 0.95
+#define MAX_DUTY_HIGH 0.95f
+#define OVM_ENABLE_DEFAULT 0U
+/** Electrical speed hysteresis thresholds for DPWM1 1.000 flat-top clamping [rad/s]
+ *  (enable >= 600 Hz, disable < 500 Hz -> <= 0.66 ms max hold, safe for FD6288 + 100 nF) */
+#define OVM_ENABLE_OMEGA_ELEC (TWO_PI * 600.0f)
+#define OVM_DISABLE_OMEGA_ELEC (TWO_PI * 500.0f)
 
 /*===========================================================================*/
 /* Current Sensing Configuration                                             */
@@ -218,9 +223,6 @@ extern volatile float ADC_Vref;
 
 /** Vbus IIR low-pass filter coefficient (alpha = 0.95, ~16 Hz cutoff at 1 kHz) */
 #define VBUS_IIR_ALPHA 0.95f
-
-/** ADC channel switching hysteresis (duty difference threshold to prevent jitter) */
-#define SKIP_HYSTERESIS 0.03f
 
 #define OMEGA_STF_CUTOFF 800.0f * TWO_PI
 #define OMEGA_OUT_CUTOFF 300.0f * TWO_PI

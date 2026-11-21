@@ -111,6 +111,7 @@ void SMO_Init(SMO_Observer_t* smo) {
     smo->tau_ratio_0 = 0.0f;
     smo->dt = CONTROL_PERIOD;
     smo->dt_over_pi = CONTROL_PERIOD * (1.0f / PI);
+    smo->dt_1p5_over_pi = 1.5f * smo->dt_over_pi;
     smo->gamma_6th_dt = smo->gamma_6th * CONTROL_PERIOD;
     smo->pll_ki_dt = smo->pll_ki * CONTROL_PERIOD;
     smo->omega_stf_alpha = OMEGA_STF_CUTOFF * CONTROL_PERIOD;
@@ -375,6 +376,7 @@ void SMO_SetTiming(SMO_Observer_t* smo, float dt) {
         smo->dt = dt;
         SMO_RecomputeNominalZOH(smo);
         smo->dt_over_pi = smo->dt * (1.0f / PI);
+        smo->dt_1p5_over_pi = 1.5f * smo->dt_over_pi;
         smo->gamma_6th_dt = smo->gamma_6th * smo->dt;
         smo->pll_ki_dt = smo->pll_ki * smo->dt;
 

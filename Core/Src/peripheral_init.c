@@ -504,7 +504,7 @@ void MX_TIM1_Init(void) {
     LL_TIM_OC_DisableFast(TIM1, LL_TIM_CHANNEL_CH3);
     LL_TIM_OC_EnablePreload(TIM1, LL_TIM_CHANNEL_CH4);
     TIM_OC_InitStruct.OCMode = LL_TIM_OCMODE_PWM2;
-    TIM_OC_InitStruct.CompareValue = arr - ADC_TICKS / 2;
+    TIM_OC_InitStruct.CompareValue = arr - ADC_TICKS / 3;
     LL_TIM_OC_Init(TIM1, LL_TIM_CHANNEL_CH4, &TIM_OC_InitStruct);
     LL_TIM_OC_DisableFast(TIM1, LL_TIM_CHANNEL_CH4);
     LL_TIM_SetTriggerOutput(TIM1, LL_TIM_TRGO_RESET);
